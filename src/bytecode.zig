@@ -48,7 +48,7 @@ pub fn deinit(self: *Bytecode, gpa: std.mem.Allocator) void {
 
 // Checks if the given program counter is a valid jump destionation
 pub fn isValidJumpDest(self: *Bytecode, pc: u256) ?InstructionPointer {
-    if (pc > std.math.maxInt(usize) or pc >= self.bytecode.len) {
+    if (pc >= self.bytecode.len) {
         @branchHint(.unlikely);
         return null;
     }
