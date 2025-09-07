@@ -28,7 +28,7 @@ pub const Frame = struct {
 
     context: *const Context,
     value: u256,
-    gas: i64,
+    gas: i32,
     bytecode: Bytecode,
     stack: Stack,
     memory: Memory,
@@ -56,7 +56,7 @@ pub const EVM = struct {
         };
     }
 
-    pub fn run(self: *Self, target: Bytecode, initialGas: i64, calldata: []u8, value: u256) !void {
+    pub fn run(self: *Self, target: Bytecode, initialGas: i32, calldata: []u8, value: u256) !void {
         // todo: move this to an arena
         var frame = Frame{
             .context = self.context,

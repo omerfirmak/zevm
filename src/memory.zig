@@ -20,7 +20,7 @@ pub fn slice(self: *Memory, start: u64, size: u64) []u8 {
 
 // Tries to grow the memory to fit the given region if there is enough gas
 // Returns the amount of gas consumed
-pub fn growToFit(self: *Memory, offset: u256, size: u256, availableGas: i64) !i64 {
+pub fn growToFit(self: *Memory, offset: u256, size: u256, availableGas: i32) !i32 {
     if (size == 0) {
         return 0;
     }
