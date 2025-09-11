@@ -6,8 +6,8 @@ const MaxStackSize = 1024;
 // EVM Stack implementation
 pub const Stack = @This();
 
+data: [MaxStackSize]u256 align(@sizeOf(u256)) = undefined,
 head: u16 = 0,
-data: [MaxStackSize]u256 = undefined,
 
 // Pushes the given value on top of the stack
 // Errors out if the stack is full
