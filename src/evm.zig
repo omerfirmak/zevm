@@ -20,7 +20,7 @@ pub const Context = struct {
     coinbase: u160,
     time: u64,
     difficulty: u256,
-    gasLimit: u64,
+    gas_limit: u64,
 };
 
 pub const Frame = struct {
@@ -38,8 +38,8 @@ pub const Frame = struct {
         if (index >= self.calldata.len) {
             return &[_]u8{};
         }
-        const readSize = @min(self.calldata.len - index, size);
-        return self.calldata[@intCast(index)..@intCast(index + readSize)];
+        const read_size = @min(self.calldata.len - index, size);
+        return self.calldata[@intCast(index)..@intCast(index + read_size)];
     }
 };
 
@@ -56,20 +56,19 @@ pub const EVM = struct {
         };
     }
 
-    pub fn run(self: *Self, target: Bytecode, initialGas: i32, calldata: []u8, value: u256) !void {
+    pub fn run(self: *Self, target: Bytecode, initial_gas: i32, calldata: []u8, value: u256) !void {
         // todo: move this to an arena
         var frame = Frame{
             .context = self.context,
             .value = value,
-            .gas = initialGas,
+            .gas = initial_gas,
             .bytecode = target,
             .stack = .{},
             .memory = try Memory.init(self.gpa),
             .calldata = calldata,
         };
 
-        const entryOp: ops.Fn = @ptrCast(frame.bytecode.threadedCode[0]);
-        defer std.debug.print("{any} \n", .{frame.stack.data[0..frame.stack.head]});
-        return entryOp(target.threadedCode[1..].ptr, frame.gas, &frame);
+        const entry_op: ops.Fn = @ptrCast(frame.bytecode.threaded_code[0]);
+        return entry_op(target.threaded_code[1..].ptr, frame.gas, &frame);
     }
 };

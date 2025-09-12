@@ -23,15 +23,15 @@ pub fn Ops(comptime spec: Spec) type {
     return struct {
         // Tail calls the next instruction after checking to see if the execution has run out of gas
         // Increments the PC as well
-        pub inline fn next(nextIP: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
+        pub inline fn next(next_ip: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
             if (gas < 0) {
                 @branchHint(.unlikely);
                 return evm.Errors.OutOfGas;
             }
             // It is safe to unwrap unconditionally here, jumpdest analysis should protect against a
             // null function pointer here.
-            const nextOp: Fn = @ptrCast(nextIP[0].?);
-            return @call(.always_tail, nextOp, .{ nextIP + 1, gas, frame });
+            const next_op: Fn = @ptrCast(next_ip[0].?);
+            return @call(.always_tail, next_op, .{ next_ip + 1, gas, frame });
         }
 
         pub fn invalid(_: InstructionPointer, _: i32, _: *evm.Frame) evm.Errors!void {
@@ -45,150 +45,150 @@ pub fn Ops(comptime spec: Spec) type {
             return;
         }
 
-        pub fn pop(nextIP: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
+        pub fn pop(next_ip: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
             _ = try frame.stack.pop(1, 0);
-            return next(nextIP, gas - spec.constantGas(.POP), frame);
+            return next(next_ip, gas - spec.constantGas(.POP), frame);
         }
 
-        pub fn add(nextIP: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
+        pub fn add(next_ip: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
             const args = try frame.stack.pop(2, 1);
             args[0] = args[1] +% args[0];
-            return next(nextIP, gas - spec.constantGas(.ADD), frame);
+            return next(next_ip, gas - spec.constantGas(.ADD), frame);
         }
 
-        pub fn mul(nextIP: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
+        pub fn mul(next_ip: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
             const args = try frame.stack.pop(2, 1);
             args[0] = args[1] *% args[0];
-            return next(nextIP, gas - spec.constantGas(.MUL), frame);
+            return next(next_ip, gas - spec.constantGas(.MUL), frame);
         }
 
-        pub fn sub(nextIP: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
+        pub fn sub(next_ip: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
             const args = try frame.stack.pop(2, 1);
             args[0] = args[1] -% args[0];
-            return next(nextIP, gas - spec.constantGas(.SUB), frame);
+            return next(next_ip, gas - spec.constantGas(.SUB), frame);
         }
 
-        pub fn div(nextIP: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
+        pub fn div(next_ip: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
             const args = try frame.stack.pop(2, 1);
             args[0] = if (args[0] == 0) 0 else args[1] / args[0];
-            return next(nextIP, gas - spec.constantGas(.DIV), frame);
+            return next(next_ip, gas - spec.constantGas(.DIV), frame);
         }
 
-        pub fn sdiv(nextIP: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
+        pub fn sdiv(next_ip: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
             const args = try frame.stack.pop(2, 1);
             args[0] = @bitCast(@divTrunc(@as(i256, @bitCast(args[1])), @as(i256, @bitCast(args[0]))));
-            return next(nextIP, gas - spec.constantGas(.SDIV), frame);
+            return next(next_ip, gas - spec.constantGas(.SDIV), frame);
         }
 
-        pub fn mod(nextIP: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
+        pub fn mod(next_ip: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
             const args = try frame.stack.pop(2, 1);
             args[0] = if (args[0] == 0) 0 else @mod(args[1], args[0]);
-            return next(nextIP, gas - spec.constantGas(.MOD), frame);
+            return next(next_ip, gas - spec.constantGas(.MOD), frame);
         }
 
-        pub fn smod(nextIP: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
+        pub fn smod(next_ip: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
             const args = try frame.stack.pop(2, 1);
             args[0] = if (args[0] == 0) 0 else @bitCast(@mod(@as(i256, @bitCast(args[1])), @as(i256, @bitCast(args[0]))));
-            return next(nextIP, gas - spec.constantGas(.SMOD), frame);
+            return next(next_ip, gas - spec.constantGas(.SMOD), frame);
         }
 
-        pub fn addmod(nextIP: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
+        pub fn addmod(next_ip: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
             const args = try frame.stack.pop(3, 1);
             args[0] = if (args[0] == 0) 0 else @intCast(@mod(@as(u257, args[2]) + @as(u257, args[1]), args[0]));
-            return next(nextIP, gas - spec.constantGas(.ADDMOD), frame);
+            return next(next_ip, gas - spec.constantGas(.ADDMOD), frame);
         }
 
-        pub fn mulmod(nextIP: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
+        pub fn mulmod(next_ip: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
             const args = try frame.stack.pop(3, 1);
             args[0] = if (args[0] == 0) 0 else @intCast(@mod(@as(u512, args[2]) * @as(u512, args[1]), args[0]));
-            return next(nextIP, gas - spec.constantGas(.MULMOD), frame);
+            return next(next_ip, gas - spec.constantGas(.MULMOD), frame);
         }
 
-        pub fn exp(nextIP: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
+        pub fn exp(next_ip: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
             const args = try frame.stack.pop(2, 1);
             args[0] = std.math.pow(u256, args[1], args[0]);
-            return next(nextIP, gas - spec.constantGas(.EXP), frame);
+            return next(next_ip, gas - spec.constantGas(.EXP), frame);
         }
 
-        pub fn signextend(nextIP: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
+        pub fn signextend(next_ip: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
             const args = try frame.stack.pop(2, 1);
             if (args[1] <= 30) {
                 const size: u5 = @intCast(args[1]);
                 switch (size) {
                     inline 0...30 => |bytes| {
-                        const bitSize = (@as(u16, bytes) + 1) * 8;
-                        const truncated: std.meta.Int(.unsigned, bitSize) = @truncate(args[0]);
-                        const truncatedSigned: std.meta.Int(.signed, bitSize) = @bitCast(truncated);
-                        const extendedSigned: i256 = @intCast(truncatedSigned);
-                        args[0] = @bitCast(extendedSigned);
+                        const bit_size = (@as(u16, bytes) + 1) * 8;
+                        const truncated: std.meta.Int(.unsigned, bit_size) = @truncate(args[0]);
+                        const truncated_signed: std.meta.Int(.signed, bit_size) = @bitCast(truncated);
+                        const extended_signed: i256 = @intCast(truncated_signed);
+                        args[0] = @bitCast(extended_signed);
                     },
                     else => unreachable,
                 }
             }
-            return next(nextIP, gas - spec.constantGas(.SIGNEXTEND), frame);
+            return next(next_ip, gas - spec.constantGas(.SIGNEXTEND), frame);
         }
 
-        pub fn lt(nextIP: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
+        pub fn lt(next_ip: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
             const args = try frame.stack.pop(2, 1);
             args[0] = @intFromBool(args[1] < args[0]);
-            return next(nextIP, gas - spec.constantGas(.LT), frame);
+            return next(next_ip, gas - spec.constantGas(.LT), frame);
         }
 
-        pub fn gt(nextIP: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
+        pub fn gt(next_ip: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
             const args = try frame.stack.pop(2, 1);
             args[0] = @intFromBool(args[1] > args[0]);
-            return next(nextIP, gas - spec.constantGas(.GT), frame);
+            return next(next_ip, gas - spec.constantGas(.GT), frame);
         }
 
-        pub fn slt(nextIP: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
+        pub fn slt(next_ip: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
             const args = try frame.stack.pop(2, 1);
             args[0] = @intFromBool(@as(i256, @bitCast(args[1])) < @as(i256, @bitCast(args[0])));
-            return next(nextIP, gas - spec.constantGas(.SLT), frame);
+            return next(next_ip, gas - spec.constantGas(.SLT), frame);
         }
 
-        pub fn sgt(nextIP: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
+        pub fn sgt(next_ip: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
             const args = try frame.stack.pop(2, 1);
             args[0] = @intFromBool(@as(i256, @bitCast(args[1])) > @as(i256, @bitCast(args[0])));
-            return next(nextIP, gas - spec.constantGas(.SGT), frame);
+            return next(next_ip, gas - spec.constantGas(.SGT), frame);
         }
 
-        pub fn eq(nextIP: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
+        pub fn eq(next_ip: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
             const args = try frame.stack.pop(2, 1);
             args[0] = @intFromBool(args[1] == args[0]);
-            return next(nextIP, gas - spec.constantGas(.EQ), frame);
+            return next(next_ip, gas - spec.constantGas(.EQ), frame);
         }
 
-        pub fn iszero(nextIP: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
+        pub fn iszero(next_ip: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
             const args = try frame.stack.pop(1, 1);
             args[0] = @intFromBool(args[0] == 0);
-            return next(nextIP, gas - spec.constantGas(.ISZERO), frame);
+            return next(next_ip, gas - spec.constantGas(.ISZERO), frame);
         }
 
-        pub fn @"and"(nextIP: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
+        pub fn @"and"(next_ip: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
             const args = try frame.stack.pop(2, 1);
             args[0] = args[1] & args[0];
-            return next(nextIP, gas - spec.constantGas(.AND), frame);
+            return next(next_ip, gas - spec.constantGas(.AND), frame);
         }
 
-        pub fn @"or"(nextIP: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
+        pub fn @"or"(next_ip: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
             const args = try frame.stack.pop(2, 1);
             args[0] = args[1] | args[0];
-            return next(nextIP, gas - spec.constantGas(.OR), frame);
+            return next(next_ip, gas - spec.constantGas(.OR), frame);
         }
 
-        pub fn xor(nextIP: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
+        pub fn xor(next_ip: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
             const args = try frame.stack.pop(2, 1);
             args[0] = args[1] ^ args[0];
-            return next(nextIP, gas - spec.constantGas(.XOR), frame);
+            return next(next_ip, gas - spec.constantGas(.XOR), frame);
         }
 
-        pub fn not(nextIP: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
+        pub fn not(next_ip: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
             const args = try frame.stack.pop(1, 1);
             args[0] = ~args[0];
-            return next(nextIP, gas - spec.constantGas(.NOT), frame);
+            return next(next_ip, gas - spec.constantGas(.NOT), frame);
         }
 
-        pub fn byte(nextIP: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
+        pub fn byte(next_ip: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
             const args = try frame.stack.pop(2, 1);
             if (args[1] > 31) {
                 args[0] = 0;
@@ -196,72 +196,72 @@ pub fn Ops(comptime spec: Spec) type {
                 const index: u5 = @intCast(args[1]);
                 args[0] = @as(u8, @intCast(args[0] >> (index * 8)));
             }
-            return next(nextIP, gas - spec.constantGas(.BYTE), frame);
+            return next(next_ip, gas - spec.constantGas(.BYTE), frame);
         }
 
-        pub fn jumpdest(nextIP: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
-            return next(nextIP, gas - spec.constantGas(.JUMPDEST), frame);
+        pub fn jumpdest(next_ip: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
+            return next(next_ip, gas - spec.constantGas(.JUMPDEST), frame);
         }
 
         pub fn jump(_: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
             const args = try frame.stack.pop(1, 0);
-            const jumpDest = frame.bytecode.isValidJumpDest(args[0]) orelse return evm.Errors.InvalidJumpDest;
-            return next(jumpDest, gas - spec.constantGas(.JUMP), frame);
+            const dest = frame.bytecode.isValidJumpDest(args[0]) orelse return evm.Errors.InvalidJumpDest;
+            return next(dest, gas - spec.constantGas(.JUMP), frame);
         }
 
-        pub fn jumpi(nextIP: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
+        pub fn jumpi(next_ip: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
             const args = try frame.stack.pop(2, 0);
             if (args[0] == 0) {
-                return next(nextIP, gas - spec.constantGas(.JUMPI), frame);
+                return next(next_ip, gas - spec.constantGas(.JUMPI), frame);
             }
 
-            const jumpDest = frame.bytecode.isValidJumpDest(args[1]) orelse return evm.Errors.InvalidJumpDest;
-            return next(jumpDest, gas - spec.constantGas(.JUMPI), frame);
+            const dest = frame.bytecode.isValidJumpDest(args[1]) orelse return evm.Errors.InvalidJumpDest;
+            return next(dest, gas - spec.constantGas(.JUMPI), frame);
         }
 
-        pub fn opGas(nextIP: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
+        pub fn opGas(next_ip: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
             try frame.stack.push(@intCast(gas));
-            return next(nextIP, gas - spec.constantGas(.GAS), frame);
+            return next(next_ip, gas - spec.constantGas(.GAS), frame);
         }
 
         pub fn pushN(comptime n: usize) Fn {
             return struct {
-                pub fn push(nextIP: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
-                    const stackSlot = try frame.stack.reserve();
-                    frame.bytecode.readBytesToValue(nextIP, n, stackSlot);
-                    return next(nextIP + n, gas - spec.constantGas(@enumFromInt(@intFromEnum(Opcode.PUSH0) + n)), frame);
+                pub fn push(next_ip: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
+                    const slot = try frame.stack.reserve();
+                    frame.bytecode.readBytesToValue(next_ip, n, slot);
+                    return next(next_ip + n, gas - spec.constantGas(@enumFromInt(@intFromEnum(Opcode.PUSH0) + n)), frame);
                 }
             }.push;
         }
 
         pub fn dupN(comptime n: usize) Fn {
             return struct {
-                pub fn dup(nextIP: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
+                pub fn dup(next_ip: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
                     const s = try frame.stack.pop(n, n);
                     try frame.stack.push(s[0]);
-                    return next(nextIP, gas - spec.constantGas(@enumFromInt(@intFromEnum(Opcode.DUP1) + n - 1)), frame);
+                    return next(next_ip, gas - spec.constantGas(@enumFromInt(@intFromEnum(Opcode.DUP1) + n - 1)), frame);
                 }
             }.dup;
         }
 
         pub fn swapN(comptime n: usize) Fn {
             return struct {
-                pub fn swap(nextIP: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
+                pub fn swap(next_ip: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
                     const s = try frame.stack.pop(n + 1, n + 1);
                     const tmp = s[0];
                     s[0] = s[n];
                     s[n] = tmp;
-                    return next(nextIP, gas - spec.constantGas(@enumFromInt(@intFromEnum(Opcode.SWAP1) + n - 1)), frame);
+                    return next(next_ip, gas - spec.constantGas(@enumFromInt(@intFromEnum(Opcode.SWAP1) + n - 1)), frame);
                 }
             }.swap;
         }
 
-        pub fn callvalue(nextIP: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
+        pub fn callvalue(next_ip: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
             try frame.stack.push(frame.value);
-            return next(nextIP, gas - spec.constantGas(.CALLVALUE), frame);
+            return next(next_ip, gas - spec.constantGas(.CALLVALUE), frame);
         }
 
-        pub fn calldataload(nextIP: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
+        pub fn calldataload(next_ip: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
             const args = try frame.stack.pop(1, 1);
             if (args[0] > frame.calldata.len) {
                 args[0] = 0;
@@ -270,79 +270,79 @@ pub fn Ops(comptime spec: Spec) type {
                 const end = @min(frame.calldata.len, index + 32);
                 args[0] = std.mem.readVarInt(u256, frame.calldata[index..end], .big);
             }
-            return next(nextIP, gas - spec.constantGas(.CALLDATALOAD), frame);
+            return next(next_ip, gas - spec.constantGas(.CALLDATALOAD), frame);
         }
 
-        pub fn calldatasize(nextIP: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
+        pub fn calldatasize(next_ip: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
             try frame.stack.push(@intCast(frame.calldata.len));
-            return next(nextIP, gas - spec.constantGas(.CALLDATASIZE), frame);
+            return next(next_ip, gas - spec.constantGas(.CALLDATASIZE), frame);
         }
 
-        pub fn calldatacopy(nextIP: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
+        pub fn calldatacopy(next_ip: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
             const args = try frame.stack.pop(3, 0);
-            const availableGas = gas - try frame.memory.growToFit(args[2], args[0], gas);
+            const available_gas = gas - try frame.memory.growToFit(args[2], args[0], gas);
 
             const calldata = frame.safeSliceCalldata(args[1], @intCast(args[0]));
             frame.memory.copyAndClearRemaining(@intCast(args[2]), @intCast(args[0]), calldata);
-            return next(nextIP, availableGas - spec.constantGas(.CALLDATACOPY), frame);
+            return next(next_ip, available_gas - spec.constantGas(.CALLDATACOPY), frame);
         }
 
-        pub fn codesize(nextIP: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
+        pub fn codesize(next_ip: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
             try frame.stack.push(frame.bytecode.bytecode.len);
-            return next(nextIP, gas - spec.constantGas(.CODESIZE), frame);
+            return next(next_ip, gas - spec.constantGas(.CODESIZE), frame);
         }
 
-        pub fn codecopy(nextIP: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
+        pub fn codecopy(next_ip: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
             const args = try frame.stack.pop(3, 0);
-            const availableGas = gas - try frame.memory.growToFit(args[2], args[0], gas);
+            const available_gas = gas - try frame.memory.growToFit(args[2], args[0], gas);
 
             const bytecode = frame.bytecode.safeSlice(args[1], @intCast(args[0]));
             frame.memory.copyAndClearRemaining(@intCast(args[2]), @intCast(args[0]), bytecode);
-            return next(nextIP, availableGas - spec.constantGas(.CODECOPY), frame);
+            return next(next_ip, available_gas - spec.constantGas(.CODECOPY), frame);
         }
 
-        pub fn pc(nextIP: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
-            try frame.stack.push(frame.bytecode.programCounter(nextIP) - 1);
-            return next(nextIP, gas - spec.constantGas(.PC), frame);
+        pub fn pc(next_ip: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
+            try frame.stack.push(frame.bytecode.programCounter(next_ip) - 1);
+            return next(next_ip, gas - spec.constantGas(.PC), frame);
         }
 
-        pub fn keccak256(nextIP: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
+        pub fn keccak256(next_ip: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
             const args = try frame.stack.pop(2, 1);
-            const availableGas = gas - try frame.memory.growToFit(args[1], args[0], gas);
+            const available_gas = gas - try frame.memory.growToFit(args[1], args[0], gas);
 
             const data = frame.memory.slice(@intCast(args[1]), @intCast(args[0]));
             std.crypto.hash.sha3.Keccak256.hash(data, @ptrCast(&args[0]), .{});
-            return next(nextIP, availableGas - spec.constantGas(.KECCAK256), frame);
+            return next(next_ip, available_gas - spec.constantGas(.KECCAK256), frame);
         }
 
-        pub fn msize(nextIP: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
+        pub fn msize(next_ip: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
             try frame.stack.push(frame.memory.buf.len);
-            return next(nextIP, gas - spec.constantGas(.MSIZE), frame);
+            return next(next_ip, gas - spec.constantGas(.MSIZE), frame);
         }
 
-        pub fn coinbase(nextIP: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
+        pub fn coinbase(next_ip: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
             try frame.stack.push(frame.context.coinbase);
-            return next(nextIP, gas - spec.constantGas(.COINBASE), frame);
+            return next(next_ip, gas - spec.constantGas(.COINBASE), frame);
         }
 
-        pub fn timestamp(nextIP: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
+        pub fn timestamp(next_ip: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
             try frame.stack.push(frame.context.time);
-            return next(nextIP, gas - spec.constantGas(.TIMESTAMP), frame);
+            return next(next_ip, gas - spec.constantGas(.TIMESTAMP), frame);
         }
 
-        pub fn number(nextIP: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
+        pub fn number(next_ip: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
             try frame.stack.push(frame.context.number);
-            return next(nextIP, gas - spec.constantGas(.NUMBER), frame);
+            return next(next_ip, gas - spec.constantGas(.NUMBER), frame);
         }
 
-        pub fn difficulty(nextIP: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
+        pub fn difficulty(next_ip: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
             try frame.stack.push(frame.context.difficulty);
-            return next(nextIP, gas - spec.constantGas(.DIFFICULTY), frame);
+            return next(next_ip, gas - spec.constantGas(.DIFFICULTY), frame);
         }
 
-        pub fn gaslimit(nextIP: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
-            try frame.stack.push(frame.context.gasLimit);
-            return next(nextIP, gas - spec.constantGas(.GASLIMIT), frame);
+        pub fn gaslimit(next_ip: InstructionPointer, gas: i32, frame: *evm.Frame) evm.Errors!void {
+            try frame.stack.push(frame.context.gas_limit);
+            return next(next_ip, gas - spec.constantGas(.GASLIMIT), frame);
         }
 
         // Constructs a jump table for the given spec

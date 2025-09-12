@@ -16,10 +16,10 @@ pub fn main() !void {
     // };
     //const bytecodeRaw: []const u8 = &[_]u8{ 91, 99, 1, 2, 3, 4, 100, 1, 2, 3, 4, 5, 80, 80, 101, 0, 0, 0, 0, 0, 0, 86, 96, 0, 86 };
     //const bytecodeRaw: []const u8 = &[_]u8{ 91, 96, 0, 128, 128, 128, 96, 4, 90, 80, 80, 80, 80, 80, 80, 96, 0, 86 };
-    const bytecodeRaw: []const u8 = &[_]u8{ 96, 1, 96, 1, 91, 128, 145, 1, 96, 4, 86 };
+    const bytecode_raw: []const u8 = &[_]u8{ 96, 1, 96, 1, 91, 128, 145, 1, 96, 4, 86 };
 
-    const jumpTable = ops.Ops(spec.Frontier).table();
-    var bytecode = try Bytecode.init(allocator, bytecodeRaw, jumpTable);
+    const jump_table = ops.Ops(spec.Frontier).table();
+    var bytecode = try Bytecode.init(allocator, bytecode_raw, jump_table);
     defer bytecode.deinit(allocator);
     try std.testing.expectError(evm.Errors.OutOfGas, vm.run(bytecode, 100_000_000, &[_]u8{}, 0));
 }

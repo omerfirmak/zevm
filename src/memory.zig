@@ -14,13 +14,13 @@ pub fn init(gpa: std.mem.Allocator) !Memory {
 }
 
 pub fn slice(self: *Memory, start: usize, size: usize) []u8 {
-    const sliceSize = @min(self.buf.len - start, size);
-    return self.buf[start .. start + sliceSize];
+    const slice_size = @min(self.buf.len - start, size);
+    return self.buf[start .. start + slice_size];
 }
 
 // Tries to grow the memory to fit the given region if there is enough gas
 // Returns the amount of gas consumed
-pub fn growToFit(self: *Memory, offset: u256, size: u256, availableGas: i32) !i32 {
+pub fn growToFit(self: *Memory, offset: u256, size: u256, available_gas: i32) !i32 {
     if (size == 0) {
         return 0;
     }
@@ -30,19 +30,19 @@ pub fn growToFit(self: *Memory, offset: u256, size: u256, availableGas: i32) !i3
 
     const off: usize = @intCast(offset);
     const sz: usize = @intCast(size);
-    const memSize, const overflown = @addWithOverflow(off, sz);
+    const mem_size, const overflown = @addWithOverflow(off, sz);
     if (overflown == 1) {
         return evm.Errors.GasOverflow;
     }
 
     const cost = 0; //todo: calculate
-    if (cost > availableGas) {
+    if (cost > available_gas) {
         return evm.Errors.OutOfGas;
     }
 
     // todo: debug assert that this never relocates.
-    if (self.buf.len < memSize) {
-        self.buf = self.gpa.remap(self.buf, memSize).?;
+    if (self.buf.len < mem_size) {
+        self.buf = self.gpa.remap(self.buf, mem_size).?;
     }
     return cost;
 }

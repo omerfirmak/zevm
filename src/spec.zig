@@ -12,17 +12,17 @@ pub const Spec = struct {
     const Self = @This();
 
     fork: Fork,
-    gasTable: [256]u32,
+    gas_table: [256]u32,
 
     pub fn constantGas(self: *const Self, comptime op: Opcode) i32 {
-        return @intCast(self.gasTable[@intFromEnum(op)]);
+        return @intCast(self.gas_table[@intFromEnum(op)]);
     }
 };
 
 // Frontier hardfork spec
 pub const Frontier = Spec{
     .fork = .Frontier,
-    .gasTable = std.enums.directEnumArrayDefault(Opcode, u32, 0, 256, .{
+    .gas_table = std.enums.directEnumArrayDefault(Opcode, u32, 0, 256, .{
         .STOP = 0,
         .ADD = 3,
         .MUL = 5,
@@ -151,10 +151,10 @@ pub const Frontier = Spec{
 };
 
 fn makeHomesteadSpec(frontierSpec: Spec) Spec {
-    var homesteadSpec = frontierSpec;
-    homesteadSpec.fork = .Homestead;
-    homesteadSpec.gasTable[@intFromEnum(Opcode.ADD)] = 40;
-    return homesteadSpec;
+    var homestead_spec = frontierSpec;
+    homestead_spec.fork = .Homestead;
+    homestead_spec.gasTable[@intFromEnum(Opcode.ADD)] = 40;
+    return homestead_spec;
 }
 
 pub const Homestead = makeHomesteadSpec(Frontier);
