@@ -88,18 +88,22 @@ pub const EVM = struct {
     }
 
     pub fn run(self: *Self, target: Bytecode, initial_gas: i32, calldata: []u8, value: u256) !void {
-        // todo: move this to an arena
-        var frame = Frame{
+        var frame = try self.gpa.create(Frame);
+        defer self.gpa.destroy(frame);
+        const memory = try Memory.init(self.gpa);
+        defer frame.memory.deinit();
+
+        frame.* = Frame{
             .context = self.context,
             .value = value,
             .gas = initial_gas,
             .bytecode = target,
             .stack = undefined,
-            .memory = try Memory.init(self.gpa),
+            .memory = memory,
             .calldata = calldata,
         };
 
         const entry_op: ops.Fn = @ptrCast(frame.bytecode.threaded_code[0]);
-        return entry_op(target.threaded_code[1..].ptr, frame.gas, 0, &frame);
+        return entry_op(target.threaded_code[1..].ptr, frame.gas, 0, frame);
     }
 };

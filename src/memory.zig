@@ -13,6 +13,10 @@ pub fn init(gpa: std.mem.Allocator) !Memory {
     };
 }
 
+pub fn deinit(self: *Memory) void {
+    self.gpa.free(self.buf);
+}
+
 pub fn slice(self: *Memory, start: usize, size: usize) []u8 {
     const slice_size = @min(self.buf.len - start, size);
     return self.buf[start .. start + slice_size];
