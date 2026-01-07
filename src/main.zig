@@ -3,6 +3,7 @@ const evm = @import("evm.zig");
 const ops = @import("ops.zig");
 const spec = @import("spec.zig");
 const Bytecode = @import("bytecode.zig").Bytecode;
+const State = @import("state.zig").State;
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}).init;
@@ -21,5 +22,8 @@ pub fn main() !void {
     const jump_table = ops.Ops(spec.Frontier).table();
     var bytecode = try Bytecode.init(allocator, bytecode_raw, jump_table);
     defer bytecode.deinit(allocator);
-    try std.testing.expectError(evm.Errors.OutOfGas, vm.run(bytecode, 100_000_000, &[_]u8{}, 0));
+    const gas_limit = 100_000_000;
+    var state = try State.init(allocator);
+    defer state.deinit(allocator);
+    try std.testing.expectError(evm.Errors.OutOfGas, vm.run(&state, bytecode, gas_limit, &[_]u8{}, 0));
 }

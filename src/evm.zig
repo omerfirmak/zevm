@@ -3,6 +3,7 @@ const ops = @import("ops.zig");
 const spec = @import("spec.zig");
 const Bytecode = @import("bytecode.zig").Bytecode;
 const Memory = @import("memory.zig").Memory;
+const State = @import("state.zig").State;
 
 const MaxStackSize = 1024;
 
@@ -28,6 +29,7 @@ pub const Frame = struct {
     const Self = @This();
 
     context: *const Context,
+    state: *State,
     value: u256,
     gas: i32,
     bytecode: Bytecode,
@@ -87,7 +89,7 @@ pub const EVM = struct {
         };
     }
 
-    pub fn run(self: *Self, target: Bytecode, initial_gas: i32, calldata: []u8, value: u256) !void {
+    pub fn run(self: *Self, state: *State, target: Bytecode, initial_gas: i32, calldata: []u8, value: u256) !void {
         var frame = try self.gpa.create(Frame);
         defer self.gpa.destroy(frame);
         const memory = try Memory.init(self.gpa);
@@ -95,6 +97,7 @@ pub const EVM = struct {
 
         frame.* = Frame{
             .context = self.context,
+            .state = state,
             .value = value,
             .gas = initial_gas,
             .bytecode = target,
