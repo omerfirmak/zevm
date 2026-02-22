@@ -44,9 +44,10 @@ pub fn growToFit(self: *Memory, offset: u256, size: u256, available_gas: i32) !i
         return evm.Errors.OutOfGas;
     }
 
-    // todo: debug assert that this never relocates.
     if (self.buf.len < mem_size) {
-        self.buf = self.gpa.remap(self.buf, mem_size).?;
+        const remappedBuf = self.gpa.remap(self.buf, mem_size).?;
+        std.debug.assert(remappedBuf.ptr == self.buf.ptr);
+        self.buf = remappedBuf;
     }
     return cost;
 }
