@@ -358,6 +358,11 @@ pub fn Ops(comptime spec: Spec) type {
             return next(next_ip, available_gas - spec.constantGas(.CODECOPY), new_stack_head, frame);
         }
 
+        pub fn gasprice(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+            const new_stack_head = try frame.stackPush(stack_head, frame.context.gas_price);
+            return next(next_ip, gas - spec.constantGas(.GASPRICE), new_stack_head, frame);
+        }
+
         pub fn pc(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head = try frame.stackPush(stack_head, frame.bytecode.programCounter(next_ip) - 1);
             return next(next_ip, gas - spec.constantGas(.PC), new_stack_head, frame);
@@ -446,6 +451,7 @@ pub fn Ops(comptime spec: Spec) type {
                 .CALLDATACOPY = calldatacopy,
                 .CODESIZE = codesize,
                 .CODECOPY = codecopy,
+                .GASPRICE = gasprice,
                 .PC = pc,
                 .KECCAK256 = keccak256,
                 .MSIZE = msize,

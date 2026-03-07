@@ -26,6 +26,7 @@ pub const Context = struct {
 
     // Tx level context
     from: u160,
+    gas_price: u256,
 };
 
 pub const Frame = struct {
