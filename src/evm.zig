@@ -21,7 +21,7 @@ pub const Context = struct {
     number: u64,
     coinbase: u160,
     time: u64,
-    difficulty: u256,
+    random: u256,
     gas_limit: u64,
 };
 

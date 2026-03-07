@@ -335,9 +335,9 @@ pub fn Ops(comptime spec: Spec) type {
             return next(next_ip, gas - spec.constantGas(.NUMBER), new_stack_head, frame);
         }
 
-        pub fn difficulty(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
-            const new_stack_head = try frame.stackPush(stack_head, frame.context.difficulty);
-            return next(next_ip, gas - spec.constantGas(.DIFFICULTY), new_stack_head, frame);
+        pub fn random(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+            const new_stack_head = try frame.stackPush(stack_head, frame.context.random);
+            return next(next_ip, gas - spec.constantGas(.PREVRANDO), new_stack_head, frame);
         }
 
         pub fn gaslimit(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
@@ -387,7 +387,7 @@ pub fn Ops(comptime spec: Spec) type {
                 .COINBASE = coinbase,
                 .TIMESTAMP = timestamp,
                 .NUMBER = number,
-                .DIFFICULTY = difficulty,
+                .PREVRANDO = random,
                 .GASLIMIT = gaslimit,
             });
             inline for (1..32) |n| {
