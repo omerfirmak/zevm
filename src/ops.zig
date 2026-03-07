@@ -199,6 +199,36 @@ pub fn Ops(comptime spec: Spec) type {
             return next(next_ip, gas - spec.constantGas(.BYTE), new_stack_head, frame);
         }
 
+        pub fn shl(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+            const new_stack_head, const args = try frame.stackPop(stack_head, 2, 1);
+            if (args[1] >= 256) {
+                args[0] = 0;
+            } else {
+                args[0] = args[0] << @intCast(args[1]);
+            }
+            return next(next_ip, gas - spec.constantGas(.SHL), new_stack_head, frame);
+        }
+
+        pub fn shr(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+            const new_stack_head, const args = try frame.stackPop(stack_head, 2, 1);
+            if (args[1] >= 256) {
+                args[0] = 0;
+            } else {
+                args[0] = args[0] >> @intCast(args[1]);
+            }
+            return next(next_ip, gas - spec.constantGas(.SHR), new_stack_head, frame);
+        }
+
+        pub fn sar(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+            const new_stack_head, const args = try frame.stackPop(stack_head, 2, 1);
+            if (args[1] >= 256) {
+                args[0] = 0;
+            } else {
+                args[0] = @bitCast(@as(i256, @bitCast(args[0])) >> @intCast(args[1]));
+            }
+            return next(next_ip, gas - spec.constantGas(.SAR), new_stack_head, frame);
+        }
+
         pub fn jumpdest(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             return next(next_ip, gas - spec.constantGas(.JUMPDEST), stack_head, frame);
         }
@@ -371,6 +401,9 @@ pub fn Ops(comptime spec: Spec) type {
                 .XOR = xor,
                 .NOT = not,
                 .BYTE = byte,
+                .SHL = shl,
+                .SHR = shr,
+                .SAR = sar,
                 .JUMPDEST = jumpdest,
                 .JUMP = jump,
                 .JUMPI = jumpi,
