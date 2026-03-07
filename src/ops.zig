@@ -297,6 +297,12 @@ pub fn Ops(comptime spec: Spec) type {
             return next(next_ip, gas - spec.constantGas(.ADDRESS), new_stack_head, frame);
         }
 
+        pub fn balance(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+            const new_stack_head, const args = try frame.stackPop(stack_head, 1, 1);
+            args[0] = frame.state.accounts.read(@truncate(args[0])).balance;
+            return next(next_ip, gas - spec.constantGas(.BALANCE), new_stack_head, frame);
+        }
+
         pub fn origin(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head = try frame.stackPush(stack_head, frame.context.from);
             return next(next_ip, gas - spec.constantGas(.ORIGIN), new_stack_head, frame);
@@ -431,6 +437,7 @@ pub fn Ops(comptime spec: Spec) type {
                 .JUMPI = jumpi,
                 .GAS = opGas,
                 .ADDRESS = address,
+                .BALANCE = balance,
                 .ORIGIN = origin,
                 .CALLER = caller,
                 .CALLVALUE = callvalue,

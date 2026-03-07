@@ -22,7 +22,12 @@ const StorageMap = std.HashMapUnmanaged(StorageLookup, u256, struct {
     }
 }, 80);
 
-pub const AccountStorage = JournaledStorage(u160, state.Account, AccountMap, .{});
+pub const AccountStorage = JournaledStorage(u160, state.Account, AccountMap, .{
+    .nonce = 0,
+    .balance = 0,
+    .code_hash = state.empty_code_hash,
+    .storage_hash = state.empty_root_hash,
+});
 
 // Backing storage for the account state
 const AccountMap = std.HashMapUnmanaged(u160, state.Account, struct {
