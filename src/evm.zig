@@ -30,12 +30,24 @@ pub const Frame = struct {
 
     context: *const Context,
     state: *State,
-    value: u256,
-    gas: i32,
     bytecode: Bytecode,
+
+    // call context
+    caller: u160,
+    target: u160,
+    calldata: []const u8,
+    value: u256,
+    depth: usize,
+
+    // vm state
+    gas: i32,
     stack: [MaxStackSize]u256 align(@sizeOf(u256)),
     memory: Memory,
-    calldata: []const u8,
+
+    pub fn enter(self: *Self) !void {
+        const entry_op: ops.Fn = @ptrCast(self.bytecode.threaded_code[0]);
+        return entry_op(self.bytecode.threaded_code[1..].ptr, self.gas, 0, self);
+    }
 
     pub fn safeSliceCalldata(self: *Self, index: u256, size: u64) []const u8 {
         if (index >= self.calldata.len) {
@@ -89,7 +101,7 @@ pub const EVM = struct {
         };
     }
 
-    pub fn run(self: *Self, state: *State, target: Bytecode, initial_gas: i32, calldata: []u8, value: u256) !void {
+    pub fn call(self: *Self, state: *State, caller: u160, target: u160, code: Bytecode, initial_gas: i32, calldata: []u8, value: u256, depth: usize) !void {
         var frame = try self.gpa.create(Frame);
         defer self.gpa.destroy(frame);
         const memory = try Memory.init(self.gpa);
@@ -98,15 +110,19 @@ pub const EVM = struct {
         frame.* = Frame{
             .context = self.context,
             .state = state,
+            .bytecode = code,
+
+            .caller = caller,
+            .target = target,
+            .calldata = calldata,
             .value = value,
+
             .gas = initial_gas,
-            .bytecode = target,
             .stack = undefined,
             .memory = memory,
-            .calldata = calldata,
+            .depth = depth + 1,
         };
 
-        const entry_op: ops.Fn = @ptrCast(frame.bytecode.threaded_code[0]);
-        return entry_op(target.threaded_code[1..].ptr, frame.gas, 0, frame);
+        return frame.enter();
     }
 };

@@ -25,5 +25,5 @@ pub fn main() !void {
     const gas_limit = 100_000_000;
     var state = try State.init(allocator);
     defer state.deinit(allocator);
-    try std.testing.expectError(evm.Errors.OutOfGas, vm.run(&state, bytecode, gas_limit, &[_]u8{}, 0));
+    try std.testing.expectError(evm.Errors.OutOfGas, vm.call(&state, 0, 0, bytecode, gas_limit, &[_]u8{}, 0, 0));
 }
