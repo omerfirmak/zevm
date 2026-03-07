@@ -23,6 +23,9 @@ pub const Context = struct {
     time: u64,
     random: u256,
     gas_limit: u64,
+
+    // Tx level context
+    from: u160,
 };
 
 pub const Frame = struct {

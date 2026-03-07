@@ -292,6 +292,21 @@ pub fn Ops(comptime spec: Spec) type {
             }.swap;
         }
 
+        pub fn address(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+            const new_stack_head = try frame.stackPush(stack_head, frame.target);
+            return next(next_ip, gas - spec.constantGas(.ADDRESS), new_stack_head, frame);
+        }
+
+        pub fn origin(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+            const new_stack_head = try frame.stackPush(stack_head, frame.context.from);
+            return next(next_ip, gas - spec.constantGas(.ORIGIN), new_stack_head, frame);
+        }
+
+        pub fn caller(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+            const new_stack_head = try frame.stackPush(stack_head, frame.caller);
+            return next(next_ip, gas - spec.constantGas(.CALLER), new_stack_head, frame);
+        }
+
         pub fn callvalue(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head = try frame.stackPush(stack_head, frame.value);
             return next(next_ip, gas - spec.constantGas(.CALLVALUE), new_stack_head, frame);
@@ -415,6 +430,9 @@ pub fn Ops(comptime spec: Spec) type {
                 .JUMP = jump,
                 .JUMPI = jumpi,
                 .GAS = opGas,
+                .ADDRESS = address,
+                .ORIGIN = origin,
+                .CALLER = caller,
                 .CALLVALUE = callvalue,
                 .CALLDATALOAD = calldataload,
                 .CALLDATASIZE = calldatasize,
