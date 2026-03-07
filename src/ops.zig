@@ -229,6 +229,12 @@ pub fn Ops(comptime spec: Spec) type {
             return next(next_ip, gas - spec.constantGas(.SAR), new_stack_head, frame);
         }
 
+        pub fn clz(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+            const new_stack_head, const args = try frame.stackPop(stack_head, 1, 1);
+            args[0] = @clz(args[0]);
+            return next(next_ip, gas - spec.constantGas(.CLZ), new_stack_head, frame);
+        }
+
         pub fn jumpdest(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             return next(next_ip, gas - spec.constantGas(.JUMPDEST), stack_head, frame);
         }
@@ -404,6 +410,7 @@ pub fn Ops(comptime spec: Spec) type {
                 .SHL = shl,
                 .SHR = shr,
                 .SAR = sar,
+                .CLZ = clz,
                 .JUMPDEST = jumpdest,
                 .JUMP = jump,
                 .JUMPI = jumpi,
