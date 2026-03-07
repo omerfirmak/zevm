@@ -34,7 +34,7 @@ pub const Frame = struct {
 
     context: *const Context,
     state: *State,
-    bytecode: Bytecode,
+    code: Bytecode,
 
     // call context
     caller: u160,
@@ -49,8 +49,8 @@ pub const Frame = struct {
     memory: Memory,
 
     pub fn enter(self: *Self) !void {
-        const entry_op: ops.Fn = @ptrCast(self.bytecode.threaded_code[0]);
-        return entry_op(self.bytecode.threaded_code[1..].ptr, self.gas, 0, self);
+        const entry_op: ops.Fn = @ptrCast(self.code.threaded_code[0]);
+        return entry_op(self.code.threaded_code[1..].ptr, self.gas, 0, self);
     }
 
     pub fn safeSliceCalldata(self: *Self, index: u256, size: u64) []const u8 {
@@ -114,7 +114,7 @@ pub const EVM = struct {
         frame.* = Frame{
             .context = self.context,
             .state = state,
-            .bytecode = code,
+            .code = code,
 
             .caller = caller,
             .target = target,

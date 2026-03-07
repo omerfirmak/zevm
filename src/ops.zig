@@ -241,7 +241,7 @@ pub fn Ops(comptime spec: Spec) type {
 
         pub fn jump(_: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 1, 0);
-            const dest = frame.bytecode.isValidJumpDest(args[0]) orelse return evm.Errors.InvalidJumpDest;
+            const dest = frame.code.isValidJumpDest(args[0]) orelse return evm.Errors.InvalidJumpDest;
             return next(dest, gas - spec.constantGas(.JUMP), new_stack_head, frame);
         }
 
@@ -251,7 +251,7 @@ pub fn Ops(comptime spec: Spec) type {
                 return next(next_ip, gas - spec.constantGas(.JUMPI), new_stack_head, frame);
             }
 
-            const dest = frame.bytecode.isValidJumpDest(args[1]) orelse return evm.Errors.InvalidJumpDest;
+            const dest = frame.code.isValidJumpDest(args[1]) orelse return evm.Errors.InvalidJumpDest;
             return next(dest, gas - spec.constantGas(.JUMPI), new_stack_head, frame);
         }
 
@@ -264,7 +264,7 @@ pub fn Ops(comptime spec: Spec) type {
             return struct {
                 pub fn push(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
                     const new_stack_head, const slot = try frame.stackReserve(stack_head);
-                    frame.bytecode.readBytesToValue(next_ip, n, slot);
+                    frame.code.readBytesToValue(next_ip, n, slot);
                     return next(next_ip + n, gas - spec.constantGas(@enumFromInt(@intFromEnum(Opcode.PUSH0) + n)), new_stack_head, frame);
                 }
             }.push;
@@ -345,7 +345,7 @@ pub fn Ops(comptime spec: Spec) type {
         }
 
         pub fn codesize(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
-            const new_stack_head = try frame.stackPush(stack_head, frame.bytecode.bytecode.len);
+            const new_stack_head = try frame.stackPush(stack_head, frame.code.bytes.len);
             return next(next_ip, gas - spec.constantGas(.CODESIZE), new_stack_head, frame);
         }
 
@@ -353,7 +353,7 @@ pub fn Ops(comptime spec: Spec) type {
             const new_stack_head, const args = try frame.stackPop(stack_head, 3, 0);
             const available_gas = gas - try frame.memory.growToFit(args[2], args[0], gas);
 
-            const bytecode = frame.bytecode.safeSlice(args[1], @intCast(args[0]));
+            const bytecode = frame.code.safeSlice(args[1], @intCast(args[0]));
             frame.memory.copyAndClearRemaining(@intCast(args[2]), @intCast(args[0]), bytecode);
             return next(next_ip, available_gas - spec.constantGas(.CODECOPY), new_stack_head, frame);
         }
@@ -364,7 +364,7 @@ pub fn Ops(comptime spec: Spec) type {
         }
 
         pub fn pc(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
-            const new_stack_head = try frame.stackPush(stack_head, frame.bytecode.programCounter(next_ip) - 1);
+            const new_stack_head = try frame.stackPush(stack_head, frame.code.programCounter(next_ip) - 1);
             return next(next_ip, gas - spec.constantGas(.PC), new_stack_head, frame);
         }
 
