@@ -19,7 +19,7 @@ pub fn main() !void {
     //const bytecodeRaw: []const u8 = &[_]u8{ 91, 96, 0, 128, 128, 128, 96, 4, 90, 80, 80, 80, 80, 80, 80, 96, 0, 86 };
     const bytecode_raw: []const u8 = &[_]u8{ 96, 1, 96, 1, 91, 128, 145, 1, 96, 4, 86 };
 
-    const jump_table = ops.Ops(spec.Frontier).table();
+    const jump_table = ops.Ops(spec.Osaka).table();
     var bytecode = try Bytecode.init(allocator, bytecode_raw, jump_table);
     defer bytecode.deinit(allocator);
     const gas_limit = 100_000_000;
