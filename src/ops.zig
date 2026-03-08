@@ -407,6 +407,33 @@ pub fn Ops(comptime spec: Spec) type {
             return next(next_ip, gas - spec.constantGas(.GASLIMIT), new_stack_head, frame);
         }
 
+        pub fn mload(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+            const new_stack_head, const args = try frame.stackPop(stack_head, 1, 1);
+            const available_gas = gas - try frame.memory.growToFit(args[0], 32, gas);
+
+            const bytes = frame.memory.slice(@intCast(args[0]), 32);
+            args[0] = std.mem.readInt(u256, bytes[0..32], .big);
+            return next(next_ip, available_gas - spec.constantGas(.MLOAD), new_stack_head, frame);
+        }
+
+        pub fn mstore(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+            const new_stack_head, const args = try frame.stackPop(stack_head, 2, 0);
+            const available_gas = gas - try frame.memory.growToFit(args[0], 32, gas);
+
+            const bytes = frame.memory.slice(@intCast(args[0]), 32);
+            std.mem.writeInt(u256, bytes[0..32], args[1], .big);
+            return next(next_ip, available_gas - spec.constantGas(.MSTORE), new_stack_head, frame);
+        }
+
+        pub fn mstore8(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+            const new_stack_head, const args = try frame.stackPop(stack_head, 2, 0);
+            const available_gas = gas - try frame.memory.growToFit(args[0], 1, gas);
+
+            const bytes = frame.memory.slice(@intCast(args[0]), 1);
+            bytes[0] = @truncate(args[1]);
+            return next(next_ip, available_gas - spec.constantGas(.MSTORE8), new_stack_head, frame);
+        }
+
         // Constructs a jump table for the given spec
         pub fn table() [256]Fn {
             var t = std.enums.directEnumArrayDefault(Opcode, Fn, invalid, 256, .{
@@ -460,6 +487,9 @@ pub fn Ops(comptime spec: Spec) type {
                 .NUMBER = number,
                 .PREVRANDO = random,
                 .GASLIMIT = gaslimit,
+                .MLOAD = mload,
+                .MSTORE = mstore,
+                .MSTORE8 = mstore8,
             });
             inline for (1..32) |n| {
                 t[@intFromEnum(Opcode.PUSH0) + n] = pushN(n);
