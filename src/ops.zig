@@ -446,6 +446,18 @@ pub fn Ops(comptime spec: Spec) type {
             return next(next_ip, gas - spec.constantGas(.SSTORE), new_stack_head, frame);
         }
 
+        pub fn tload(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+            const new_stack_head, const args = try frame.stackPop(stack_head, 1, 1);
+            args[0] = frame.state.transient_storage.read(.{ .address = frame.target, .slot = args[0] });
+            return next(next_ip, gas - spec.constantGas(.TLOAD), new_stack_head, frame);
+        }
+
+        pub fn tstore(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+            const new_stack_head, const args = try frame.stackPop(stack_head, 2, 0);
+            _ = frame.state.transient_storage.write(.{ .address = frame.target, .slot = args[0] }, args[1]);
+            return next(next_ip, gas - spec.constantGas(.TSTORE), new_stack_head, frame);
+        }
+
         // Constructs a jump table for the given spec
         pub fn table() [256]Fn {
             var t = std.enums.directEnumArrayDefault(Opcode, Fn, invalid, 256, .{
@@ -504,6 +516,8 @@ pub fn Ops(comptime spec: Spec) type {
                 .MSTORE8 = mstore8,
                 .SLOAD = sload,
                 .SSTORE = sstore,
+                .TLOAD = tload,
+                .TSTORE = tstore,
             });
             inline for (1..32) |n| {
                 t[@intFromEnum(Opcode.PUSH0) + n] = pushN(n);
