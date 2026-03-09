@@ -337,7 +337,7 @@ pub fn Ops(comptime spec: Spec) type {
 
         pub fn calldatacopy(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 3, 0);
-            const available_gas = gas - try frame.memory.growToFit(args[2], args[0], gas);
+            const available_gas = try frame.memory.growToFit(args[2], args[0], gas);
 
             const calldata = frame.safeSliceCalldata(args[1], @intCast(args[0]));
             frame.memory.copyAndClearRemaining(@intCast(args[2]), @intCast(args[0]), calldata);
@@ -351,7 +351,7 @@ pub fn Ops(comptime spec: Spec) type {
 
         pub fn codecopy(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 3, 0);
-            const available_gas = gas - try frame.memory.growToFit(args[2], args[0], gas);
+            const available_gas = try frame.memory.growToFit(args[2], args[0], gas);
 
             const bytecode = frame.code.safeSlice(args[1], @intCast(args[0]));
             frame.memory.copyAndClearRemaining(@intCast(args[2]), @intCast(args[0]), bytecode);
@@ -370,7 +370,7 @@ pub fn Ops(comptime spec: Spec) type {
 
         pub fn keccak256(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 2, 1);
-            const available_gas = gas - try frame.memory.growToFit(args[1], args[0], gas);
+            const available_gas = try frame.memory.growToFit(args[1], args[0], gas);
 
             const data = frame.memory.slice(@intCast(args[1]), @intCast(args[0]));
             std.crypto.hash.sha3.Keccak256.hash(data, @ptrCast(&args[0]), .{});
@@ -409,7 +409,7 @@ pub fn Ops(comptime spec: Spec) type {
 
         pub fn mload(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 1, 1);
-            const available_gas = gas - try frame.memory.growToFit(args[0], 32, gas);
+            const available_gas = try frame.memory.growToFit(args[0], 32, gas);
 
             const bytes = frame.memory.slice(@intCast(args[0]), 32);
             args[0] = std.mem.readInt(u256, bytes[0..32], .big);
@@ -418,7 +418,7 @@ pub fn Ops(comptime spec: Spec) type {
 
         pub fn mstore(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 2, 0);
-            const available_gas = gas - try frame.memory.growToFit(args[0], 32, gas);
+            const available_gas = try frame.memory.growToFit(args[0], 32, gas);
 
             const bytes = frame.memory.slice(@intCast(args[0]), 32);
             std.mem.writeInt(u256, bytes[0..32], args[1], .big);
@@ -427,7 +427,7 @@ pub fn Ops(comptime spec: Spec) type {
 
         pub fn mstore8(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 2, 0);
-            const available_gas = gas - try frame.memory.growToFit(args[0], 1, gas);
+            const available_gas = try frame.memory.growToFit(args[0], 1, gas);
 
             const bytes = frame.memory.slice(@intCast(args[0]), 1);
             bytes[0] = @truncate(args[1]);
@@ -460,7 +460,7 @@ pub fn Ops(comptime spec: Spec) type {
 
         pub fn mcopy(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 3, 0);
-            const available_gas = gas - try frame.memory.growToFit(@max(args[0], args[1]), args[2], gas);
+            const available_gas = try frame.memory.growToFit(@max(args[0], args[1]), args[2], gas);
 
             const dest = frame.memory.slice(@intCast(args[0]), @intCast(args[2]));
             const src = frame.memory.slice(@intCast(args[1]), @intCast(args[2]));

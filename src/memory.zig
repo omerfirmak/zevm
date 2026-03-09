@@ -23,10 +23,10 @@ pub fn slice(self: *Memory, start: usize, size: usize) []u8 {
 }
 
 // Tries to grow the memory to fit the given region if there is enough gas
-// Returns the amount of gas consumed
+// Returns the remaning gas
 pub fn growToFit(self: *Memory, offset: u256, size: u256, available_gas: i32) !i32 {
     if (size == 0) {
-        return 0;
+        return available_gas;
     }
     if (offset > std.math.maxInt(usize) or size > std.math.maxInt(usize)) {
         return evm.Errors.GasOverflow;
@@ -49,7 +49,7 @@ pub fn growToFit(self: *Memory, offset: u256, size: u256, available_gas: i32) !i
         std.debug.assert(remappedBuf.ptr == self.buf.ptr);
         self.buf = remappedBuf;
     }
-    return cost;
+    return available_gas - cost;
 }
 
 // Copies from source to the memory region given. Clears tail part of the memory region
