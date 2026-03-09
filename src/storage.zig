@@ -17,8 +17,8 @@ const StorageMap = std.HashMapUnmanaged(StorageLookup, u256, struct {
         const addr_limbs: [4]u64 = @bitCast(lookup.address);
         const slot_limbs: [4]u64 = @bitCast(lookup.slot);
 
-        return (addr_limbs[0] ^ addr_limbs[1] ^ addr_limbs[2] ^ addr_limbs[3]) +
-            slot_limbs[0] + slot_limbs[1] + slot_limbs[2] + slot_limbs[3];
+        return (addr_limbs[0] ^ addr_limbs[1] ^ addr_limbs[2] ^ addr_limbs[3]) +%
+            slot_limbs[0] +% slot_limbs[1] +% slot_limbs[2] +% slot_limbs[3];
     }
 }, 80);
 
