@@ -458,6 +458,17 @@ pub fn Ops(comptime spec: Spec) type {
             return next(next_ip, gas - spec.constantGas(.TSTORE), new_stack_head, frame);
         }
 
+        pub fn mcopy(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+            const new_stack_head, const args = try frame.stackPop(stack_head, 3, 0);
+            const available_gas = gas - try frame.memory.growToFit(@max(args[0], args[1]), args[2], gas);
+
+            const dest = frame.memory.slice(@intCast(args[0]), @intCast(args[2]));
+            const src = frame.memory.slice(@intCast(args[1]), @intCast(args[2]));
+
+            @memmove(dest, src);
+            return next(next_ip, available_gas - spec.constantGas(.MCOPY), new_stack_head, frame);
+        }
+
         // Constructs a jump table for the given spec
         pub fn table() [256]Fn {
             var t = std.enums.directEnumArrayDefault(Opcode, Fn, invalid, 256, .{
@@ -518,6 +529,7 @@ pub fn Ops(comptime spec: Spec) type {
                 .SSTORE = sstore,
                 .TLOAD = tload,
                 .TSTORE = tstore,
+                .MCOPY = mcopy,
             });
             inline for (1..32) |n| {
                 t[@intFromEnum(Opcode.PUSH0) + n] = pushN(n);
