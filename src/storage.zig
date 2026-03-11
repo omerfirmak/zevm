@@ -1,5 +1,6 @@
 const std = @import("std");
 const state = @import("state.zig");
+const Bytecode = @import("bytecode.zig").Bytecode;
 
 // Key type for the global contract state storage
 pub const StorageLookup = struct {
@@ -94,7 +95,20 @@ pub fn JournaledStorage(comptime Key: type, comptime Value: type, comptime Map: 
     };
 }
 
+// Backing storage for the contract code
+pub const CodeStorage = std.HashMapUnmanaged(u256, Bytecode, struct {
+    pub fn eql(_: @This(), a: u256, b: u256) bool {
+        return a == b;
+    }
+
+    pub fn hash(_: @This(), codehash: u256) u64 {
+        const hash_limbs: [4]u64 = @bitCast(codehash);
+        return (hash_limbs[0] ^ hash_limbs[1] ^ hash_limbs[2] ^ hash_limbs[3]);
+    }
+}, 80);
+
 test "semcheck" {
     std.testing.refAllDecls(AccountStorage);
     std.testing.refAllDecls(ContractStorage);
+    std.testing.refAllDecls(CodeStorage);
 }

@@ -17,12 +17,16 @@ pub const State = struct {
     accounts: storage.AccountStorage,
     contract_state: storage.ContractStorage,
     transient_storage: storage.ContractStorage,
+    code_storage: storage.CodeStorage,
 
     pub fn init(gpa: std.mem.Allocator) !Self {
+        var code_storage = storage.CodeStorage.empty;
+        try code_storage.ensureTotalCapacity(gpa, 1_000);
         return Self{
             .accounts = try storage.AccountStorage.init(gpa, 10_000, 10_000),
             .contract_state = try storage.ContractStorage.init(gpa, 10_000, 10_000),
             .transient_storage = try storage.ContractStorage.init(gpa, 10_000, 10_000),
+            .code_storage = code_storage,
         };
     }
 
