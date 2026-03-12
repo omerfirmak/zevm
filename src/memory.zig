@@ -45,9 +45,14 @@ pub fn growToFit(self: *Memory, offset: u256, size: u256, available_gas: i32) !i
     }
 
     if (self.buf.len < mem_size) {
-        const remappedBuf = self.gpa.remap(self.buf, mem_size).?;
-        std.debug.assert(remappedBuf.ptr == self.buf.ptr);
-        self.buf = remappedBuf;
+        if (self.buf.len == 0) {
+            self.buf = try self.gpa.alloc(u8, mem_size);
+        } else {
+            if (!self.gpa.resize(self.buf, mem_size)) {
+                return std.mem.Allocator.Error.OutOfMemory;
+            }
+            self.buf.len = mem_size;
+        }
     }
     return available_gas - cost;
 }

@@ -14,7 +14,7 @@ pub const Errors = error{
     StackUnderflow,
     InvalidJumpDest,
     GasOverflow,
-};
+} || std.mem.Allocator.Error;
 
 pub const Context = struct {
     // Block level context
