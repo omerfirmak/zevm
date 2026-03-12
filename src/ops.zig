@@ -421,10 +421,10 @@ pub fn Ops(comptime spec: Spec) type {
 
         pub fn mstore(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 2, 0);
-            const available_gas = try frame.memory.growToFit(args[0], 32, gas);
+            const available_gas = try frame.memory.growToFit(args[1], 32, gas);
 
-            const bytes = frame.memory.slice(@intCast(args[0]), 32);
-            std.mem.writeInt(u256, bytes[0..32], args[1], .big);
+            const bytes = frame.memory.slice(@intCast(args[1]), 32);
+            std.mem.writeInt(u256, bytes[0..32], args[0], .big);
             return next(next_ip, available_gas - spec.constantGas(.MSTORE), new_stack_head, frame);
         }
 
