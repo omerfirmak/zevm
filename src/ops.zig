@@ -194,7 +194,7 @@ pub fn Ops(comptime spec: Spec) type {
                 args[0] = 0;
             } else {
                 const index: u5 = @intCast(args[1]);
-                args[0] = @as(u8, @intCast(args[0] >> (index * 8)));
+                args[0] = @as(u8, @truncate(args[0] >> (index * 8)));
             }
             return next(next_ip, gas - spec.constantGas(.BYTE), new_stack_head, frame);
         }
