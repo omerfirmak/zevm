@@ -76,7 +76,7 @@ pub fn Ops(comptime spec: Spec) type {
 
         pub fn sdiv(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 2, 1);
-            args[0] = @bitCast(@divTrunc(@as(i256, @bitCast(args[1])), @as(i256, @bitCast(args[0]))));
+            args[0] = if (args[0] == 0) 0 else @bitCast(@divTrunc(@as(i256, @bitCast(args[1])), @as(i256, @bitCast(args[0]))));
             return next(next_ip, gas - spec.constantGas(.SDIV), new_stack_head, frame);
         }
 
