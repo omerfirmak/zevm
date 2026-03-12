@@ -442,7 +442,7 @@ pub fn Ops(comptime spec: Spec) type {
 
         pub fn sstore(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 2, 0);
-            _ = frame.state.contract_state.write(.{ .address = frame.target, .slot = args[0] }, args[1]);
+            _ = frame.state.contract_state.write(.{ .address = frame.target, .slot = args[1] }, args[0]);
             return next(next_ip, gas - spec.constantGas(.SSTORE), new_stack_head, frame);
         }
 
@@ -454,7 +454,7 @@ pub fn Ops(comptime spec: Spec) type {
 
         pub fn tstore(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 2, 0);
-            _ = frame.state.transient_storage.write(.{ .address = frame.target, .slot = args[0] }, args[1]);
+            _ = frame.state.transient_storage.write(.{ .address = frame.target, .slot = args[1] }, args[0]);
             return next(next_ip, gas - spec.constantGas(.TSTORE), new_stack_head, frame);
         }
 
