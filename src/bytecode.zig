@@ -17,8 +17,8 @@ threaded_code: []?ops.FnOpaquePtr,
 // Creates a new Bytecode instance by first building a threaded code from the given
 // raw bytecode and jumptable
 pub fn init(gpa: std.mem.Allocator, bytes: []const u8, jump_table: [256]ops.Fn) !Bytecode {
-    var threaded_code = try gpa.alloc(?ops.Fn, bytes.len + 1);
-    threaded_code[threaded_code.len - 1] = jump_table[@intFromEnum(Opcode.STOP)];
+    var threaded_code = try gpa.alloc(?ops.Fn, bytes.len + 32);
+    @memset(threaded_code[bytes.len..], jump_table[@intFromEnum(Opcode.STOP)]);
     var pc: usize = 0;
     while (pc < bytes.len) : (pc += 1) {
         const opcode = bytes[pc];
