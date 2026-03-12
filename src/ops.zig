@@ -463,12 +463,12 @@ pub fn Ops(comptime spec: Spec) type {
 
         pub fn mcopy(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 3, 0);
-            const available_gas = try frame.memory.growToFit(@max(args[0], args[1]), args[2], gas);
-
-            const dest = frame.memory.slice(@intCast(args[0]), @intCast(args[2]));
-            const src = frame.memory.slice(@intCast(args[1]), @intCast(args[2]));
-
-            @memmove(dest, src);
+            const available_gas = try frame.memory.growToFit(@max(args[2], args[1]), args[0], gas);
+            if (args[0] > 0) {
+                const dest = frame.memory.slice(@intCast(args[2]), @intCast(args[0]));
+                const src = frame.memory.slice(@intCast(args[1]), @intCast(args[0]));
+                @memmove(dest, src);
+            }
             return next(next_ip, available_gas - spec.constantGas(.MCOPY), new_stack_head, frame);
         }
 
