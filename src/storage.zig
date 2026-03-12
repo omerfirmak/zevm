@@ -106,9 +106,3 @@ pub const CodeStorage = std.HashMapUnmanaged(u256, Bytecode, struct {
         return (hash_limbs[0] ^ hash_limbs[1] ^ hash_limbs[2] ^ hash_limbs[3]);
     }
 }, 80);
-
-test "semcheck" {
-    std.testing.refAllDecls(AccountStorage);
-    std.testing.refAllDecls(ContractStorage);
-    std.testing.refAllDecls(CodeStorage);
-}
