@@ -18,6 +18,10 @@ pub fn deinit(self: *Memory) void {
 }
 
 pub fn slice(self: *Memory, start: usize, size: usize) []u8 {
+    if (size == 0) {
+        return &[_]u8{};
+    }
+
     const slice_size = @min(self.buf.len - start, size);
     return self.buf[start .. start + slice_size];
 }
