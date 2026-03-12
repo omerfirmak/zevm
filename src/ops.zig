@@ -376,7 +376,9 @@ pub fn Ops(comptime spec: Spec) type {
             const available_gas = try frame.memory.growToFit(args[1], args[0], gas);
 
             const data = frame.memory.slice(@truncate(args[1]), @intCast(args[0]));
-            std.crypto.hash.sha3.Keccak256.hash(data, @ptrCast(&args[0]), .{});
+            var hash: [32]u8 = undefined;
+            std.crypto.hash.sha3.Keccak256.hash(data, &hash, .{});
+            args[0] = std.mem.readInt(u256, &hash, .big);
             return next(next_ip, available_gas - spec.constantGas(.KECCAK256), new_stack_head, frame);
         }
 
