@@ -68,19 +68,8 @@ pub fn readBytesToValue(self: *Bytecode, ip: InstructionPointer, comptime size: 
 
     const start = ip - self.threaded_code.ptr;
     const end = @min(self.bytes.len, start + size);
-    const read_size = end - start;
 
-    value.* = 0;
-    const buf: *[32]u8 = std.mem.asBytes(value);
-    if (@import("builtin").cpu.arch.endian() == .big) {
-        for (32 - read_size..32) |index| {
-            buf[index] = self.bytes[start + index];
-        }
-    } else {
-        for (0..read_size) |index| {
-            buf[index] = self.bytes[end - index - 1];
-        }
-    }
+    ops.readBeSliceToU256(self.bytes[start..end], size, value);
 }
 
 pub fn safeSlice(self: *Bytecode, index: u256, size: u64) []const u8 {

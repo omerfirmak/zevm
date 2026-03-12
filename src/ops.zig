@@ -326,7 +326,9 @@ pub fn Ops(comptime spec: Spec) type {
             } else {
                 const index: usize = @intCast(args[0]);
                 const end = @min(frame.calldata.len, index + 32);
-                args[0] = std.mem.readVarInt(u256, frame.calldata[index..end], .big);
+                const bytes = frame.calldata[index..end];
+
+                readBeSliceToU256(bytes, 32, &args[0]);
             }
             return next(next_ip, gas - spec.constantGas(.CALLDATALOAD), new_stack_head, frame);
         }
@@ -545,4 +547,17 @@ pub fn Ops(comptime spec: Spec) type {
             return t;
         }
     };
+}
+
+/// Reads `bytes` as the leading bytes of a big-endian value of `total_size` bytes (1–32),
+/// zero-padding the trailing bytes, and writes the result into `value`.
+pub fn readBeSliceToU256(bytes: []const u8, total_size: usize, value: *u256) void {
+    std.debug.assert(bytes.len <= total_size and total_size <= 32);
+    value.* = 0;
+    const buf: *[32]u8 = std.mem.asBytes(value);
+    if (@import("builtin").cpu.arch.endian() == .big) {
+        for (0..bytes.len) |i| buf[32 - total_size + i] = bytes[i];
+    } else {
+        for (0..bytes.len) |i| buf[total_size - 1 - i] = bytes[i];
+    }
 }
