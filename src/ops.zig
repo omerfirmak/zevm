@@ -536,7 +536,7 @@ pub fn Ops(comptime spec: Spec) type {
                 .TSTORE = tstore,
                 .MCOPY = mcopy,
             });
-            inline for (1..33) |n| {
+            inline for (0..33) |n| {
                 t[@intFromEnum(Opcode.PUSH0) + n] = pushN(n);
             }
             inline for (1..16) |n| {
