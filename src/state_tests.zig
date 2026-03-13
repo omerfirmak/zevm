@@ -78,6 +78,7 @@ pub const PostEntry = struct {
     txbytes: HexBytes,
     indexes: PostIndexes,
     state: std.json.ArrayHashMap(AccountState),
+    expectException: ?[]const u8 = null,
 };
 
 pub const BlobScheduleEntry = struct {
@@ -174,6 +175,33 @@ fn runStateTestFile(allocator: std.mem.Allocator, dir: std.fs.Dir, path: []const
     if (any_failed) return error.StateTestFailed;
 }
 
+fn mapException(name: []const u8) ?anyerror {
+    const map = .{
+        .{ "TransactionException.INSUFFICIENT_ACCOUNT_FUNDS", evm.Errors.NotEnoughFunds },
+        .{ "TransactionException.GASLIMIT_PRICE_PRODUCT_OVERFLOW", evm.Errors.GasOverflow },
+        .{ "TransactionException.GAS_ALLOWANCE_EXCEEDED", evm.Errors.GasOverflow },
+        .{ "TransactionException.GAS_LIMIT_EXCEEDS_MAXIMUM", evm.Errors.GasOverflow },
+        .{ "TransactionException.INTRINSIC_GAS_TOO_LOW", evm.Errors.OutOfGas },
+        .{ "TransactionException.INTRINSIC_GAS_BELOW_FLOOR_GAS_COST", evm.Errors.OutOfGas },
+        .{ "TransactionException.NONCE_IS_MAX", evm.Errors.NonceMax },
+    };
+    inline for (map) |entry| {
+        if (std.mem.eql(u8, name, entry[0])) return entry[1];
+    }
+    return null;
+}
+
+// Returns true if `err` satisfies any exception in the `|`-separated list.
+fn exceptionMatches(err: anyerror, expected: []const u8) bool {
+    var it = std.mem.splitScalar(u8, expected, '|');
+    while (it.next()) |ex| {
+        if (mapException(ex)) |mapped| {
+            if (err == mapped) return true;
+        }
+    }
+    return false;
+}
+
 fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []const u8) !void {
     var fba = std.heap.FixedBufferAllocator.init(try gpa.alloc(u8, 256_000_000));
     defer gpa.free(fba.buffer);
@@ -226,17 +254,24 @@ fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []con
         const value = tx.value[post_entry.indexes.value].value;
         const calldata = tx.data[post_entry.indexes.data].value;
 
-        if (tx.to) |to| {
-            try vm.process(.{
+        const tx_err: ?anyerror = if (tx.to) |to|
+            if (vm.process(.{
                 .caller = tx.sender.value,
                 .nonce = tx.nonce.value,
                 .target = to.value,
                 .gas_limit = gas_limit,
                 .calldata = calldata,
                 .value = value,
-            }, &state);
-        } else {
-            return error.ContractCreationNotImplementedYet;
+            }, &state)) |_| null else |err| err
+        else
+            error.ContractCreationNotImplementedYet;
+
+        if (post_entry.expectException) |expected| {
+            const actual = tx_err orelse return error.ExpectedExceptionButSucceeded;
+            if (!exceptionMatches(actual, expected)) return actual;
+            continue;
+        } else if (tx_err) |err| {
+            return err;
         }
 
         // Verify post state
