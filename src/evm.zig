@@ -5,7 +5,8 @@ const Bytecode = @import("bytecode.zig").Bytecode;
 const Memory = @import("memory.zig").Memory;
 const State = @import("state.zig").State;
 
-const MaxStackSize = 1024;
+const max_stack_size = 1024;
+const empty_code_hash = @import("state.zig").empty_code_hash;
 
 pub const Errors = error{
     OutOfGas,
@@ -14,6 +15,10 @@ pub const Errors = error{
     StackUnderflow,
     InvalidJumpDest,
     GasOverflow,
+    NonceTooLow,
+    NonceTooHigh,
+    NonceMax,
+    NotEnoughFunds,
 } || std.mem.Allocator.Error;
 
 pub const Context = struct {
@@ -45,7 +50,7 @@ pub const Frame = struct {
 
     // vm state
     gas: i32,
-    stack: [MaxStackSize]u256 align(@sizeOf(u256)),
+    stack: [max_stack_size]u256 align(@sizeOf(u256)),
     memory: Memory,
 
     pub fn enter(self: *Self) !void {
@@ -72,7 +77,7 @@ pub const Frame = struct {
     // Reserves the slot on stack and returns a pointer to it.
     // Errors out if the stack is full
     pub fn stackReserve(self: *Self, head: u16) !struct { u16, *u256 } {
-        if (head == MaxStackSize) {
+        if (head == max_stack_size) {
             @branchHint(.cold);
             return Errors.StackOverflow;
         }
@@ -92,6 +97,15 @@ pub const Frame = struct {
     }
 };
 
+pub const Message = struct {
+    caller: u160,
+    nonce: u64,
+    target: ?u160,
+    gas_limit: u64,
+    calldata: []u8,
+    value: u256,
+};
+
 pub const EVM = struct {
     const Self = @This();
 
@@ -105,7 +119,58 @@ pub const EVM = struct {
         };
     }
 
-    pub fn call(self: *Self, state: *State, caller: u160, target: u160, code: Bytecode, initial_gas: i32, calldata: []u8, value: u256, depth: usize) !void {
+    pub fn process(self: *Self, msg: Message, state: *State) !void {
+        var caller_account = state.accounts.read(msg.caller);
+        if (caller_account.nonce < msg.nonce) {
+            return Errors.NonceTooLow;
+        } else if (caller_account.nonce > msg.nonce) {
+            return Errors.NonceTooHigh;
+        } else if (msg.nonce == std.math.maxInt(u64)) {
+            return Errors.NonceMax;
+        }
+
+        const gas_cost = std.math.mul(u256, @intCast(msg.gas_limit), self.context.gas_price) catch return Errors.NotEnoughFunds;
+        var msg_cost = std.math.add(u256, gas_cost, msg.value) catch return Errors.NotEnoughFunds;
+        if (caller_account.balance < msg_cost) {
+            return Errors.NotEnoughFunds;
+        }
+        caller_account.nonce = msg.nonce + 1;
+        caller_account.balance -= msg_cost;
+        _ = state.accounts.write(msg.caller, caller_account);
+        defer {
+            var coinbase_account = state.accounts.read(self.context.coinbase);
+            coinbase_account.balance += msg_cost;
+            _ = state.accounts.write(self.context.coinbase, coinbase_account);
+        }
+
+        // todo: contract creation
+        const target = msg.target.?;
+        var target_account = state.accounts.read(target);
+        target_account.balance += msg.value;
+        _ = state.accounts.write(target, target_account);
+        if (target_account.code_hash != empty_code_hash) {
+            const code = state.code_storage.get(target_account.code_hash).?;
+            const remaining_gas = try self.call(
+                state,
+                msg.caller,
+                target,
+                code,
+                @intCast(msg.gas_limit),
+                msg.calldata,
+                msg.value,
+                0,
+            );
+
+            var post_account = state.accounts.read(msg.caller);
+            const refund = remaining_gas * self.context.gas_price;
+            post_account.balance += refund;
+            msg_cost -= refund;
+            _ = state.accounts.write(msg.caller, post_account);
+        }
+        return;
+    }
+
+    pub fn call(self: *Self, state: *State, caller: u160, target: u160, code: Bytecode, initial_gas: i32, calldata: []u8, value: u256, depth: usize) !u64 {
         var frame = try self.gpa.create(Frame);
         defer self.gpa.destroy(frame);
         const memory = try Memory.init(self.gpa);
@@ -127,6 +192,7 @@ pub const EVM = struct {
             .depth = depth + 1,
         };
 
-        return frame.enter();
+        try frame.enter();
+        return @intCast(frame.gas);
     }
 };

@@ -227,16 +227,14 @@ fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []con
         const calldata = tx.data[post_entry.indexes.data].value;
 
         if (tx.to) |to| {
-            const target = to.value;
-            const target_acct = state.accounts.read(target);
-
-            var empty_code = try Bytecode.init(allocator, &.{}, jump_table);
-            defer empty_code.deinit(allocator);
-            const code = state.code_storage.get(target_acct.code_hash) orelse empty_code;
-
-            vm.call(&state, tx.sender.value, target, code, @intCast(gas_limit), calldata, value, 0) catch |err| {
-                return err;
-            };
+            try vm.process(.{
+                .caller = tx.sender.value,
+                .nonce = tx.nonce.value,
+                .target = to.value,
+                .gas_limit = gas_limit,
+                .calldata = calldata,
+                .value = value,
+            }, &state);
         } else {
             return error.ContractCreationNotImplementedYet;
         }
