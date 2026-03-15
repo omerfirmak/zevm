@@ -77,6 +77,13 @@ pub fn JournaledStorage(comptime Key: type, comptime Value: type, comptime Map: 
             return old_value;
         }
 
+        pub fn update(self: *Self, key: Key) *Value {
+            const entry = self.dirties.getOrPutAssumeCapacity(key);
+            if (!entry.found_existing) entry.value_ptr.* = empty_value;
+            self.journal.appendAssumeCapacity(.{ .key = key, .old_value = entry.value_ptr.* });
+            return entry.value_ptr;
+        }
+
         pub fn snapshot(self: *Self) usize {
             return self.journal.items.len;
         }

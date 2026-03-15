@@ -120,7 +120,7 @@ pub const EVM = struct {
     }
 
     pub fn process(self: *Self, msg: Message, state: *State) !void {
-        var caller_account = state.accounts.read(msg.caller);
+        var caller_account = state.accounts.update(msg.caller);
         if (caller_account.nonce < msg.nonce) {
             return Errors.NonceTooLow;
         } else if (caller_account.nonce > msg.nonce) {
@@ -136,18 +136,14 @@ pub const EVM = struct {
         }
         caller_account.nonce = msg.nonce + 1;
         caller_account.balance -= msg_cost;
-        _ = state.accounts.write(msg.caller, caller_account);
         defer {
-            var coinbase_account = state.accounts.read(self.context.coinbase);
-            coinbase_account.balance += msg_cost;
-            _ = state.accounts.write(self.context.coinbase, coinbase_account);
+            state.accounts.update(self.context.coinbase).balance += msg_cost;
         }
 
         // todo: contract creation
         const target = msg.target.?;
-        var target_account = state.accounts.read(target);
+        var target_account = state.accounts.update(target);
         target_account.balance += msg.value;
-        _ = state.accounts.write(target, target_account);
         if (target_account.code_hash != empty_code_hash) {
             const code = state.code_storage.get(target_account.code_hash).?;
             const remaining_gas = try self.call(
@@ -161,11 +157,9 @@ pub const EVM = struct {
                 0,
             );
 
-            var post_account = state.accounts.read(msg.caller);
             const refund = remaining_gas * self.context.gas_price;
-            post_account.balance += refund;
+            state.accounts.update(msg.caller).balance += refund;
             msg_cost -= refund;
-            _ = state.accounts.write(msg.caller, post_account);
         }
         return;
     }
