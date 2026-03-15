@@ -203,7 +203,7 @@ fn exceptionMatches(err: anyerror, expected: []const u8) bool {
 }
 
 fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []const u8) !void {
-    var fba = std.heap.FixedBufferAllocator.init(try gpa.alloc(u8, 256_000_000));
+    var fba = std.heap.FixedBufferAllocator.init(try gpa.alloc(u8, 1_024_000_000));
     defer gpa.free(fba.buffer);
     const allocator = fba.allocator();
     const tx = test_case.transaction;

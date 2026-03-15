@@ -25,7 +25,7 @@ pub const State = struct {
         return Self{
             .accounts = try storage.AccountStorage.init(gpa, 10_000, 10_000),
             .contract_state = try storage.ContractStorage.init(gpa, 10_000, 10_000),
-            .transient_storage = try storage.ContractStorage.init(gpa, 10_000, 10_000),
+            .transient_storage = try storage.ContractStorage.init(gpa, 500_000, 500_000),
             .code_storage = code_storage,
         };
     }
