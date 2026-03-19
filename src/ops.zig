@@ -530,6 +530,21 @@ pub fn Ops(comptime spec: Spec) type {
             return next(next_ip, gas - spec.constantGas(.RETURNDATASIZE), new_stack_head, frame);
         }
 
+        pub fn returndatacopy(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+            const new_stack_head, const args = try frame.stackPop(stack_head, 3, 0);
+            const available_gas = try frame.memory.growToFit(args[2], args[0], gas);
+
+            const end = std.math.add(u256, args[1], args[0]) catch return evm.Errors.ReturnDataOutOfBounds;
+            if (end > frame.evm.return_data_size) {
+                return evm.Errors.ReturnDataOutOfBounds;
+            }
+
+            const dest = frame.memory.slice(@intCast(args[2]), @intCast(args[0]));
+            @memcpy(dest, frame.evm.return_buffer[@intCast(args[1])..@intCast(end)]);
+
+            return next(next_ip, available_gas - spec.constantGas(.RETURNDATACOPY), new_stack_head, frame);
+        }
+
         // Constructs a jump table for the given spec
         pub fn table() [256]Fn {
             var t = std.enums.directEnumArrayDefault(Opcode, Fn, invalid, 256, .{
@@ -594,6 +609,7 @@ pub fn Ops(comptime spec: Spec) type {
                 .CALL = call,
                 .RETURN = @"return",
                 .RETURNDATASIZE = returndatasize,
+                .RETURNDATACOPY = returndatacopy,
             });
             inline for (0..33) |n| {
                 t[@intFromEnum(Opcode.PUSH0) + n] = pushN(n);

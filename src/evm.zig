@@ -19,6 +19,7 @@ pub const Errors = error{
     NonceTooHigh,
     NonceMax,
     NotEnoughFunds,
+    ReturnDataOutOfBounds,
 } || std.mem.Allocator.Error;
 
 pub const Context = struct {
