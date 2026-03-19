@@ -48,7 +48,7 @@ pub const Frame = struct {
     calldata: []const u8,
     value: u256,
     depth: usize,
-    return_buffer: []const u8,
+    return_buffer: []u8,
 
     // vm state
     gas: i32,
@@ -114,10 +114,15 @@ pub const EVM = struct {
     gpa: std.mem.Allocator,
     context: *const Context,
 
+    return_buffer: []u8,
+    return_data_size: usize,
+
     pub fn init(allocator: std.mem.Allocator, context: *const Context) !Self {
         return Self{
             .gpa = allocator,
             .context = context,
+            .return_buffer = try allocator.alloc(u8, 16 * 1024 * 1024),
+            .return_data_size = 0,
         };
     }
 
@@ -183,6 +188,7 @@ pub const EVM = struct {
         const memory = try Memory.init(self.gpa);
         defer frame.memory.deinit();
 
+        self.return_data_size = 0;
         var caller_account = state.accounts.update(caller);
         if (caller_account.balance < value) {
             return Errors.NotEnoughFunds;
