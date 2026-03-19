@@ -1,6 +1,7 @@
 const std = @import("std");
 const evm = @import("evm.zig");
 const mem = @import("memory.zig");
+const state = @import("state.zig");
 const Opcode = @import("opcode.zig").Opcode;
 const Bytecode = @import("bytecode.zig").Bytecode;
 const Spec = @import("spec.zig").Spec;
@@ -474,6 +475,43 @@ pub fn Ops(comptime spec: Spec) type {
             return next(next_ip, available_gas - spec.constantGas(.MCOPY), new_stack_head, frame);
         }
 
+        pub fn call(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+            const new_stack_head, const args = try frame.stackPop(stack_head, 7, 1);
+            var available_gas = try frame.memory.growToFit(args[1], args[0], gas);
+            available_gas = try frame.memory.growToFit(args[3], args[2], gas);
+
+            const forwarded_gas: i32 = @min(args[6], gas - @divFloor(gas, 64));
+            available_gas -= forwarded_gas;
+
+            const target: u160 = @truncate(args[5]);
+            const code_hash = frame.state.accounts.read(target).code_hash;
+            if (code_hash != state.empty_code_hash) {
+                const value = args[4];
+                const calldata = frame.memory.slice(@truncate(args[3]), @intCast(args[2]));
+                const return_buffer = frame.memory.slice(@truncate(args[3]), @intCast(args[2]));
+
+                const call_res = frame.evm.call(
+                    frame.state,
+                    frame.target,
+                    target,
+                    frame.state.code_storage.get(code_hash).?,
+                    forwarded_gas,
+                    calldata,
+                    value,
+                    frame.depth,
+                    return_buffer,
+                );
+
+                if (call_res) |remaining_gas| {
+                    available_gas += @intCast(remaining_gas);
+                    args[0] = 1;
+                } else |_| {
+                    args[0] = 0;
+                }
+            }
+            return next(next_ip, available_gas - spec.constantGas(.CALL), new_stack_head, frame);
+        }
+
         // Constructs a jump table for the given spec
         pub fn table() [256]Fn {
             var t = std.enums.directEnumArrayDefault(Opcode, Fn, invalid, 256, .{
@@ -535,6 +573,7 @@ pub fn Ops(comptime spec: Spec) type {
                 .TLOAD = tload,
                 .TSTORE = tstore,
                 .MCOPY = mcopy,
+                .CALL = call,
             });
             inline for (0..33) |n| {
                 t[@intFromEnum(Opcode.PUSH0) + n] = pushN(n);

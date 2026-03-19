@@ -37,6 +37,7 @@ pub const Context = struct {
 pub const Frame = struct {
     const Self = @This();
 
+    evm: *EVM,
     context: *const Context,
     state: *State,
     code: Bytecode,
@@ -47,6 +48,7 @@ pub const Frame = struct {
     calldata: []const u8,
     value: u256,
     depth: usize,
+    return_buffer: []const u8,
 
     // vm state
     gas: i32,
@@ -129,15 +131,14 @@ pub const EVM = struct {
             return Errors.NonceMax;
         }
 
-        const gas_cost = std.math.mul(u256, @intCast(msg.gas_limit), self.context.gas_price) catch return Errors.NotEnoughFunds;
-        var msg_cost = std.math.add(u256, gas_cost, msg.value) catch return Errors.NotEnoughFunds;
-        if (caller_account.balance < msg_cost) {
+        var gas_cost = std.math.mul(u256, @intCast(msg.gas_limit), self.context.gas_price) catch return Errors.NotEnoughFunds;
+        if (caller_account.balance < gas_cost) {
             return Errors.NotEnoughFunds;
         }
         caller_account.nonce = msg.nonce + 1;
-        caller_account.balance -= msg_cost;
+        caller_account.balance -= gas_cost;
         defer {
-            state.accounts.update(self.context.coinbase).balance += msg_cost;
+            state.accounts.update(self.context.coinbase).balance += gas_cost;
         }
 
         // todo: contract creation
@@ -155,22 +156,41 @@ pub const EVM = struct {
                 msg.calldata,
                 msg.value,
                 0,
+                &[_]u8{},
             );
 
             const refund = remaining_gas * self.context.gas_price;
             state.accounts.update(msg.caller).balance += refund;
-            msg_cost -= refund;
+            gas_cost -= refund;
         }
         return;
     }
 
-    pub fn call(self: *Self, state: *State, caller: u160, target: u160, code: Bytecode, initial_gas: i32, calldata: []u8, value: u256, depth: usize) !u64 {
+    pub fn call(
+        self: *Self,
+        state: *State,
+        caller: u160,
+        target: u160,
+        code: Bytecode,
+        initial_gas: i32,
+        calldata: []u8,
+        value: u256,
+        depth: usize,
+        return_buffer: []u8,
+    ) !u64 {
         var frame = try self.gpa.create(Frame);
         defer self.gpa.destroy(frame);
         const memory = try Memory.init(self.gpa);
         defer frame.memory.deinit();
 
+        var caller_account = state.accounts.update(caller);
+        if (caller_account.balance < value) {
+            return Errors.NotEnoughFunds;
+        }
+        caller_account.balance -= value;
+
         frame.* = Frame{
+            .evm = self,
             .context = self.context,
             .state = state,
             .code = code,
@@ -179,6 +199,7 @@ pub const EVM = struct {
             .target = target,
             .calldata = calldata,
             .value = value,
+            .return_buffer = return_buffer,
 
             .gas = initial_gas,
             .stack = undefined,
