@@ -20,6 +20,7 @@ pub const Errors = error{
     NonceMax,
     NotEnoughFunds,
     ReturnDataOutOfBounds,
+    CallDepthExceeded,
 } || std.mem.Allocator.Error;
 
 pub const Context = struct {
@@ -184,6 +185,7 @@ pub const EVM = struct {
         depth: usize,
         return_buffer: []u8,
     ) !u64 {
+        if (depth >= 1024) return Errors.CallDepthExceeded;
         var frame = try self.gpa.create(Frame);
         defer self.gpa.destroy(frame);
         const memory = try Memory.init(self.gpa);
