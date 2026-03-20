@@ -186,10 +186,6 @@ pub const EVM = struct {
         return_buffer: []u8,
     ) !u64 {
         if (depth >= 1024) return Errors.CallDepthExceeded;
-        var frame = try self.gpa.create(Frame);
-        defer self.gpa.destroy(frame);
-        const memory = try Memory.init(self.gpa);
-        defer frame.memory.deinit();
 
         self.return_data_size = 0;
         var caller_account = state.accounts.update(caller);
@@ -198,6 +194,8 @@ pub const EVM = struct {
         }
         caller_account.balance -= value;
 
+        var frame = try self.gpa.create(Frame);
+        defer self.gpa.destroy(frame);
         frame.* = Frame{
             .evm = self,
             .context = self.context,
@@ -212,9 +210,10 @@ pub const EVM = struct {
 
             .gas = initial_gas,
             .stack = undefined,
-            .memory = memory,
+            .memory = try Memory.init(self.gpa),
             .depth = depth + 1,
         };
+        defer frame.memory.deinit();
 
         try frame.enter();
         return @intCast(frame.gas);
