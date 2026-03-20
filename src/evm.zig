@@ -193,6 +193,7 @@ pub const EVM = struct {
             return Errors.NotEnoughFunds;
         }
         caller_account.balance -= value;
+        state.accounts.update(target).balance += value;
 
         var frame = try self.gpa.create(Frame);
         defer self.gpa.destroy(frame);
