@@ -3,12 +3,16 @@ const evm = @import("evm.zig");
 
 pub const Memory = @This();
 
+const max_mem_size = std.math.sqrt(std.math.maxInt(usize)) * 32;
+
 gpa: std.mem.Allocator,
+costSoFar: usize,
 buf: []u8,
 
 pub fn init(gpa: std.mem.Allocator) !Memory {
     return Memory{
         .gpa = gpa,
+        .costSoFar = 0,
         .buf = try gpa.alloc(u8, 0),
     };
 }
@@ -38,27 +42,30 @@ pub fn growToFit(self: *Memory, offset: u256, size: u256, available_gas: i32) !i
 
     const off: usize = @intCast(offset);
     const sz: usize = @intCast(size);
-    const mem_size, const overflown = @addWithOverflow(off, sz);
-    if (overflown == 1) {
-        return evm.Errors.GasOverflow;
-    }
+    const mem_size = std.math.add(usize, off, sz) catch return evm.Errors.GasOverflow;
+    if (mem_size > max_mem_size) return evm.Errors.GasOverflow;
 
-    const cost = 0; //todo: calculate
-    if (cost > available_gas) {
-        return evm.Errors.OutOfGas;
-    }
+    const mem_words = (mem_size + 31) / 32;
+    const padded_mem_size = mem_words * 32;
+    var cost: usize = 0;
+    if (self.buf.len < padded_mem_size) {
+        cost = mem_words * mem_words / 512 + 3 * mem_words - self.costSoFar;
+        if (cost > available_gas) {
+            return evm.Errors.OutOfGas;
+        }
 
-    if (self.buf.len < mem_size) {
         if (self.buf.len == 0) {
-            self.buf = try self.gpa.alloc(u8, mem_size);
+            self.buf = try self.gpa.alloc(u8, padded_mem_size);
         } else {
-            if (!self.gpa.resize(self.buf, mem_size)) {
+            if (!self.gpa.resize(self.buf, padded_mem_size)) {
                 return std.mem.Allocator.Error.OutOfMemory;
             }
-            self.buf.len = mem_size;
+            self.buf.len = padded_mem_size;
         }
     }
-    return available_gas - cost;
+
+    self.costSoFar += cost;
+    return available_gas - @as(i32, @intCast(cost));
 }
 
 // Copies from source to the memory region given. Clears tail part of the memory region
