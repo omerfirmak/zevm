@@ -516,11 +516,13 @@ pub fn Ops(comptime spec: Spec) type {
             const new_stack_head, const args = try frame.stackPop(stack_head, 2, 0);
             const available_gas = try frame.memory.growToFit(args[1], args[0], gas);
 
-            const source = frame.memory.slice(@intCast(args[1]), @intCast(args[0]));
-            const min_len = @min(frame.return_buffer.len, source.len);
-            @memcpy(frame.return_buffer[0..min_len], source[0..min_len]);
-            @memcpy(frame.evm.return_buffer[0..source.len], source);
-            frame.evm.return_data_size = source.len;
+            if (args[0] > 0) {
+                const source = frame.memory.slice(@intCast(args[1]), @intCast(args[0]));
+                const min_len = @min(frame.return_buffer.len, source.len);
+                @memcpy(frame.return_buffer[0..min_len], source[0..min_len]);
+                @memcpy(frame.evm.return_buffer[0..source.len], source);
+            }
+            frame.evm.return_data_size = @intCast(args[0]);
 
             return next(next_ip, available_gas - spec.constantGas(.RETURN), new_stack_head, frame);
         }
