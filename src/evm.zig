@@ -1,6 +1,7 @@
 const std = @import("std");
 const ops = @import("ops.zig");
 const spec = @import("spec.zig");
+const storage = @import("storage.zig");
 const Bytecode = @import("bytecode.zig").Bytecode;
 const Memory = @import("memory.zig").Memory;
 const State = @import("state.zig").State;
@@ -110,6 +111,11 @@ pub const Message = struct {
     value: u256,
 };
 
+const Snapshot = struct {
+    accounts: usize,
+    slots: usize,
+};
+
 pub const EVM = struct {
     const Self = @This();
 
@@ -119,13 +125,32 @@ pub const EVM = struct {
     return_buffer: []u8,
     return_data_size: usize,
 
+    pre_state: storage.ContractStorage,
+    warm_accounts: storage.AccountsAccessList,
+    warm_slots: storage.SlotsAccessList,
+
     pub fn init(allocator: std.mem.Allocator, context: *const Context) !Self {
         return Self{
             .gpa = allocator,
             .context = context,
             .return_buffer = try allocator.alloc(u8, 16 * 1024 * 1024),
             .return_data_size = 0,
+            .pre_state = try storage.ContractStorage.init(allocator, 10_000, 10_000),
+            .warm_accounts = try storage.AccountsAccessList.init(allocator, 10_000, 10_000),
+            .warm_slots = try storage.SlotsAccessList.init(allocator, 10_000, 10_000),
         };
+    }
+
+    pub fn snapshot(self: *Self) Snapshot {
+        return .{
+            .accounts = self.warm_accounts.snapshot(),
+            .slots = self.warm_slots.snapshot(),
+        };
+    }
+
+    pub fn revert(self: *Self, snapshot_ids: Snapshot) void {
+        self.warm_accounts.revert(snapshot_ids.accounts);
+        self.warm_slots.revert(snapshot_ids.slots);
     }
 
     pub fn process(self: *Self, msg: Message, state: *State) !void {

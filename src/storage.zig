@@ -8,41 +8,47 @@ pub const StorageLookup = struct {
     slot: u256,
 };
 
-// Backing storage for the contract state. Uses a light hashing algorithm for OA
-const StorageMap = std.HashMapUnmanaged(StorageLookup, u256, struct {
-    pub fn eql(_: @This(), a: StorageLookup, b: StorageLookup) bool {
-        return std.meta.eql(a, b);
-    }
+pub fn SlotKeyedMap(comptime T: type) type {
+    return std.HashMapUnmanaged(StorageLookup, T, struct {
+        pub fn eql(_: @This(), a: StorageLookup, b: StorageLookup) bool {
+            return std.meta.eql(a, b);
+        }
 
-    pub fn hash(_: @This(), lookup: StorageLookup) u64 {
-        const addr_limbs: [4]u64 = @bitCast(lookup.address);
-        const slot_limbs: [4]u64 = @bitCast(lookup.slot);
+        pub fn hash(_: @This(), lookup: StorageLookup) u64 {
+            const addr_limbs: [4]u64 = @bitCast(lookup.address);
+            const slot_limbs: [4]u64 = @bitCast(lookup.slot);
 
-        return (addr_limbs[0] ^ addr_limbs[1] ^ addr_limbs[2] ^ addr_limbs[3]) +%
-            slot_limbs[0] +% slot_limbs[1] +% slot_limbs[2] +% slot_limbs[3];
-    }
-}, 80);
+            return (addr_limbs[0] ^ addr_limbs[1] ^ addr_limbs[2] ^ addr_limbs[3]) +%
+                slot_limbs[0] +% slot_limbs[1] +% slot_limbs[2] +% slot_limbs[3];
+        }
+    }, 80);
+}
 
-pub const AccountStorage = JournaledStorage(u160, state.Account, AccountMap, .{
+pub fn AddressKeyedMap(comptime T: type) type {
+    return std.HashMapUnmanaged(u160, T, struct {
+        pub fn eql(_: @This(), a: u160, b: u160) bool {
+            return a == b;
+        }
+
+        pub fn hash(_: @This(), address: u160) u64 {
+            const addr_limbs: [3]u64 = @bitCast(@as(u192, @intCast(address)));
+            return (addr_limbs[0] ^ addr_limbs[1] ^ addr_limbs[2]);
+        }
+    }, 80);
+}
+
+pub const AccountsAccessList = JournaledStorage(u160, void, AddressKeyedMap(void), {});
+
+pub const AccountStorage = JournaledStorage(u160, state.Account, AddressKeyedMap(state.Account), .{
     .nonce = 0,
     .balance = 0,
     .code_hash = state.empty_code_hash,
     .storage_hash = state.empty_root_hash,
 });
 
-// Backing storage for the account state
-const AccountMap = std.HashMapUnmanaged(u160, state.Account, struct {
-    pub fn eql(_: @This(), a: u160, b: u160) bool {
-        return a == b;
-    }
+pub const ContractStorage = JournaledStorage(StorageLookup, u256, SlotKeyedMap(u256), 0);
 
-    pub fn hash(_: @This(), address: u160) u64 {
-        const addr_limbs: [3]u64 = @bitCast(@as(u192, @intCast(address)));
-        return (addr_limbs[0] ^ addr_limbs[1] ^ addr_limbs[2]);
-    }
-}, 80);
-
-pub const ContractStorage = JournaledStorage(StorageLookup, u256, StorageMap, 0);
+pub const SlotsAccessList = JournaledStorage(StorageLookup, void, SlotKeyedMap(void), {});
 
 // In-memory journaled storage
 pub fn JournaledStorage(comptime Key: type, comptime Value: type, comptime Map: type, comptime empty_value: Value) type {
