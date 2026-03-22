@@ -11,6 +11,12 @@ pub const Account = struct {
     code_hash: u256,
 };
 
+pub const Snapshot = struct {
+    accounts: usize,
+    storage: usize,
+    tstorage: usize,
+};
+
 pub const State = struct {
     const Self = @This();
 
@@ -34,5 +40,19 @@ pub const State = struct {
         self.accounts.deinit(gpa);
         self.contract_state.deinit(gpa);
         self.transient_storage.deinit(gpa);
+    }
+
+    pub fn snapshot(self: *Self) Snapshot {
+        return .{
+            .accounts = self.accounts.snapshot(),
+            .storage = self.contract_state.snapshot(),
+            .tstorage = self.transient_storage.snapshot(),
+        };
+    }
+
+    pub fn revert(self: *Self, snapshot_ids: Snapshot) void {
+        self.accounts.revert(snapshot_ids.accounts);
+        self.contract_state.revert(snapshot_ids.storage);
+        self.transient_storage.revert(snapshot_ids.tstorage);
     }
 };
