@@ -232,7 +232,7 @@ pub fn Ops(comptime spec: Spec) type {
             const new_stack_head, const args = try frame.stackPop(stack_head, 2, 1);
             const value = @as(i256, @bitCast(args[0]));
             if (args[1] >= 256) {
-                args[0] = if (value > 0) 0 else std.math.maxInt(u256);
+                args[0] = if (value >= 0) 0 else std.math.maxInt(u256);
             } else {
                 args[0] = @bitCast(value >> @intCast(args[1]));
             }
