@@ -75,3 +75,7 @@ pub fn copyAndClearRemaining(self: *Memory, offset: usize, size: usize, source: 
     @memcpy(destination[0..source.len], source);
     @memset(destination[source.len..], 0);
 }
+
+pub fn toWordSize(size: u256) i32 {
+    return @divFloor((@as(i32, @intCast(size)) + 31), 32);
+}

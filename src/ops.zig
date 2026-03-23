@@ -383,12 +383,12 @@ pub fn Ops(comptime spec: Spec) type {
         pub fn keccak256(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 2, 1);
             const available_gas = try frame.memory.growToFit(args[1], args[0], gas);
-
+            const dynamic_gas = mem.toWordSize(args[0]) * 6;
             const data = frame.memory.slice(@truncate(args[1]), @intCast(args[0]));
             var hash: [32]u8 = undefined;
             std.crypto.hash.sha3.Keccak256.hash(data, &hash, .{});
             args[0] = std.mem.readInt(u256, &hash, .big);
-            return next(next_ip, available_gas - spec.constantGas(.KECCAK256), new_stack_head, frame);
+            return next(next_ip, available_gas - spec.constantGas(.KECCAK256) - dynamic_gas, new_stack_head, frame);
         }
 
         pub fn msize(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
@@ -505,12 +505,13 @@ pub fn Ops(comptime spec: Spec) type {
         pub fn mcopy(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 3, 0);
             const available_gas = try frame.memory.growToFit(@max(args[2], args[1]), args[0], gas);
+            const dynamic_gas = mem.toWordSize(args[0]) * 3;
             if (args[0] > 0) {
                 const dest = frame.memory.slice(@intCast(args[2]), @intCast(args[0]));
                 const src = frame.memory.slice(@intCast(args[1]), @intCast(args[0]));
                 @memmove(dest, src);
             }
-            return next(next_ip, available_gas - spec.constantGas(.MCOPY), new_stack_head, frame);
+            return next(next_ip, available_gas - spec.constantGas(.MCOPY) - dynamic_gas, new_stack_head, frame);
         }
 
         pub fn call(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
