@@ -2,6 +2,7 @@ const std = @import("std");
 const evm = @import("evm.zig");
 const mem = @import("memory.zig");
 const state = @import("state.zig");
+const storage = @import("storage.zig");
 const Opcode = @import("opcode.zig").Opcode;
 const Bytecode = @import("bytecode.zig").Bytecode;
 const Spec = @import("spec.zig").Spec;
@@ -449,14 +450,44 @@ pub fn Ops(comptime spec: Spec) type {
 
         pub fn sload(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 1, 1);
+            const is_warm = frame.evm.access_slot(frame.target, args[0]);
+            const dynamic_gas: i32 = if (is_warm) 2100 else 100;
             args[0] = frame.state.contract_state.read(.{ .address = frame.target, .slot = args[0] });
-            return next(next_ip, gas - spec.constantGas(.SLOAD), new_stack_head, frame);
+            return next(next_ip, gas - spec.constantGas(.SLOAD) - dynamic_gas, new_stack_head, frame);
+        }
+
+        fn gas_sstore(value: u256, current_value: u256, original_value: u256, is_warm: bool) i32 {
+            const base_dynamic_gas: i32 = if (is_warm) 0 else 2100;
+
+            if (value == current_value) {
+                return base_dynamic_gas + 100;
+            } else if (current_value == original_value) {
+                if (original_value == 0) {
+                    return base_dynamic_gas + 20000;
+                } else {
+                    return base_dynamic_gas + 2900;
+                }
+            } else {
+                return base_dynamic_gas + 100;
+            }
         }
 
         pub fn sstore(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 2, 0);
-            _ = frame.state.contract_state.write(.{ .address = frame.target, .slot = args[1] }, args[0]);
-            return next(next_ip, gas - spec.constantGas(.SSTORE), new_stack_head, frame);
+            const lookup: storage.StorageLookup = .{ .address = frame.target, .slot = args[1] };
+            const is_warm = frame.evm.access_slot(frame.target, args[1]);
+            const old_value, _ = frame.state.contract_state.write(lookup, args[0]);
+            const original_value_entry = frame.evm.pre_state.getOrPutAssumeCapacity(lookup);
+            if (!original_value_entry.found_existing) {
+                original_value_entry.value_ptr.* = old_value;
+            }
+            const dynamic_gas: i32 = gas_sstore(
+                args[0],
+                old_value,
+                original_value_entry.value_ptr.*,
+                is_warm,
+            );
+            return next(next_ip, gas - spec.constantGas(.SSTORE) - dynamic_gas, new_stack_head, frame);
         }
 
         pub fn tload(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {

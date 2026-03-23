@@ -74,13 +74,13 @@ pub fn JournaledStorage(comptime Key: type, comptime Value: type, comptime Map: 
             return self.dirties.get(key) orelse empty_value;
         }
 
-        pub fn write(self: *Self, key: Key, value: Value) Value {
+        pub fn write(self: *Self, key: Key, value: Value) struct { Value, bool } {
             const entry = self.dirties.getOrPutAssumeCapacity(key);
             var old_value = empty_value;
             if (entry.found_existing) old_value = entry.value_ptr.*;
             self.journal.appendAssumeCapacity(.{ .key = key, .old_value = old_value });
             entry.value_ptr.* = value;
-            return old_value;
+            return .{ old_value, entry.found_existing };
         }
 
         pub fn update(self: *Self, key: Key) *Value {

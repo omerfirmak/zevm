@@ -125,17 +125,19 @@ pub const EVM = struct {
     return_buffer: []u8,
     return_data_size: usize,
 
-    pre_state: storage.ContractStorage,
+    pre_state: storage.SlotKeyedMap(u256),
     warm_accounts: storage.AccountsAccessList,
     warm_slots: storage.SlotsAccessList,
 
     pub fn init(allocator: std.mem.Allocator, context: *const Context) !Self {
+        var pre_state: storage.SlotKeyedMap(u256) = .empty;
+        try pre_state.ensureTotalCapacity(allocator, 10_000);
         return Self{
             .gpa = allocator,
             .context = context,
             .return_buffer = try allocator.alloc(u8, 16 * 1024 * 1024),
             .return_data_size = 0,
-            .pre_state = try storage.ContractStorage.init(allocator, 10_000, 10_000),
+            .pre_state = pre_state,
             .warm_accounts = try storage.AccountsAccessList.init(allocator, 10_000, 10_000),
             .warm_slots = try storage.SlotsAccessList.init(allocator, 10_000, 10_000),
         };
@@ -250,6 +252,16 @@ pub const EVM = struct {
 
         try frame.enter();
         return @intCast(frame.gas);
+    }
+
+    pub fn access_account(self: *Self, addr: u160) bool {
+        _, const is_warm = self.warm_accounts.write(addr, {});
+        return is_warm;
+    }
+
+    pub fn access_slot(self: *Self, addr: u160, slot: u256) bool {
+        _, const is_warm = self.warm_slots.write(.{ .address = addr, .slot = slot }, {});
+        return is_warm;
     }
 };
 
