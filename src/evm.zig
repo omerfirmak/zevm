@@ -173,6 +173,13 @@ pub const EVM = struct {
             state.accounts.update(self.context.coinbase).balance += gas_cost;
         }
 
+        const intrinsic_gas: u64 = if (msg.target) |_| 21000 else 32000;
+        const calldata_gas = calldata_cost(msg.calldata);
+        if (msg.gas_limit < (intrinsic_gas + calldata_gas)) {
+            return Errors.OutOfGas;
+        }
+        const gas_limit = msg.gas_limit - intrinsic_gas - calldata_gas;
+
         // todo: contract creation
         const target = msg.target.?;
         var target_account = state.accounts.update(target);
@@ -184,7 +191,7 @@ pub const EVM = struct {
                 msg.caller,
                 target,
                 code,
-                @intCast(msg.gas_limit),
+                @intCast(gas_limit),
                 msg.calldata,
                 msg.value,
                 0,
@@ -245,3 +252,8 @@ pub const EVM = struct {
         return @intCast(frame.gas);
     }
 };
+
+fn calldata_cost(calldata: []u8) u64 {
+    const zeros = std.mem.count(u8, calldata, &[_]u8{0});
+    return zeros * 4 + (calldata.len - zeros) * 16;
+}
