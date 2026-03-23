@@ -22,6 +22,7 @@ pub const Errors = error{
     NotEnoughFunds,
     ReturnDataOutOfBounds,
     CallDepthExceeded,
+    FeeTooLow,
 } || std.mem.Allocator.Error;
 
 pub const Context = struct {
@@ -30,6 +31,7 @@ pub const Context = struct {
     coinbase: u160,
     time: u64,
     random: u256,
+    basefee: u256,
     gas_limit: u64,
 
     // Tx level context
@@ -107,6 +109,7 @@ pub const Message = struct {
     nonce: u64,
     target: ?u160,
     gas_limit: u64,
+    gas_price: u256,
     calldata: []u8,
     value: u256,
 };
@@ -156,6 +159,10 @@ pub const EVM = struct {
     }
 
     pub fn process(self: *Self, msg: Message, state: *State) !void {
+        if (msg.gas_price < self.context.basefee) {
+            return Errors.FeeTooLow;
+        }
+
         var caller_account = state.accounts.update(msg.caller);
         if (caller_account.nonce < msg.nonce) {
             return Errors.NonceTooLow;
@@ -165,15 +172,12 @@ pub const EVM = struct {
             return Errors.NonceMax;
         }
 
-        var gas_cost = std.math.mul(u256, @intCast(msg.gas_limit), self.context.gas_price) catch return Errors.NotEnoughFunds;
+        const gas_cost = std.math.mul(u256, @intCast(msg.gas_limit), msg.gas_price) catch return Errors.NotEnoughFunds;
         if (caller_account.balance < gas_cost) {
             return Errors.NotEnoughFunds;
         }
         caller_account.nonce = msg.nonce + 1;
         caller_account.balance -= gas_cost;
-        defer {
-            state.accounts.update(self.context.coinbase).balance += gas_cost;
-        }
 
         const intrinsic_gas: u64 = if (msg.target) |_| 21000 else 32000;
         const calldata_gas = calldata_cost(msg.calldata);
@@ -186,9 +190,10 @@ pub const EVM = struct {
         const target = msg.target.?;
         var target_account = state.accounts.update(target);
         target_account.balance += msg.value;
+        var remaining_gas: u64 = gas_limit;
         if (target_account.code_hash != empty_code_hash) {
             const code = state.code_storage.get(target_account.code_hash).?;
-            const remaining_gas = try self.call(
+            remaining_gas = try self.call(
                 state,
                 msg.caller,
                 target,
@@ -199,12 +204,13 @@ pub const EVM = struct {
                 0,
                 &[_]u8{},
             );
-
-            const refund = remaining_gas * self.context.gas_price;
-            state.accounts.update(msg.caller).balance += refund;
-            gas_cost -= refund;
         }
-        return;
+
+        state.accounts.update(msg.caller).balance += @as(u256, remaining_gas) * msg.gas_price;
+
+        const tip = msg.gas_price - self.context.basefee;
+        const gas_used: u256 = msg.gas_limit - remaining_gas;
+        state.accounts.update(self.context.coinbase).balance += gas_used * tip;
     }
 
     pub fn call(

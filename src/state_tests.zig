@@ -217,6 +217,7 @@ fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []con
         .time = test_case.env.currentTimestamp.value,
         .random = if (test_case.env.currentRandom) |r| r.value else 0,
         .gas_limit = test_case.env.currentGasLimit.value,
+        .basefee = test_case.env.currentBaseFee.?.value,
         .from = tx.sender.value,
         .gas_price = if (tx.gasPrice) |gp| gp.value else 0,
     };
@@ -260,6 +261,7 @@ fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []con
                 .nonce = tx.nonce.value,
                 .target = to.value,
                 .gas_limit = gas_limit,
+                .gas_price = if (tx.gasPrice) |gp| gp.value else 0,
                 .calldata = calldata,
                 .value = value,
             }, &state)) |_| null else |err| err
