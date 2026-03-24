@@ -456,7 +456,7 @@ pub fn Ops(comptime spec: Spec) type {
         pub fn sload(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 1, 1);
             const is_warm = frame.evm.accessSlot(frame.target, args[0]);
-            const dynamic_gas: i32 = if (is_warm) 2100 else 100;
+            const dynamic_gas: i32 = if (is_warm) 100 else 2100;
             args[0] = frame.state.contract_state.read(.{ .address = frame.target, .slot = args[0] });
             return next(next_ip, gas - spec.constantGas(.SLOAD) - dynamic_gas, new_stack_head, frame);
         }
