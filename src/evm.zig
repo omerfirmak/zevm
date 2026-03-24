@@ -24,7 +24,7 @@ pub const Errors = error{
     CallDepthExceeded,
     FeeTooLow,
     Reverted,
-} || std.mem.Allocator.Error;
+};
 
 pub const Context = struct {
     // Block level context
@@ -190,10 +190,9 @@ pub const EVM = struct {
         // todo: contract creation
         const target = msg.target.?;
         var remaining_gas = gas_limit;
-        var err: ?Errors = null;
         const target_code_hash = state.accounts.read(target).code_hash;
         const code = state.code_storage.get(target_code_hash);
-        remaining_gas, err = self.call(
+        remaining_gas, _ = self.call(
             state,
             msg.caller,
             target,
@@ -210,10 +209,6 @@ pub const EVM = struct {
         const tip = msg.gas_price - self.context.basefee;
         const gas_used: u256 = msg.gas_limit - remaining_gas;
         state.accounts.update(self.context.coinbase).balance += gas_used * tip;
-
-        if (err) |e| {
-            return e;
-        }
     }
 
     pub fn call(
@@ -230,6 +225,9 @@ pub const EVM = struct {
     ) struct { u31, ?Errors } {
         if (depth >= 1024) return .{ initial_gas, Errors.CallDepthExceeded };
 
+        const state_snap = state.snapshot();
+        const evm_snap = self.snapshot();
+
         self.return_data_size = 0;
         var caller_account = state.accounts.update(caller);
         if (caller_account.balance < value) {
@@ -242,9 +240,7 @@ pub const EVM = struct {
             return .{ initial_gas, null };
         }
 
-        var frame = self.gpa.create(Frame) catch |err| {
-            return .{ initial_gas, err };
-        };
+        var frame = self.gpa.create(Frame) catch @panic("OutOfMemory");
         defer self.gpa.destroy(frame);
         frame.* = Frame{
             .evm = self,
@@ -260,9 +256,7 @@ pub const EVM = struct {
 
             .gas = initial_gas,
             .stack = undefined,
-            .memory = Memory.init(self.gpa) catch |e| {
-                return .{ initial_gas, e };
-            },
+            .memory = Memory.init(self.gpa),
             .depth = depth + 1,
         };
         defer frame.memory.deinit();
@@ -271,6 +265,8 @@ pub const EVM = struct {
             if (err != Errors.Reverted) {
                 frame.gas = 0;
             }
+            state.revert(state_snap);
+            self.revert(evm_snap);
             return .{ frame.gas, err };
         };
         return .{ frame.gas, null };

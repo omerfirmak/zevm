@@ -558,10 +558,7 @@ pub fn Ops(comptime spec: Spec) type {
                 );
             }
 
-            if (err) |e| {
-                if (e == evm.Errors.OutOfMemory) {
-                    return e;
-                }
+            if (err != null) {
                 args[0] = 0;
             } else {
                 args[0] = 1;

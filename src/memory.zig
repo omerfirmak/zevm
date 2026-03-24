@@ -9,11 +9,11 @@ gpa: std.mem.Allocator,
 costSoFar: usize,
 buf: []u8,
 
-pub fn init(gpa: std.mem.Allocator) !Memory {
+pub fn init(gpa: std.mem.Allocator) Memory {
     return Memory{
         .gpa = gpa,
         .costSoFar = 0,
-        .buf = try gpa.alloc(u8, 0),
+        .buf = &[_]u8{},
     };
 }
 
@@ -56,10 +56,10 @@ pub fn growToFit(self: *Memory, offset: u256, size: u256, available_gas: i32) !i
         }
 
         if (self.buf.len == 0) {
-            self.buf = try self.gpa.alloc(u8, padded_mem_size);
+            self.buf = self.gpa.alloc(u8, padded_mem_size) catch @panic("OutOfMemory");
         } else {
             if (!self.gpa.resize(self.buf, padded_mem_size)) {
-                return std.mem.Allocator.Error.OutOfMemory;
+                @panic("OutOfMemory");
             }
             self.buf.len = padded_mem_size;
         }
