@@ -669,10 +669,10 @@ pub fn Ops(comptime spec: Spec) type {
             inline for (0..33) |n| {
                 t[@intFromEnum(Opcode.PUSH0) + n] = pushN(n);
             }
-            inline for (1..16) |n| {
+            inline for (1..17) |n| {
                 t[@intFromEnum(Opcode.DUP1) + n - 1] = dupN(n);
             }
-            inline for (1..16) |n| {
+            inline for (1..17) |n| {
                 t[@intFromEnum(Opcode.SWAP1) + n - 1] = swapN(n);
             }
 
