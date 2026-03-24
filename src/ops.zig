@@ -593,6 +593,7 @@ pub fn Ops(comptime spec: Spec) type {
         pub fn returndatacopy(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 3, 0);
             const available_gas = try frame.memory.growToFit(args[2], args[0], gas);
+            const dynamic_gas = mem.toWordSize(args[0]) * 3;
 
             const end = std.math.add(u256, args[1], args[0]) catch return evm.Errors.ReturnDataOutOfBounds;
             if (end > frame.evm.return_data_size) {
@@ -602,7 +603,7 @@ pub fn Ops(comptime spec: Spec) type {
             const dest = frame.memory.slice(@intCast(args[2]), @intCast(args[0]));
             @memcpy(dest, frame.evm.return_buffer[@intCast(args[1])..@intCast(end)]);
 
-            return next(next_ip, available_gas - spec.constantGas(.RETURNDATACOPY), new_stack_head, frame);
+            return next(next_ip, available_gas - spec.constantGas(.RETURNDATACOPY) - dynamic_gas, new_stack_head, frame);
         }
 
         // Constructs a jump table for the given spec
