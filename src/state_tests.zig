@@ -153,9 +153,12 @@ fn runStateTestFile(allocator: std.mem.Allocator, dir: std.fs.Dir, path: []const
     const contents = try file.readToEndAlloc(allocator, 128 * 1024 * 1024);
     defer allocator.free(contents);
 
-    const parsed = try std.json.parseFromSlice(StateTestFile, allocator, contents, .{
+    const parsed = std.json.parseFromSlice(StateTestFile, allocator, contents, .{
         .ignore_unknown_fields = true,
-    });
+    }) catch |e| {
+        std.debug.print("failed to parse {s}\n", .{path});
+        return e;
+    };
     defer parsed.deinit();
 
     var any_failed = false;
