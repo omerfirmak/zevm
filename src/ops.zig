@@ -517,7 +517,7 @@ pub fn Ops(comptime spec: Spec) type {
         pub fn call(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 7, 1);
             var available_gas = try frame.memory.growToFit(args[1], args[0], gas);
-            available_gas = try frame.memory.growToFit(args[3], args[2], gas);
+            available_gas = try frame.memory.growToFit(args[3], args[2], available_gas);
 
             const forwarded_gas: i32 = @min(args[6], gas - @divFloor(gas, 64));
             available_gas -= forwarded_gas;
