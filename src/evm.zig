@@ -260,12 +260,12 @@ pub const EVM = struct {
         return @intCast(frame.gas);
     }
 
-    pub fn access_account(self: *Self, addr: u160) bool {
+    pub fn accessAccount(self: *Self, addr: u160) bool {
         _, const is_warm = self.warm_accounts.write(addr, {});
         return is_warm;
     }
 
-    pub fn access_slot(self: *Self, addr: u160, slot: u256) bool {
+    pub fn accessSlot(self: *Self, addr: u160, slot: u256) bool {
         _, const is_warm = self.warm_slots.write(.{ .address = addr, .slot = slot }, {});
         return is_warm;
     }
