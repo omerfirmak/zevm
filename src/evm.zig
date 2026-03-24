@@ -192,20 +192,18 @@ pub const EVM = struct {
         var remaining_gas = gas_limit;
         var err: ?Errors = null;
         const target_code_hash = state.accounts.read(target).code_hash;
-        if (target_code_hash != empty_code_hash) {
-            const code = state.code_storage.get(target_code_hash).?;
-            remaining_gas, err = self.call(
-                state,
-                msg.caller,
-                target,
-                code,
-                remaining_gas,
-                msg.calldata,
-                msg.value,
-                0,
-                &[_]u8{},
-            );
-        }
+        const code = state.code_storage.get(target_code_hash);
+        remaining_gas, err = self.call(
+            state,
+            msg.caller,
+            target,
+            code,
+            remaining_gas,
+            msg.calldata,
+            msg.value,
+            0,
+            &[_]u8{},
+        );
 
         state.accounts.update(msg.caller).balance += @as(u256, @intCast(remaining_gas)) * msg.gas_price;
 
@@ -223,7 +221,7 @@ pub const EVM = struct {
         state: *State,
         caller: u160,
         target: u160,
-        code: Bytecode,
+        code: ?Bytecode,
         initial_gas: u31,
         calldata: []u8,
         value: u256,
@@ -240,6 +238,10 @@ pub const EVM = struct {
         caller_account.balance -= value;
         state.accounts.update(target).balance += value;
 
+        if (code == null) {
+            return .{ initial_gas, null };
+        }
+
         var frame = self.gpa.create(Frame) catch |err| {
             return .{ initial_gas, err };
         };
@@ -248,7 +250,7 @@ pub const EVM = struct {
             .evm = self,
             .context = self.context,
             .state = state,
-            .code = code,
+            .code = code.?,
 
             .caller = caller,
             .target = target,
