@@ -23,6 +23,7 @@ pub const Errors = error{
     ReturnDataOutOfBounds,
     CallDepthExceeded,
     FeeTooLow,
+    Reverted,
 } || std.mem.Allocator.Error;
 
 pub const Context = struct {
@@ -56,7 +57,7 @@ pub const Frame = struct {
     return_buffer: []u8,
 
     // vm state
-    gas: i32,
+    gas: u31,
     stack: [max_stack_size]u256 align(@sizeOf(u256)),
     memory: Memory,
 
@@ -108,7 +109,7 @@ pub const Message = struct {
     caller: u160,
     nonce: u64,
     target: ?u160,
-    gas_limit: u64,
+    gas_limit: u31,
     gas_price: u256,
     calldata: []u8,
     value: u256,
@@ -179,26 +180,26 @@ pub const EVM = struct {
         caller_account.nonce = msg.nonce + 1;
         caller_account.balance -= gas_cost;
 
-        const intrinsic_gas: u64 = if (msg.target) |_| 21000 else 32000;
-        const calldata_gas = calldata_cost(msg.calldata);
+        const intrinsic_gas: u31 = if (msg.target) |_| 21000 else 32000;
+        const calldata_gas = try calldataCost(msg.calldata);
         if (msg.gas_limit < (intrinsic_gas + calldata_gas)) {
             return Errors.OutOfGas;
         }
-        const gas_limit = msg.gas_limit - intrinsic_gas - calldata_gas;
+        const gas_limit = msg.gas_limit - intrinsic_gas - @as(u31, @intCast(calldata_gas));
 
         // todo: contract creation
         const target = msg.target.?;
-        var target_account = state.accounts.update(target);
-        target_account.balance += msg.value;
-        var remaining_gas: u64 = gas_limit;
-        if (target_account.code_hash != empty_code_hash) {
-            const code = state.code_storage.get(target_account.code_hash).?;
-            remaining_gas = try self.call(
+        var remaining_gas = gas_limit;
+        var err: ?Errors = null;
+        const target_code_hash = state.accounts.read(target).code_hash;
+        if (target_code_hash != empty_code_hash) {
+            const code = state.code_storage.get(target_code_hash).?;
+            remaining_gas, err = self.call(
                 state,
                 msg.caller,
                 target,
                 code,
-                @intCast(gas_limit),
+                remaining_gas,
                 msg.calldata,
                 msg.value,
                 0,
@@ -206,11 +207,15 @@ pub const EVM = struct {
             );
         }
 
-        state.accounts.update(msg.caller).balance += @as(u256, remaining_gas) * msg.gas_price;
+        state.accounts.update(msg.caller).balance += @as(u256, @intCast(remaining_gas)) * msg.gas_price;
 
         const tip = msg.gas_price - self.context.basefee;
         const gas_used: u256 = msg.gas_limit - remaining_gas;
         state.accounts.update(self.context.coinbase).balance += gas_used * tip;
+
+        if (err) |e| {
+            return e;
+        }
     }
 
     pub fn call(
@@ -219,23 +224,25 @@ pub const EVM = struct {
         caller: u160,
         target: u160,
         code: Bytecode,
-        initial_gas: i32,
+        initial_gas: u31,
         calldata: []u8,
         value: u256,
         depth: usize,
         return_buffer: []u8,
-    ) !u64 {
-        if (depth >= 1024) return Errors.CallDepthExceeded;
+    ) struct { u31, ?Errors } {
+        if (depth >= 1024) return .{ initial_gas, Errors.CallDepthExceeded };
 
         self.return_data_size = 0;
         var caller_account = state.accounts.update(caller);
         if (caller_account.balance < value) {
-            return Errors.NotEnoughFunds;
+            return .{ initial_gas, Errors.NotEnoughFunds };
         }
         caller_account.balance -= value;
         state.accounts.update(target).balance += value;
 
-        var frame = try self.gpa.create(Frame);
+        var frame = self.gpa.create(Frame) catch |err| {
+            return .{ initial_gas, err };
+        };
         defer self.gpa.destroy(frame);
         frame.* = Frame{
             .evm = self,
@@ -251,13 +258,20 @@ pub const EVM = struct {
 
             .gas = initial_gas,
             .stack = undefined,
-            .memory = try Memory.init(self.gpa),
+            .memory = Memory.init(self.gpa) catch |e| {
+                return .{ initial_gas, e };
+            },
             .depth = depth + 1,
         };
         defer frame.memory.deinit();
 
-        try frame.enter();
-        return @intCast(frame.gas);
+        frame.enter() catch |err| {
+            if (err != Errors.Reverted) {
+                frame.gas = 0;
+            }
+            return .{ frame.gas, err };
+        };
+        return .{ frame.gas, null };
     }
 
     pub fn accessAccount(self: *Self, addr: u160) bool {
@@ -271,7 +285,11 @@ pub const EVM = struct {
     }
 };
 
-fn calldata_cost(calldata: []u8) u64 {
+fn calldataCost(calldata: []u8) !u31 {
     const zeros = std.mem.count(u8, calldata, &[_]u8{0});
-    return zeros * 4 + (calldata.len - zeros) * 16;
+    const cost = zeros * 4 + (calldata.len - zeros) * 16;
+    if (cost > std.math.maxInt(u31)) {
+        return Errors.OutOfGas;
+    }
+    return @intCast(cost);
 }

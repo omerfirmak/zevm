@@ -260,7 +260,7 @@ fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []con
                 .caller = tx.sender.value,
                 .nonce = tx.nonce.value,
                 .target = to.value,
-                .gas_limit = gas_limit,
+                .gas_limit = @intCast(gas_limit),
                 .gas_price = if (tx.gasPrice) |gp| gp.value else 0,
                 .calldata = calldata,
                 .value = value,

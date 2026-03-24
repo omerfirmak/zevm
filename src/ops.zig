@@ -43,7 +43,7 @@ pub fn Ops(comptime spec: Spec) type {
         pub fn stop(_: InstructionPointer, gas: i32, _: u16, frame: *evm.Frame) evm.Errors!void {
             // I would rather just return this instead of writing it to the frame
             // but https://github.com/ziglang/zig/issues/18189
-            frame.gas = gas;
+            frame.gas = @intCast(gas);
             return;
         }
 
@@ -519,17 +519,28 @@ pub fn Ops(comptime spec: Spec) type {
             var available_gas = try frame.memory.growToFit(args[1], args[0], gas);
             available_gas = try frame.memory.growToFit(args[3], args[2], available_gas);
 
-            const forwarded_gas: i32 = @min(args[6], gas - @divFloor(gas, 64));
+            const target: u160 = @truncate(args[5]);
+            const is_warm = frame.evm.accessAccount(target);
+            const target_account = frame.state.accounts.read(target);
+            const address_access_cost: i32 = if (is_warm) 100 else 2600;
+            const dynamic_cost = address_access_cost;
+            if (available_gas < dynamic_cost) {
+                return evm.Errors.OutOfGas;
+            }
+            available_gas -= dynamic_cost;
+
+            const forwarded_gas: u31 = @intCast(@min(args[6], available_gas - @divFloor(available_gas, 64)));
             available_gas -= forwarded_gas;
 
-            const target: u160 = @truncate(args[5]);
-            const code_hash = frame.state.accounts.read(target).code_hash;
+            const code_hash = target_account.code_hash;
+            var leftover_gas = forwarded_gas;
+            var err: ?evm.Errors = null;
             if (code_hash != state.empty_code_hash) {
                 const value = args[4];
                 const calldata = frame.memory.slice(@truncate(args[3]), @intCast(args[2]));
                 const return_buffer = frame.memory.slice(@truncate(args[3]), @intCast(args[2]));
 
-                const call_res = frame.evm.call(
+                leftover_gas, err = frame.evm.call(
                     frame.state,
                     frame.target,
                     target,
@@ -540,14 +551,17 @@ pub fn Ops(comptime spec: Spec) type {
                     frame.depth,
                     return_buffer,
                 );
-
-                if (call_res) |remaining_gas| {
-                    available_gas += @intCast(remaining_gas);
-                    args[0] = 1;
-                } else |_| {
-                    args[0] = 0;
-                }
             }
+
+            if (err) |e| {
+                if (e == evm.Errors.OutOfMemory) {
+                    return e;
+                }
+                args[0] = 0;
+            } else {
+                args[0] = 1;
+            }
+            available_gas += leftover_gas;
             return next(next_ip, available_gas - spec.constantGas(.CALL), new_stack_head, frame);
         }
 
