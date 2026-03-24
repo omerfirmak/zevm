@@ -368,10 +368,11 @@ pub fn Ops(comptime spec: Spec) type {
         pub fn codecopy(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 3, 0);
             const available_gas = try frame.memory.growToFit(args[2], args[0], gas);
+            const dynamic_gas = mem.toWordSize(args[0]) * 3;
 
             const bytecode = frame.code.safeSlice(args[1], @intCast(args[0]));
             frame.memory.copyAndClearRemaining(@intCast(args[2]), @intCast(args[0]), bytecode);
-            return next(next_ip, available_gas - spec.constantGas(.CODECOPY), new_stack_head, frame);
+            return next(next_ip, available_gas - spec.constantGas(.CODECOPY) - dynamic_gas, new_stack_head, frame);
         }
 
         pub fn gasprice(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
