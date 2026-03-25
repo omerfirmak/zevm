@@ -55,6 +55,11 @@ pub const Env = struct {
     currentExcessBlobGas: ?HexInt(u64) = null,
 };
 
+pub const AccessListEntry = struct {
+    address: HexInt(u160),
+    storageKeys: []HexInt(u256),
+};
+
 pub const Transaction = struct {
     nonce: HexInt(u64),
     gasPrice: ?HexInt(u256) = null,
@@ -64,6 +69,8 @@ pub const Transaction = struct {
     data: []HexBytes,
     sender: HexInt(u160),
     secretKey: ?HexBytes = null,
+    // EIP-2930: one access list per data index (parallel to data[]/gasLimit[]/value[])
+    accessLists: ?[][]AccessListEntry = null,
 };
 
 pub const PostIndexes = struct {
@@ -258,6 +265,18 @@ fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []con
         const value = tx.value[post_entry.indexes.value].value;
         const calldata = tx.data[post_entry.indexes.data].value;
 
+        // convert parsed access list entries to evm.AccessListEntry for this tx variant
+        const raw_al: []AccessListEntry = if (tx.accessLists) |als|
+            if (post_entry.indexes.data < als.len) als[post_entry.indexes.data] else &.{}
+        else
+            &.{};
+        const access_list = try allocator.alloc(evm.AccessListEntry, raw_al.len);
+        for (raw_al, access_list) |src, *dst| {
+            const keys = try allocator.alloc(u256, src.storageKeys.len);
+            for (src.storageKeys, keys) |k, *out| out.* = k.value;
+            dst.* = .{ .address = src.address.value, .storage_keys = keys };
+        }
+
         const tx_err: ?anyerror = if (tx.to) |to|
             if (vm.process(.{
                 .caller = tx.sender.value,
@@ -267,6 +286,7 @@ fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []con
                 .gas_price = if (tx.gasPrice) |gp| gp.value else 0,
                 .calldata = calldata,
                 .value = value,
+                .access_list = access_list,
             }, &state)) |_| null else |err| err
         else
             error.ContractCreationNotImplementedYet;

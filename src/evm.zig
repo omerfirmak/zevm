@@ -107,6 +107,11 @@ pub const Frame = struct {
     }
 };
 
+pub const AccessListEntry = struct {
+    address: u160,
+    storage_keys: []const u256,
+};
+
 pub const Message = struct {
     caller: u160,
     nonce: u64,
@@ -115,6 +120,8 @@ pub const Message = struct {
     gas_price: u256,
     calldata: []u8,
     value: u256,
+    // EIP-2930: accounts and slots to pre-warm before execution
+    access_list: []const AccessListEntry = &.{},
 };
 
 const Snapshot = struct {
@@ -188,10 +195,14 @@ pub const EVM = struct {
         // base gas cost: 21000 for calls, 32000 for contract creation
         const intrinsic_gas: u31 = if (msg.target) |_| 21000 else 32000;
         const calldata_gas = try calldataCost(msg.calldata);
-        if (msg.gas_limit < (intrinsic_gas + calldata_gas)) {
+        const access_list_gas = try accessListGas(msg.access_list);
+        const total_intrinsic = intrinsic_gas + calldata_gas + access_list_gas;
+        if (msg.gas_limit < total_intrinsic) {
             return Errors.OutOfGas;
         }
-        const gas_limit = msg.gas_limit - intrinsic_gas - @as(u31, @intCast(calldata_gas));
+        const gas_limit = msg.gas_limit - total_intrinsic;
+
+        self.applyAccessList(msg.access_list);
 
         // todo: contract creation
         const target = msg.target.?;
@@ -288,7 +299,28 @@ pub const EVM = struct {
     pub fn accessSlot(self: *Self, addr: u160, slot: u256) bool {
         return !self.warm_slots.writeNoClobber(.{ .address = addr, .slot = slot }, {});
     }
+
+    // EIP-2930: pre-warm all addresses and storage keys in the access list
+    pub fn applyAccessList(self: *Self, access_list: []const AccessListEntry) void {
+        for (access_list) |entry| {
+            _ = self.accessAccount(entry.address);
+            for (entry.storage_keys) |key| {
+                _ = self.accessSlot(entry.address, key);
+            }
+        }
+    }
 };
+
+// EIP-2930: 2400 per address + 1900 per storage key
+fn accessListGas(access_list: []const AccessListEntry) !u31 {
+    var gas: u31 = 0;
+    for (access_list) |entry| {
+        gas = std.math.add(u31, gas, 2400) catch return Errors.OutOfGas;
+        const key_gas = std.math.mul(usize, entry.storage_keys.len, 1900) catch return Errors.OutOfGas;
+        gas = std.math.add(u31, gas, @intCast(key_gas)) catch return Errors.OutOfGas;
+    }
+    return gas;
+}
 
 fn calldataCost(calldata: []u8) !u31 {
     const zeros = std.mem.count(u8, calldata, &[_]u8{0});
