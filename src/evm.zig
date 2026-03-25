@@ -24,6 +24,7 @@ pub const Errors = error{
     CallDepthExceeded,
     FeeTooLow,
     Reverted,
+    WriteProtection,
 };
 
 pub const Context = struct {
@@ -53,6 +54,7 @@ pub const Frame = struct {
     target: u160,
     calldata: []const u8,
     value: u256,
+    is_static: bool,
     depth: usize,
     // caller-provided slice where sub-call return data is written
     return_buffer: []u8,
@@ -219,6 +221,8 @@ pub const EVM = struct {
             msg.value,
             0,
             &[_]u8{},
+            false,
+            false,
         );
 
         state.accounts.update(msg.caller).balance += @as(u256, @intCast(remaining_gas)) * msg.gas_price;
@@ -231,6 +235,8 @@ pub const EVM = struct {
 
     // Returns { remaining_gas, optional_error }. Not an error union because Reverted
     // must return remaining gas to the caller alongside the error signal.
+    // skip_value_transfer: set true for DELEGATECALL, which preserves msg.value in the
+    // sub-frame without actually moving ETH (the original transfer already happened).
     pub fn call(
         self: *Self,
         state: *State,
@@ -242,6 +248,8 @@ pub const EVM = struct {
         value: u256,
         depth: usize,
         return_buffer: []u8,
+        skip_value_transfer: bool,
+        is_static: bool,
     ) struct { u31, ?Errors } {
         if (depth >= 1024) return .{ initial_gas, Errors.CallDepthExceeded };
 
@@ -249,12 +257,14 @@ pub const EVM = struct {
         const evm_snap = self.snapshot();
 
         self.return_data_size = 0;
-        var caller_account = state.accounts.update(caller);
-        if (caller_account.balance < value) {
-            return .{ initial_gas, Errors.NotEnoughFunds };
+        if (!skip_value_transfer) {
+            var caller_account = state.accounts.update(caller);
+            if (caller_account.balance < value) {
+                return .{ initial_gas, Errors.NotEnoughFunds };
+            }
+            caller_account.balance -= value;
+            state.accounts.update(target).balance += value;
         }
-        caller_account.balance -= value;
-        state.accounts.update(target).balance += value;
 
         if (code == null) {
             return .{ initial_gas, null };
@@ -272,6 +282,7 @@ pub const EVM = struct {
             .target = target,
             .calldata = calldata,
             .value = value,
+            .is_static = is_static,
             .return_buffer = return_buffer,
 
             .gas = initial_gas,

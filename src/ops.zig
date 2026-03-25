@@ -484,6 +484,7 @@ pub fn Ops(comptime spec: Spec) type {
         }
 
         pub fn sstore(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+            if (frame.is_static) return evm.Errors.WriteProtection;
             const new_stack_head, const args = try frame.stackPop(stack_head, 2, 0);
             const lookup: storage.StorageLookup = .{ .address = frame.target, .slot = args[1] };
             const is_warm = frame.evm.accessSlot(frame.target, args[1]);
@@ -509,6 +510,7 @@ pub fn Ops(comptime spec: Spec) type {
         }
 
         pub fn tstore(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+            if (frame.is_static) return evm.Errors.WriteProtection;
             const new_stack_head, const args = try frame.stackPop(stack_head, 2, 0);
             _ = frame.state.transient_storage.write(.{ .address = frame.target, .slot = args[1] }, args[0]);
             return next(next_ip, gas - spec.constantGas(.TSTORE), new_stack_head, frame);
@@ -526,53 +528,80 @@ pub fn Ops(comptime spec: Spec) type {
             return next(next_ip, available_gas - spec.constantGas(.MCOPY) - dynamic_gas, new_stack_head, frame);
         }
 
-        pub fn call(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
-            const new_stack_head, const args = try frame.stackPop(stack_head, 7, 1);
-            var available_gas = try frame.memory.growToFit(args[1], args[0], gas);
-            available_gas = try frame.memory.growToFit(args[3], args[2], available_gas);
+        pub fn call_variant(comptime variant: Opcode) Fn {
+            return struct {
+                pub fn call(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+                    // CALL and CALLCODE consume a value arg from the stack; DELEGATECALL and STATICCALL do not
+                    const has_value_arg = variant == .CALL or variant == .CALLCODE;
+                    const n_args = if (has_value_arg) 7 else 6;
 
-            const target: u160 = @truncate(args[5]);
-            const is_warm = frame.evm.accessAccount(target);
-            const target_account = frame.state.accounts.read(target);
-            const address_access_cost: i32 = if (is_warm) 100 else 2600;
-            const dynamic_cost = address_access_cost;
-            if (available_gas < dynamic_cost) {
-                return evm.Errors.OutOfGas;
-            }
-            available_gas -= dynamic_cost;
+                    // Stack layout (args[0]=bottom, args[n-1]=top):
+                    //   CALL/CALLCODE (7):      retSize retOffset argsSize argsOffset value addr gas
+                    //   DELEGATECALL/STATICCALL(6): retSize retOffset argsSize argsOffset addr  gas
+                    const new_stack_head, const args = try frame.stackPop(stack_head, n_args, 1);
 
-            // EIP-150: forward at most 63/64 of remaining gas to sub-calls
-            const forwarded_gas: u31 = @intCast(@min(args[6], available_gas - @divFloor(available_gas, 64)));
-            available_gas -= forwarded_gas;
+                    var available_gas = try frame.memory.growToFit(args[1], args[0], gas);
+                    available_gas = try frame.memory.growToFit(args[3], args[2], available_gas);
 
-            const code_hash = target_account.code_hash;
-            var leftover_gas = forwarded_gas;
-            var err: ?evm.Errors = null;
-            if (code_hash != state.empty_code_hash) {
-                const value = args[4];
-                const calldata = frame.memory.slice(@truncate(args[3]), @intCast(args[2]));
-                const return_buffer = frame.memory.slice(@truncate(args[3]), @intCast(args[2]));
+                    const addr: u160 = if (has_value_arg) @truncate(args[5]) else @truncate(args[4]);
+                    const call_gas = if (has_value_arg) args[6] else args[5];
 
-                leftover_gas, err = frame.evm.call(
-                    frame.state,
-                    frame.target,
-                    target,
-                    frame.state.code_storage.get(code_hash).?,
-                    forwarded_gas,
-                    calldata,
-                    value,
-                    frame.depth,
-                    return_buffer,
-                );
-            }
+                    const is_warm = frame.evm.accessAccount(addr);
+                    const code_account = frame.state.accounts.read(addr);
+                    const address_access_cost: i32 = if (is_warm) 100 else 2600;
+                    if (available_gas < address_access_cost) {
+                        return evm.Errors.OutOfGas;
+                    }
+                    available_gas -= address_access_cost;
 
-            if (err != null) {
-                args[0] = 0;
-            } else {
-                args[0] = 1;
-            }
-            available_gas += leftover_gas;
-            return next(next_ip, available_gas - spec.constantGas(.CALL), new_stack_head, frame);
+                    // EIP-150: forward at most 63/64 of remaining gas to sub-calls
+                    const forwarded_gas: u31 = @intCast(@min(call_gas, available_gas - @divFloor(available_gas, 64)));
+                    available_gas -= forwarded_gas;
+
+                    const calldata = frame.memory.slice(@truncate(args[3]), @intCast(args[2]));
+                    const return_buffer = frame.memory.slice(@truncate(args[1]), @intCast(args[0]));
+
+                    // Per-variant: who is caller, who is target, what value, skip balance transfer?
+                    const value: u256 = switch (variant) {
+                        .CALL, .CALLCODE => args[4],
+                        .DELEGATECALL => frame.value,
+                        .STATICCALL => 0,
+                        else => unreachable,
+                    };
+                    const call_caller: u160 = if (variant == .DELEGATECALL) frame.caller else frame.target;
+                    const call_target: u160 = switch (variant) {
+                        .CALL, .STATICCALL => addr,
+                        .CALLCODE, .DELEGATECALL => frame.target,
+                        else => unreachable,
+                    };
+
+                    // Value transfer is forbidden in static context
+                    if (frame.is_static and value != 0) return evm.Errors.WriteProtection;
+
+                    const code_hash = code_account.code_hash;
+                    var leftover_gas = forwarded_gas;
+                    var err: ?evm.Errors = null;
+                    if (code_hash != state.empty_code_hash) {
+                        leftover_gas, err = frame.evm.call(
+                            frame.state,
+                            call_caller,
+                            call_target,
+                            frame.state.code_storage.get(code_hash).?,
+                            forwarded_gas,
+                            calldata,
+                            value,
+                            frame.depth,
+                            return_buffer,
+                            comptime (variant == .DELEGATECALL),
+                            frame.is_static or (variant == .STATICCALL),
+                        );
+                    }
+
+                    args[0] = if (err != null) 0 else 1;
+                    available_gas += leftover_gas;
+                    return next(next_ip, available_gas - spec.constantGas(variant), new_stack_head, frame);
+                }
+            }.call;
         }
 
         pub fn @"return"(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
@@ -672,7 +701,10 @@ pub fn Ops(comptime spec: Spec) type {
                 .TLOAD = tload,
                 .TSTORE = tstore,
                 .MCOPY = mcopy,
-                .CALL = call,
+                .CALL = call_variant(.CALL),
+                .DELEGATECALL = call_variant(.DELEGATECALL),
+                .CALLCODE = call_variant(.CALLCODE),
+                .STATICCALL = call_variant(.STATICCALL),
                 .RETURN = @"return",
                 .RETURNDATASIZE = returndatasize,
                 .RETURNDATACOPY = returndatacopy,
