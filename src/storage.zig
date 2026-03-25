@@ -83,6 +83,14 @@ pub fn JournaledStorage(comptime Key: type, comptime Value: type, comptime Map: 
             return .{ old_value, entry.found_existing };
         }
 
+        pub fn writeNoClobber(self: *Self, key: Key, value: Value) bool {
+            const entry = self.dirties.getOrPutAssumeCapacity(key);
+            if (entry.found_existing) return false;
+            self.journal.appendAssumeCapacity(.{ .key = key, .old_value = empty_value });
+            entry.value_ptr.* = value;
+            return true;
+        }
+
         pub fn update(self: *Self, key: Key) *Value {
             const entry = self.dirties.getOrPutAssumeCapacity(key);
             if (!entry.found_existing) entry.value_ptr.* = empty_value;

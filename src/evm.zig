@@ -273,13 +273,11 @@ pub const EVM = struct {
     }
 
     pub fn accessAccount(self: *Self, addr: u160) bool {
-        _, const is_warm = self.warm_accounts.write(addr, {});
-        return is_warm;
+        return !self.warm_accounts.writeNoClobber(addr, {});
     }
 
     pub fn accessSlot(self: *Self, addr: u160, slot: u256) bool {
-        _, const is_warm = self.warm_slots.write(.{ .address = addr, .slot = slot }, {});
-        return is_warm;
+        return !self.warm_slots.writeNoClobber(.{ .address = addr, .slot = slot }, {});
     }
 };
 
