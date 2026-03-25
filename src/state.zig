@@ -31,8 +31,8 @@ pub const State = struct {
         var code_storage = storage.CodeStorage.empty;
         try code_storage.ensureTotalCapacity(gpa, 1_000);
         return Self{
-            .accounts = try storage.AccountStorage.init(gpa, 10_000, 10_000),
-            .contract_state = try storage.ContractStorage.init(gpa, 10_000, 10_000),
+            .accounts = try storage.AccountStorage.init(gpa, 10_000, 100_000),
+            .contract_state = try storage.ContractStorage.init(gpa, 10_000, 100_000),
             .transient_storage = try storage.ContractStorage.init(gpa, 500_000, 500_000),
             .code_storage = code_storage,
         };
