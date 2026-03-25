@@ -464,6 +464,34 @@ pub fn Ops(comptime spec: Spec) type {
             return next(next_ip, gas - spec.constantGas(.SLOAD) - dynamic_gas, new_stack_head, frame);
         }
 
+        // EIP-2200/EIP-3529 refund delta for an SSTORE.
+        // SSTORE_CLEARS_SCHEDULE = 4800 (EIP-3529).
+        fn refund_sstore(new_value: u256, current_value: u256, original_value: u256) i32 {
+            if (new_value == current_value) return 0;
+
+            var delta: i32 = 0;
+
+            if (original_value != 0) {
+                if (current_value == 0) {
+                    // A prior write in this tx cleared the slot and earned a refund;
+                    // we are now writing non-zero, so revoke that refund.
+                    delta -= 4800;
+                }
+                if (new_value == 0) {
+                    // We are clearing a slot that held a non-zero original value.
+                    delta += 4800;
+                }
+            }
+
+            // Restoring a slot to its original value earns back the gas that was
+            // charged above the cheap SLOAD cost.
+            if (new_value == original_value) {
+                delta += if (original_value == 0) 20000 - 100 else 2900 - 100;
+            }
+
+            return delta;
+        }
+
         // EIP-2200 net-metered SSTORE gas: charges based on the transition from
         // original (pre-tx) value → current value → new value.
         fn gas_sstore(value: u256, current_value: u256, original_value: u256, is_warm: bool) i32 {
@@ -494,12 +522,9 @@ pub fn Ops(comptime spec: Spec) type {
             if (!original_value_entry.found_existing) {
                 original_value_entry.value_ptr.* = old_value;
             }
-            const dynamic_gas: i32 = gas_sstore(
-                args[0],
-                old_value,
-                original_value_entry.value_ptr.*,
-                is_warm,
-            );
+            const original_value = original_value_entry.value_ptr.*;
+            const dynamic_gas = gas_sstore(args[0], old_value, original_value, is_warm);
+            frame.evm.gas_refund += refund_sstore(args[0], old_value, original_value);
             return next(next_ip, gas - spec.constantGas(.SSTORE) - dynamic_gas, new_stack_head, frame);
         }
 

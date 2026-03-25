@@ -129,6 +129,7 @@ pub const Message = struct {
 const Snapshot = struct {
     accounts: usize,
     slots: usize,
+    gas_refund: i32,
 };
 
 pub const EVM = struct {
@@ -146,6 +147,8 @@ pub const EVM = struct {
     // EIP-2929 access lists; warm slots/accounts pay lower gas on subsequent access
     warm_accounts: storage.AccountsAccessList,
     warm_slots: storage.SlotsAccessList,
+    // EIP-2200/EIP-3529: accumulated gas refund counter; may go negative mid-tx
+    gas_refund: i32,
 
     pub fn init(allocator: std.mem.Allocator, context: *const Context) !Self {
         var pre_state: storage.SlotKeyedMap(u256) = .empty;
@@ -158,6 +161,7 @@ pub const EVM = struct {
             .pre_state = pre_state,
             .warm_accounts = try storage.AccountsAccessList.init(allocator, 10_000, 10_000),
             .warm_slots = try storage.SlotsAccessList.init(allocator, 10_000, 10_000),
+            .gas_refund = 0,
         };
     }
 
@@ -165,12 +169,14 @@ pub const EVM = struct {
         return .{
             .accounts = self.warm_accounts.snapshot(),
             .slots = self.warm_slots.snapshot(),
+            .gas_refund = self.gas_refund,
         };
     }
 
     pub fn revert(self: *Self, snapshot_ids: Snapshot) void {
         self.warm_accounts.revert(snapshot_ids.accounts);
         self.warm_slots.revert(snapshot_ids.slots);
+        self.gas_refund = snapshot_ids.gas_refund;
     }
 
     pub fn process(self: *Self, msg: Message, state: *State) !void {
@@ -224,6 +230,13 @@ pub const EVM = struct {
             false,
             false,
         );
+
+        // EIP-3529: refund capped at 1/5 of total gas used (intrinsic + execution)
+        const gas_used_before_refund = msg.gas_limit - remaining_gas;
+        const max_refund = gas_used_before_refund / 5;
+        const effective_refund: u31 = @intCast(@min(@max(self.gas_refund, 0), max_refund));
+        remaining_gas += effective_refund;
+        self.gas_refund = 0;
 
         state.accounts.update(msg.caller).balance += @as(u256, @intCast(remaining_gas)) * msg.gas_price;
 
