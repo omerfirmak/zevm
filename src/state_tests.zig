@@ -278,7 +278,7 @@ fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []con
         }
 
         const tx_err: ?anyerror = if (tx.to) |to|
-            if (vm.process(.{
+            if (to.value == 0) error.ContractCreationNotImplementedYet else if (vm.process(.{
                 .caller = tx.sender.value,
                 .nonce = tx.nonce.value,
                 .target = to.value,
@@ -300,25 +300,23 @@ fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []con
         }
 
         // Verify post state
-        var failed = false;
         for (post_entry.state.map.keys(), post_entry.state.map.values()) |addr_str, expected| {
             const addr = try parseHex(u160, addr_str);
             const actual = state.accounts.read(addr);
 
             if (actual.nonce != expected.nonce.value) {
-                failed = true;
-            }
-            if (actual.balance != expected.balance.value) {
-                failed = true;
+                return error.NonceCheckFailed;
             }
             for (expected.storage.map.keys(), expected.storage.map.values()) |slot_str, slot_val| {
                 const slot = try parseHex(u256, slot_str);
                 const actual_slot = state.contract_state.read(.{ .address = @as(u256, addr), .slot = slot });
                 if (actual_slot != slot_val.value) {
-                    failed = true;
+                    return error.StorageCheckFailed;
                 }
             }
+            if (actual.balance != expected.balance.value) {
+                return error.BalanceCheckFailed;
+            }
         }
-        if (failed) return error.StateTestFailed;
     }
 }
