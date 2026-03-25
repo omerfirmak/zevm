@@ -3,9 +3,11 @@ const evm = @import("evm.zig");
 
 pub const Memory = @This();
 
+// Upper bound on memory size chosen so that mem_words² doesn't overflow usize
 const max_mem_size = std.math.sqrt(std.math.maxInt(usize)) * 32;
 
 gpa: std.mem.Allocator,
+// cumulative gas already paid for memory expansion; used to compute incremental cost
 costSoFar: usize,
 buf: []u8,
 
@@ -50,6 +52,7 @@ pub fn growToFit(self: *Memory, offset: u256, size: u256, available_gas: i32) !i
     var cost: usize = 0;
     if (self.buf.len < padded_mem_size) {
         const old_len = self.buf.len;
+        // EIP-150 memory expansion cost: words²/512 + 3*words, minus what was already paid
         cost = mem_words * mem_words / 512 + 3 * mem_words - self.costSoFar;
         if (cost > available_gas) {
             return evm.Errors.OutOfGas;

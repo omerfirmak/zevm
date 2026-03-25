@@ -103,12 +103,14 @@ pub fn Ops(comptime spec: Spec) type {
 
         pub fn addmod(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 3, 1);
+            // u257 prevents overflow before the modulo
             args[0] = if (args[0] == 0) 0 else @intCast(@mod(@as(u257, args[2]) + @as(u257, args[1]), args[0]));
             return next(next_ip, gas - spec.constantGas(.ADDMOD), new_stack_head, frame);
         }
 
         pub fn mulmod(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 3, 1);
+            // u512 prevents overflow before the modulo (256*256 = 512 bits max)
             args[0] = if (args[0] == 0) 0 else @intCast(@mod(@as(u512, args[2]) * @as(u512, args[1]), args[0]));
             return next(next_ip, gas - spec.constantGas(.MULMOD), new_stack_head, frame);
         }
@@ -202,6 +204,7 @@ pub fn Ops(comptime spec: Spec) type {
             if (args[1] > 31) {
                 args[0] = 0;
             } else {
+                // EVM is big-endian: byte 0 is the most significant byte (bits 255–248)
                 const index = 31 - @as(u8, @intCast(args[1]));
                 args[0] = @as(u8, @truncate(args[0] >> (index * 8)));
             }
@@ -461,7 +464,10 @@ pub fn Ops(comptime spec: Spec) type {
             return next(next_ip, gas - spec.constantGas(.SLOAD) - dynamic_gas, new_stack_head, frame);
         }
 
+        // EIP-2200 net-metered SSTORE gas: charges based on the transition from
+        // original (pre-tx) value → current value → new value.
         fn gas_sstore(value: u256, current_value: u256, original_value: u256, is_warm: bool) i32 {
+            // cold slot access surcharge (EIP-2929)
             const base_dynamic_gas: i32 = if (is_warm) 0 else 2100;
 
             if (value == current_value) {
@@ -482,6 +488,7 @@ pub fn Ops(comptime spec: Spec) type {
             const lookup: storage.StorageLookup = .{ .address = frame.target, .slot = args[1] };
             const is_warm = frame.evm.accessSlot(frame.target, args[1]);
             const old_value, _ = frame.state.contract_state.write(lookup, args[0]);
+            // lazily record the pre-tx value on first write; subsequent writes don't update it
             const original_value_entry = frame.evm.pre_state.getOrPutAssumeCapacity(lookup);
             if (!original_value_entry.found_existing) {
                 original_value_entry.value_ptr.* = old_value;
@@ -534,6 +541,7 @@ pub fn Ops(comptime spec: Spec) type {
             }
             available_gas -= dynamic_cost;
 
+            // EIP-150: forward at most 63/64 of remaining gas to sub-calls
             const forwarded_gas: u31 = @intCast(@min(args[6], available_gas - @divFloor(available_gas, 64)));
             available_gas -= forwarded_gas;
 

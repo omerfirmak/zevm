@@ -54,9 +54,11 @@ pub const Frame = struct {
     calldata: []const u8,
     value: u256,
     depth: usize,
+    // caller-provided slice where sub-call return data is written
     return_buffer: []u8,
 
     // vm state
+    // u31 fits within i32 without sign collision, so gas arithmetic in ops can use i32
     gas: u31,
     stack: [max_stack_size]u256 align(@sizeOf(u256)),
     memory: Memory,
@@ -126,10 +128,13 @@ pub const EVM = struct {
     gpa: std.mem.Allocator,
     context: *const Context,
 
+    // global return data buffer shared across all call frames; size tracks valid bytes
     return_buffer: []u8,
     return_data_size: usize,
 
+    // original storage values before any writes this tx; used for EIP-2200 SSTORE gas
     pre_state: storage.SlotKeyedMap(u256),
+    // EIP-2929 access lists; warm slots/accounts pay lower gas on subsequent access
     warm_accounts: storage.AccountsAccessList,
     warm_slots: storage.SlotsAccessList,
 
@@ -180,6 +185,7 @@ pub const EVM = struct {
         caller_account.nonce = msg.nonce + 1;
         caller_account.balance -= gas_cost;
 
+        // base gas cost: 21000 for calls, 32000 for contract creation
         const intrinsic_gas: u31 = if (msg.target) |_| 21000 else 32000;
         const calldata_gas = try calldataCost(msg.calldata);
         if (msg.gas_limit < (intrinsic_gas + calldata_gas)) {
@@ -206,11 +212,14 @@ pub const EVM = struct {
 
         state.accounts.update(msg.caller).balance += @as(u256, @intCast(remaining_gas)) * msg.gas_price;
 
+        // EIP-1559: coinbase receives only the tip; the base fee is burned
         const tip = msg.gas_price - self.context.basefee;
         const gas_used: u256 = msg.gas_limit - remaining_gas;
         state.accounts.update(self.context.coinbase).balance += gas_used * tip;
     }
 
+    // Returns { remaining_gas, optional_error }. Not an error union because Reverted
+    // must return remaining gas to the caller alongside the error signal.
     pub fn call(
         self: *Self,
         state: *State,

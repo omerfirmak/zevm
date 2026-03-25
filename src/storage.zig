@@ -50,7 +50,9 @@ pub const ContractStorage = JournaledStorage(StorageLookup, u256, SlotKeyedMap(u
 
 pub const SlotsAccessList = JournaledStorage(StorageLookup, void, SlotKeyedMap(void), {});
 
-// In-memory journaled storage
+// In-memory journaled storage with snapshot/revert support.
+// `dirties` holds the current (modified) values. `journal` records every write
+// as { key, old_value } so any prefix of writes can be rolled back to a snapshot.
 pub fn JournaledStorage(comptime Key: type, comptime Value: type, comptime Map: type, comptime empty_value: Value) type {
     return struct {
         const Self = @This();
@@ -74,6 +76,7 @@ pub fn JournaledStorage(comptime Key: type, comptime Value: type, comptime Map: 
             return self.dirties.get(key) orelse empty_value;
         }
 
+        // Writes a value and journals the old value for revert. Returns { old_value, was_present }.
         pub fn write(self: *Self, key: Key, value: Value) struct { Value, bool } {
             const entry = self.dirties.getOrPutAssumeCapacity(key);
             var old_value = empty_value;
@@ -83,6 +86,8 @@ pub fn JournaledStorage(comptime Key: type, comptime Value: type, comptime Map: 
             return .{ old_value, entry.found_existing };
         }
 
+        // Writes only if the key is not already present. Returns true if the key was new.
+        // Used for access list tracking (EIP-2929): first access marks warm, subsequent calls no-op.
         pub fn writeNoClobber(self: *Self, key: Key, value: Value) bool {
             const entry = self.dirties.getOrPutAssumeCapacity(key);
             if (entry.found_existing) return false;
@@ -91,6 +96,7 @@ pub fn JournaledStorage(comptime Key: type, comptime Value: type, comptime Map: 
             return true;
         }
 
+        // Returns a mutable pointer for in-place modification, journaling the pre-update value.
         pub fn update(self: *Self, key: Key) *Value {
             const entry = self.dirties.getOrPutAssumeCapacity(key);
             if (!entry.found_existing) entry.value_ptr.* = empty_value;
@@ -98,6 +104,7 @@ pub fn JournaledStorage(comptime Key: type, comptime Value: type, comptime Map: 
             return entry.value_ptr;
         }
 
+        // Returns an opaque ID representing the current journal position.
         pub fn snapshot(self: *Self) usize {
             return self.journal.items.len;
         }
