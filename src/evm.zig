@@ -117,7 +117,7 @@ pub const AccessListEntry = struct {
 pub const Message = struct {
     caller: u160,
     nonce: u64,
-    target: ?u160,
+    target: u160,
     gas_limit: u31,
     gas_price: u256,
     calldata: []u8,
@@ -149,8 +149,10 @@ pub const EVM = struct {
     warm_slots: storage.SlotsAccessList,
     // EIP-2200/EIP-3529: accumulated gas refund counter; may go negative mid-tx
     gas_refund: i32,
+    // jump table used to compile initcode during CREATE/CREATE2
+    jump_table: *const [256]ops.FnOpaquePtr,
 
-    pub fn init(allocator: std.mem.Allocator, context: *const Context) !Self {
+    pub fn init(allocator: std.mem.Allocator, context: *const Context, jump_table: *const [256]ops.FnOpaquePtr) !Self {
         var pre_state: storage.SlotKeyedMap(u256) = .empty;
         try pre_state.ensureTotalCapacity(allocator, 10_000);
         return Self{
@@ -162,6 +164,7 @@ pub const EVM = struct {
             .warm_accounts = try storage.AccountsAccessList.init(allocator, 10_000, 10_000),
             .warm_slots = try storage.SlotsAccessList.init(allocator, 10_000, 10_000),
             .gas_refund = 0,
+            .jump_table = jump_table,
         };
     }
 
@@ -197,14 +200,16 @@ pub const EVM = struct {
         if (caller_account.balance < gas_cost) {
             return Errors.NotEnoughFunds;
         }
-        caller_account.nonce = msg.nonce + 1;
+        if (msg.target != 0) caller_account.nonce = msg.nonce + 1;
         caller_account.balance -= gas_cost;
 
-        // base gas cost: 21000 for calls, 32000 for contract creation
-        const intrinsic_gas: u31 = if (msg.target) |_| 21000 else 32000;
+        // base gas cost: 21000 for calls, 53000 for contract creation
+        const intrinsic_gas: u31 = if (msg.target == 0) 53000 else 21000;
         const calldata_gas = try calldataCost(msg.calldata);
         const access_list_gas = try accessListGas(msg.access_list);
-        const total_intrinsic = intrinsic_gas + calldata_gas + access_list_gas;
+        // EIP-3860: 2 gas per 32-byte initcode word, charged as intrinsic for CREATE txs
+        const initcode_gas: u31 = if (msg.target == 0) initcodeWordCost(msg.calldata.len) else 0;
+        const total_intrinsic = intrinsic_gas + calldata_gas + access_list_gas + initcode_gas;
         if (msg.gas_limit < total_intrinsic) {
             return Errors.OutOfGas;
         }
@@ -212,24 +217,36 @@ pub const EVM = struct {
 
         self.applyAccessList(msg.access_list);
 
-        // todo: contract creation
-        const target = msg.target.?;
         var remaining_gas = gas_limit;
-        const target_code_hash = state.accounts.read(target).code_hash;
-        const code = state.code_storage.get(target_code_hash);
-        remaining_gas, _ = self.call(
-            state,
-            msg.caller,
-            target,
-            code,
-            remaining_gas,
-            msg.calldata,
-            msg.value,
-            0,
-            &[_]u8{},
-            false,
-            false,
-        );
+        if (msg.target != 0) {
+            const target_code_hash = state.accounts.read(msg.target).code_hash;
+            const code = state.code_storage.get(target_code_hash);
+            remaining_gas, _ = self.call(
+                state,
+                msg.caller,
+                msg.target,
+                code,
+                remaining_gas,
+                msg.calldata,
+                msg.value,
+                0,
+                &[_]u8{},
+                false,
+                false,
+            );
+        } else {
+            // EIP-3860: max initcode size for CREATE transactions
+            if (msg.calldata.len > 2 * 0x6000) return Errors.OutOfGas;
+            remaining_gas, _ = self.create(
+                state,
+                msg.caller,
+                msg.calldata,
+                msg.value,
+                remaining_gas,
+                0,
+                null,
+            );
+        }
 
         // EIP-3529: refund capped at 1/5 of total gas used (intrinsic + execution)
         const gas_used_before_refund = msg.gas_limit - remaining_gas;
@@ -316,6 +333,106 @@ pub const EVM = struct {
         return .{ frame.gas, null };
     }
 
+    // Returns { remaining_gas, new_address }. Address is 0 on any failure.
+    // Failures are never propagated — the caller pushes 0 instead of an address.
+    pub fn create(
+        self: *Self,
+        state: *State,
+        creator: u160,
+        initcode: []const u8,
+        value: u256,
+        initial_gas: u31,
+        depth: usize,
+        salt: ?u256,
+    ) struct { u31, u160 } {
+        if (depth >= 1024) return .{ 0, 0 };
+
+        const creator_account = state.accounts.read(creator);
+        const nonce = creator_account.nonce;
+        // Nonce must not overflow (u64 range enforced at tx entry; sub-calls inherit that invariant)
+        if (nonce >= std.math.maxInt(u64)) return .{ 0, 0 };
+        if (creator_account.balance < value) return .{ 0, 0 };
+
+        const new_addr: u160 = if (salt) |s|
+            create2Address(creator, s, initcode)
+        else
+            createAddress(creator, @intCast(nonce));
+
+        // EIP-2929: warm the new address
+        _ = self.accessAccount(new_addr);
+
+        // EIP-7610: fail on collision (non-zero nonce or existing code)
+        const existing = state.accounts.read(new_addr);
+        if (existing.nonce != 0 or existing.code_hash != empty_code_hash) return .{ 0, 0 };
+
+        const state_snap = state.snapshot();
+        const evm_snap = self.snapshot();
+        self.return_data_size = 0;
+
+        // Commit creator nonce increment and value transfer atomically
+        const acc = state.accounts.update(creator);
+        acc.nonce += 1;
+        acc.balance -= value;
+        const new_contract_acc = state.accounts.update(new_addr);
+        new_contract_acc.nonce = 1; // EIP-161
+        new_contract_acc.balance += value;
+
+        // Compile and execute initcode
+        const initcode_bytecode = Bytecode.init(self.gpa, initcode, @ptrCast(self.jump_table)) catch @panic("OutOfMemory");
+        defer initcode_bytecode.deinit(self.gpa);
+        var frame = self.gpa.create(Frame) catch @panic("OutOfMemory");
+        defer self.gpa.destroy(frame);
+        frame.* = Frame{
+            .evm = self,
+            .context = self.context,
+            .state = state,
+            .code = initcode_bytecode,
+            .caller = creator,
+            .target = new_addr,
+            .calldata = &[_]u8{},
+            .value = value,
+            .is_static = false,
+            .return_buffer = &[_]u8{}, // RETURN will write to self.return_buffer anyways
+            .gas = initial_gas,
+            .stack = undefined,
+            .memory = Memory.init(self.gpa),
+            .depth = depth + 1,
+        };
+        defer frame.memory.deinit();
+
+        frame.enter() catch |err| {
+            if (err != Errors.Reverted) frame.gas = 0;
+            state.revert(state_snap);
+            self.revert(evm_snap);
+            return .{ frame.gas, 0 };
+        };
+
+        // Collect deployed bytecode from the global return buffer
+        const deployed_len = self.return_data_size;
+        const deployed_code = self.return_buffer[0..deployed_len];
+        const deposit_gas: u31 = @intCast(deployed_len * 200);
+
+        if (deployed_len > 0x6000 or // EIP-170: max deployed code size = 0x6000
+            (deployed_len > 0 and deployed_code[0] == 0xef) or // EIP-3541: reject EOF containers (0xEF prefix) in non-EOF deployments
+            frame.gas < deposit_gas) // Charge code deposit: 200 gas per deployed byte
+        {
+            state.revert(state_snap);
+            self.revert(evm_snap);
+            return .{ 0, 0 };
+        }
+        frame.gas -= deposit_gas;
+
+        // Store deployed code and update account code hash
+        var code_hash: u256 = empty_code_hash;
+        if (deployed_len > 0) {
+            std.crypto.hash.sha3.Keccak256.hash(deployed_code, @ptrCast(&code_hash), .{});
+            state.deploy_code(code_hash, deployed_code, self.jump_table);
+        }
+        state.accounts.update(new_addr).code_hash = code_hash;
+
+        return .{ frame.gas, new_addr };
+    }
+
     pub fn accessAccount(self: *Self, addr: u160) bool {
         return !self.warm_accounts.writeNoClobber(addr, {});
     }
@@ -334,6 +451,61 @@ pub const EVM = struct {
         }
     }
 };
+
+// EIP-3860: 2 gas per 32-byte initcode word (ceiling division)
+fn initcodeWordCost(len: usize) u31 {
+    return @intCast(((len + 31) / 32) * 2);
+}
+
+/// CREATE address: keccak256(rlp([creator, nonce]))[12:]
+// RLP([address, nonce]): max 1 (list) + 21 (addr) + 9 (nonce) = 31 bytes
+fn createAddress(creator: u160, nonce: u64) u160 {
+    var buf: [31]u8 = undefined;
+    var pos: usize = 1; // reserve buf[0] for list prefix
+
+    // address: 0x94 (0x80+20) || 20 bytes big-endian
+    buf[pos] = 0x94;
+    pos += 1;
+    std.mem.writeInt(u160, buf[pos..][0..20], creator, .big);
+    pos += 20;
+
+    // nonce: 0x80 for zero, single byte for 1-127, length-prefixed otherwise
+    if (nonce == 0) {
+        buf[pos] = 0x80;
+        pos += 1;
+    } else if (nonce < 0x80) {
+        buf[pos] = @intCast(nonce);
+        pos += 1;
+    } else {
+        var tmp: [8]u8 = undefined;
+        std.mem.writeInt(u64, &tmp, nonce, .big);
+        var start: usize = 0;
+        while (start < 7 and tmp[start] == 0) start += 1;
+        const nonce_bytes = tmp[start..];
+        buf[pos] = @intCast(0x80 + nonce_bytes.len);
+        pos += 1;
+        @memcpy(buf[pos..][0..nonce_bytes.len], nonce_bytes);
+        pos += nonce_bytes.len;
+    }
+
+    buf[0] = @intCast(0xc0 + (pos - 1)); // list prefix: 0xc0 + payload_len
+
+    var hash: [32]u8 = undefined;
+    std.crypto.hash.sha3.Keccak256.hash(buf[0..pos], &hash, .{});
+    return std.mem.readInt(u160, hash[12..32], .big);
+}
+
+// CREATE2 address: keccak256(0xff ++ creator ++ salt ++ keccak256(initcode))[12:]
+fn create2Address(creator: u160, salt: u256, initcode: []const u8) u160 {
+    var buf: [85]u8 = undefined;
+    buf[0] = 0xff;
+    std.mem.writeInt(u160, buf[1..21], creator, .big);
+    std.mem.writeInt(u256, buf[21..53], salt, .big);
+    std.crypto.hash.sha3.Keccak256.hash(initcode, buf[53..85], .{});
+    var hash: [32]u8 = undefined;
+    std.crypto.hash.sha3.Keccak256.hash(&buf, &hash, .{});
+    return std.mem.readInt(u160, hash[12..32], .big);
+}
 
 // EIP-2930: 2400 per address + 1900 per storage key
 fn accessListGas(access_list: []const AccessListEntry) !u31 {

@@ -1,5 +1,7 @@
 const std = @import("std");
 const storage = @import("storage.zig");
+const ops = @import("ops.zig");
+const Bytecode = @import("bytecode.zig").Bytecode;
 
 // keccak256("") — used to identify accounts with no deployed code
 pub const empty_code_hash = 0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470;
@@ -27,7 +29,9 @@ pub const State = struct {
     transient_storage: storage.ContractStorage,
     code_storage: storage.CodeStorage,
 
-    pub fn init(gpa: std.mem.Allocator) !Self {
+    deployed_bytecode_allocator: std.heap.FixedBufferAllocator,
+
+    pub fn init(gpa: std.mem.Allocator, deployed_bytecode_buffer: usize) !Self {
         var code_storage = storage.CodeStorage.empty;
         try code_storage.ensureTotalCapacity(gpa, 1_000);
         return Self{
@@ -35,6 +39,7 @@ pub const State = struct {
             .contract_state = try storage.ContractStorage.init(gpa, 10_000, 100_000),
             .transient_storage = try storage.ContractStorage.init(gpa, 500_000, 500_000),
             .code_storage = code_storage,
+            .deployed_bytecode_allocator = std.heap.FixedBufferAllocator.init(try gpa.alloc(u8, deployed_bytecode_buffer)),
         };
     }
 
@@ -56,5 +61,12 @@ pub const State = struct {
         self.accounts.revert(snapshot_ids.accounts);
         self.contract_state.revert(snapshot_ids.storage);
         self.transient_storage.revert(snapshot_ids.tstorage);
+    }
+
+    pub fn deploy_code(self: *Self, hash: u256, code: []const u8, jump_table: *const [256]ops.FnOpaquePtr) void {
+        const allocator = self.deployed_bytecode_allocator.allocator();
+        const code_bytes = allocator.dupe(u8, code) catch @panic("OutOfMemory");
+        const bytecode = Bytecode.init(allocator, code_bytes, @ptrCast(jump_table)) catch @panic("OutOfMemory");
+        self.code_storage.putAssumeCapacity(hash, bytecode);
     }
 };

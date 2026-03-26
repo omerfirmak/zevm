@@ -16,7 +16,7 @@ threaded_code: []?ops.FnOpaquePtr,
 
 // Creates a new Bytecode instance by first building a threaded code from the given
 // raw bytecode and jumptable
-pub fn init(gpa: std.mem.Allocator, bytes: []const u8, jump_table: [256]ops.Fn) !Bytecode {
+pub fn init(gpa: std.mem.Allocator, bytes: []const u8, jump_table: *const [256]ops.Fn) !Bytecode {
     var threaded_code = try gpa.alloc(?ops.Fn, bytes.len + 32);
     @memset(threaded_code[bytes.len..], jump_table[@intFromEnum(Opcode.STOP)]);
     var pc: usize = 0;
@@ -42,12 +42,12 @@ pub fn init(gpa: std.mem.Allocator, bytes: []const u8, jump_table: [256]ops.Fn) 
     };
 }
 
-pub fn deinit(self: *Bytecode, gpa: std.mem.Allocator) void {
+pub fn deinit(self: *const Bytecode, gpa: std.mem.Allocator) void {
     gpa.free(self.threaded_code);
 }
 
 // Checks if the given program counter is a valid jump destionation
-pub fn isValidJumpDest(self: *Bytecode, pc: u256) ?InstructionPointer {
+pub fn isValidJumpDest(self: *const Bytecode, pc: u256) ?InstructionPointer {
     if (pc >= self.bytes.len) {
         @branchHint(.unlikely);
         return null;
@@ -63,7 +63,7 @@ pub fn isValidJumpDest(self: *Bytecode, pc: u256) ?InstructionPointer {
 }
 
 // Fills bytes read from the bytecode to the given value and clears the upper bytes that were not used
-pub fn readBytesToValue(self: *Bytecode, ip: InstructionPointer, comptime size: usize, value: *u256) void {
+pub fn readBytesToValue(self: *const Bytecode, ip: InstructionPointer, comptime size: usize, value: *u256) void {
     comptime std.debug.assert(size <= 32);
 
     const start = ip - self.threaded_code.ptr;
@@ -72,7 +72,7 @@ pub fn readBytesToValue(self: *Bytecode, ip: InstructionPointer, comptime size: 
     ops.readBeSliceToU256(self.bytes[start..end], size, value);
 }
 
-pub fn safeSlice(self: *Bytecode, index: u256, size: u64) []const u8 {
+pub fn safeSlice(self: *const Bytecode, index: u256, size: u64) []const u8 {
     if (index >= self.bytes.len) {
         return &[_]u8{};
     }
@@ -80,6 +80,6 @@ pub fn safeSlice(self: *Bytecode, index: u256, size: u64) []const u8 {
     return self.bytes[@intCast(index)..@intCast(index + read_size)];
 }
 
-pub fn programCounter(self: *Bytecode, ip: InstructionPointer) u64 {
+pub fn programCounter(self: *const Bytecode, ip: InstructionPointer) u64 {
     return ip - self.threaded_code.ptr;
 }

@@ -552,6 +552,61 @@ pub fn Ops(comptime spec: Spec) type {
             return next(next_ip, available_gas - spec.constantGas(.MCOPY) - dynamic_gas, new_stack_head, frame);
         }
 
+        pub fn create_variant(comptime variant: Opcode) Fn {
+            return struct {
+                pub fn create(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+                    if (frame.is_static) return evm.Errors.WriteProtection;
+
+                    // Stack layout (args[0]=bottom, args[n-1]=top):
+                    //   CREATE  (3): size offset value
+                    //   CREATE2 (4): size offset value salt
+                    const n_args = if (variant == .CREATE) 3 else 4;
+                    const new_stack_head, const args = try frame.stackPop(stack_head, n_args, 1);
+
+                    const value = args[n_args - 1];
+                    const offset = args[n_args - 2];
+                    const size = args[n_args - 3];
+                    const salt: ?u256 = if (variant == .CREATE2) args[0] else null;
+
+                    // EIP-3860: reject oversized initcode
+                    if (size > 2 * 0x6000) return evm.Errors.OutOfGas;
+
+                    var available_gas = try frame.memory.growToFit(offset, size, gas);
+
+                    // Deduct base cost and EIP-3860 initcode word cost
+                    const initcode_word_cost: i32 = @intCast(mem.toWordSize(size) * 2);
+                    available_gas -= spec.constantGas(variant) + initcode_word_cost;
+                    if (available_gas < 0) return evm.Errors.OutOfGas;
+
+                    // CREATE2 hashes initcode: 6 gas per word
+                    if (variant == .CREATE2) {
+                        const hash_cost: i32 = @intCast(mem.toWordSize(size) * 6);
+                        available_gas -= hash_cost;
+                        if (available_gas < 0) return evm.Errors.OutOfGas;
+                    }
+
+                    // EIP-150: forward at most 63/64 of remaining gas
+                    const max_forwardable: u31 = @intCast(available_gas - @divFloor(available_gas, 64));
+                    available_gas -= max_forwardable;
+
+                    const initcode = frame.memory.slice(@truncate(offset), @intCast(size));
+                    const leftover_gas, const new_addr = frame.evm.create(
+                        frame.state,
+                        frame.target,
+                        initcode,
+                        value,
+                        max_forwardable,
+                        frame.depth,
+                        salt,
+                    );
+                    available_gas += leftover_gas;
+
+                    args[0] = new_addr; // 0 on failure, address on success
+                    return next(next_ip, available_gas, new_stack_head, frame);
+                }
+            }.create;
+        }
+
         pub fn call_variant(comptime variant: Opcode) Fn {
             return struct {
                 pub fn call(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
@@ -726,6 +781,8 @@ pub fn Ops(comptime spec: Spec) type {
                 .TLOAD = tload,
                 .TSTORE = tstore,
                 .MCOPY = mcopy,
+                .CREATE = create_variant(.CREATE),
+                .CREATE2 = create_variant(.CREATE2),
                 .CALL = call_variant(.CALL),
                 .DELEGATECALL = call_variant(.DELEGATECALL),
                 .CALLCODE = call_variant(.CALLCODE),

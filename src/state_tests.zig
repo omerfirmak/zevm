@@ -231,11 +231,11 @@ fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []con
         .from = tx.sender.value,
         .gas_price = if (tx.gasPrice) |gp| gp.value else 0,
     };
-    var vm = try evm.EVM.init(allocator, &context);
+    var vm = try evm.EVM.init(allocator, &context, @ptrCast(&jump_table));
 
     for (post_entries) |post_entry| {
         // Build fresh state from pre for each post entry
-        var state = try state_mod.State.init(allocator);
+        var state = try state_mod.State.init(allocator, 10_000_000);
         defer state.deinit(allocator);
 
         for (test_case.pre.map.keys(), test_case.pre.map.values()) |addr_str, pre_acct| {
@@ -250,7 +250,7 @@ fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []con
             var code_hash: u256 = state_mod.empty_code_hash;
             if (pre_acct.code.value.len > 0) {
                 std.crypto.hash.sha3.Keccak256.hash(pre_acct.code.value, @ptrCast(&code_hash), .{});
-                state.code_storage.putAssumeCapacity(code_hash, try Bytecode.init(allocator, pre_acct.code.value, jump_table));
+                state.code_storage.putAssumeCapacity(code_hash, try Bytecode.init(allocator, pre_acct.code.value, &jump_table));
             }
 
             _ = state.accounts.write(addr, .{
@@ -277,19 +277,17 @@ fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []con
             dst.* = .{ .address = src.address.value, .storage_keys = keys };
         }
 
-        const tx_err: ?anyerror = if (tx.to) |to|
-            if (to.value == 0) error.ContractCreationNotImplementedYet else if (vm.process(.{
-                .caller = tx.sender.value,
-                .nonce = tx.nonce.value,
-                .target = to.value,
-                .gas_limit = @intCast(gas_limit),
-                .gas_price = if (tx.gasPrice) |gp| gp.value else 0,
-                .calldata = calldata,
-                .value = value,
-                .access_list = access_list,
-            }, &state)) |_| null else |err| err
-        else
-            error.ContractCreationNotImplementedYet;
+        const to = if (tx.to) |t| t.value else 0;
+        const tx_err: ?anyerror = if (vm.process(.{
+            .caller = tx.sender.value,
+            .nonce = tx.nonce.value,
+            .target = to,
+            .gas_limit = @intCast(gas_limit),
+            .gas_price = if (tx.gasPrice) |gp| gp.value else 0,
+            .calldata = calldata,
+            .value = value,
+            .access_list = access_list,
+        }, &state)) |_| null else |err| err;
 
         if (post_entry.expectException) |expected| {
             const actual = tx_err orelse return error.ExpectedExceptionButSucceeded;
