@@ -4,6 +4,7 @@ const state_mod = @import("state.zig");
 const Bytecode = @import("bytecode.zig").Bytecode;
 const ops = @import("ops.zig");
 const spec = @import("spec.zig");
+const RoundedAllocator = @import("rounded_alloc.zig").RoundedAllocator;
 
 fn parseHex(comptime T: type, str: []const u8) !T {
     const hex = if (std.mem.startsWith(u8, str, "0x")) str[2..] else str;
@@ -215,7 +216,8 @@ fn exceptionMatches(err: anyerror, expected: []const u8) bool {
 fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []const u8) !void {
     var fba = std.heap.FixedBufferAllocator.init(try gpa.alloc(u8, 1_024_000_000));
     defer gpa.free(fba.buffer);
-    const allocator = fba.allocator();
+    var rounded = RoundedAllocator{ .backing = fba.allocator() };
+    const allocator = rounded.allocator();
     const tx = test_case.transaction;
     const jump_table = ops.Ops(spec.Osaka).table();
 
