@@ -44,7 +44,6 @@ pub fn Ops(comptime spec: Spec) type {
             // I would rather just return this instead of writing it to the frame
             // but https://github.com/ziglang/zig/issues/18189
             frame.gas = @intCast(gas);
-            return;
         }
 
         pub fn pop(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
@@ -629,9 +628,11 @@ pub fn Ops(comptime spec: Spec) type {
             }.call;
         }
 
-        pub fn @"return"(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
-            const new_stack_head, const args = try frame.stackPop(stack_head, 2, 0);
+        pub fn @"return"(_: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+            _, const args = try frame.stackPop(stack_head, 2, 0);
             const available_gas = try frame.memory.growToFit(args[1], args[0], gas);
+            const remaining = available_gas - spec.constantGas(.RETURN);
+            if (remaining < 0) return evm.Errors.OutOfGas;
 
             if (args[0] > 0) {
                 const source = frame.memory.slice(@intCast(args[1]), @intCast(args[0]));
@@ -640,8 +641,7 @@ pub fn Ops(comptime spec: Spec) type {
                 @memcpy(frame.evm.return_buffer[0..source.len], source);
             }
             frame.evm.return_data_size = @intCast(args[0]);
-
-            return next(next_ip, available_gas - spec.constantGas(.RETURN), new_stack_head, frame);
+            frame.gas = @intCast(remaining);
         }
 
         pub fn returndatasize(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
