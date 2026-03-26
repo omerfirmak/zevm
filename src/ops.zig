@@ -358,7 +358,7 @@ pub fn Ops(comptime spec: Spec) type {
             const dynamic_gas = mem.toWordSize(args[0]) * 3;
 
             const calldata = frame.safeSliceCalldata(args[1], @intCast(args[0]));
-            frame.memory.copyAndClearRemaining(@intCast(args[2]), @intCast(args[0]), calldata);
+            frame.memory.copyAndClearRemaining(@truncate(args[2]), @intCast(args[0]), calldata);
             return next(next_ip, available_gas - spec.constantGas(.CALLDATACOPY) - dynamic_gas, new_stack_head, frame);
         }
 
@@ -373,7 +373,7 @@ pub fn Ops(comptime spec: Spec) type {
             const dynamic_gas = mem.toWordSize(args[0]) * 3;
 
             const bytecode = frame.code.safeSlice(args[1], @intCast(args[0]));
-            frame.memory.copyAndClearRemaining(@intCast(args[2]), @intCast(args[0]), bytecode);
+            frame.memory.copyAndClearRemaining(@truncate(args[2]), @intCast(args[0]), bytecode);
             return next(next_ip, available_gas - spec.constantGas(.CODECOPY) - dynamic_gas, new_stack_head, frame);
         }
 
@@ -714,7 +714,7 @@ pub fn Ops(comptime spec: Spec) type {
                 return evm.Errors.ReturnDataOutOfBounds;
             }
 
-            const dest = frame.memory.slice(@intCast(args[2]), @intCast(args[0]));
+            const dest = frame.memory.slice(@truncate(args[2]), @intCast(args[0]));
             @memcpy(dest, frame.evm.return_buffer[@intCast(args[1])..@intCast(end)]);
 
             return next(next_ip, available_gas - spec.constantGas(.RETURNDATACOPY) - dynamic_gas, new_stack_head, frame);
