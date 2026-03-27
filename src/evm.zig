@@ -414,6 +414,7 @@ pub const EVM = struct {
 
         // Collect deployed bytecode from the global return buffer
         const deployed_len = self.return_data_size;
+        self.return_data_size = 0;
         const deployed_code = self.return_buffer[0..deployed_len];
         const deposit_gas: u31 = @intCast(deployed_len * 200);
 
