@@ -683,20 +683,30 @@ pub fn Ops(comptime spec: Spec) type {
             }.call;
         }
 
-        pub fn @"return"(_: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
-            _, const args = try frame.stackPop(stack_head, 2, 0);
-            const available_gas = try frame.memory.growToFit(args[1], args[0], gas);
-            const remaining = available_gas - spec.constantGas(.RETURN);
-            if (remaining < 0) return evm.Errors.OutOfGas;
+        pub fn return_variant(comptime variant: Opcode) Fn {
+            return struct {
+                pub fn @"return"(_: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+                    _, const args = try frame.stackPop(stack_head, 2, 0);
+                    const available_gas = try frame.memory.growToFit(args[1], args[0], gas);
+                    const remaining = available_gas - spec.constantGas(variant);
+                    if (remaining < 0) return evm.Errors.OutOfGas;
 
-            if (args[0] > 0) {
-                const source = frame.memory.slice(@intCast(args[1]), @intCast(args[0]));
-                const min_len = @min(frame.return_buffer.len, source.len);
-                @memcpy(frame.return_buffer[0..min_len], source[0..min_len]);
-                @memcpy(frame.evm.return_buffer[0..source.len], source);
-            }
-            frame.evm.return_data_size = @intCast(args[0]);
-            frame.gas = @intCast(remaining);
+                    if (args[0] > 0) {
+                        const source = frame.memory.slice(@intCast(args[1]), @intCast(args[0]));
+                        const min_len = @min(frame.return_buffer.len, source.len);
+
+                        @memcpy(frame.return_buffer[0..min_len], source[0..min_len]);
+                        if (source.len > frame.evm.return_buffer.len) @panic("OutOfMemory");
+                        @memcpy(frame.evm.return_buffer[0..source.len], source);
+                    }
+                    frame.evm.return_data_size = @intCast(args[0]);
+                    frame.gas = @intCast(remaining);
+
+                    if (variant == .REVERT) {
+                        return evm.Errors.Reverted;
+                    }
+                }
+            }.@"return";
         }
 
         pub fn returndatasize(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
@@ -718,23 +728,6 @@ pub fn Ops(comptime spec: Spec) type {
             @memcpy(dest, frame.evm.return_buffer[@intCast(args[1])..@intCast(end)]);
 
             return next(next_ip, available_gas - spec.constantGas(.RETURNDATACOPY) - dynamic_gas, new_stack_head, frame);
-        }
-
-        pub fn revert(_: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
-            _, const args = try frame.stackPop(stack_head, 2, 0);
-            const available_gas = try frame.memory.growToFit(args[1], args[0], gas);
-            const remaining = available_gas - spec.constantGas(.REVERT);
-            if (remaining < 0) return evm.Errors.OutOfGas;
-
-            if (args[0] > 0) {
-                const source = frame.memory.slice(@intCast(args[1]), @intCast(args[0]));
-                const min_len = @min(frame.return_buffer.len, source.len);
-                @memcpy(frame.return_buffer[0..min_len], source[0..min_len]);
-                @memcpy(frame.evm.return_buffer[0..source.len], source);
-            }
-            frame.evm.return_data_size = @intCast(args[0]);
-            frame.gas = @intCast(remaining);
-            return error.Reverted;
         }
 
         // Constructs a jump table for the given spec
@@ -804,8 +797,8 @@ pub fn Ops(comptime spec: Spec) type {
                 .DELEGATECALL = call_variant(.DELEGATECALL),
                 .CALLCODE = call_variant(.CALLCODE),
                 .STATICCALL = call_variant(.STATICCALL),
-                .RETURN = @"return",
-                .REVERT = revert,
+                .RETURN = return_variant(.RETURN),
+                .REVERT = return_variant(.REVERT),
                 .RETURNDATASIZE = returndatasize,
                 .RETURNDATACOPY = returndatacopy,
             });
