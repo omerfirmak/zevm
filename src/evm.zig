@@ -8,6 +8,7 @@ const State = @import("state.zig").State;
 
 const max_stack_size = 1024;
 const empty_code_hash = @import("state.zig").empty_code_hash;
+const Spec = spec.Spec;
 
 pub const Errors = error{
     OutOfGas,
@@ -184,7 +185,7 @@ pub const EVM = struct {
         self.gas_refund = snapshot_ids.gas_refund;
     }
 
-    pub fn process(self: *Self, msg: Message, state: *State) !void {
+    pub fn process(self: *Self, comptime fork: Spec, msg: Message, state: *State) !void {
         if (msg.gas_price < self.context.basefee) {
             return Errors.FeeTooLow;
         }
@@ -205,10 +206,9 @@ pub const EVM = struct {
         if (msg.target != 0) caller_account.nonce = msg.nonce + 1;
         caller_account.balance -= gas_cost;
 
-        // base gas cost: 21000 for calls, 53000 for contract creation
-        const intrinsic_gas: u31 = if (msg.target == 0) 53000 else 21000;
+        const intrinsic_gas: u31 = if (msg.target == 0) fork.tx_create_gas else fork.tx_base_gas;
         const calldata_gas = try calldataCost(msg.calldata);
-        const access_list_gas = try accessListGas(msg.access_list);
+        const access_list_gas = try accessListGas(fork, msg.access_list);
         // EIP-3860: 2 gas per 32-byte initcode word, charged as intrinsic for CREATE txs
         const initcode_gas: u31 = if (msg.target == 0) initcodeWordCost(msg.calldata.len) else 0;
         const total_intrinsic = intrinsic_gas + calldata_gas + access_list_gas + initcode_gas;
@@ -238,8 +238,9 @@ pub const EVM = struct {
             );
         } else {
             // EIP-3860: max initcode size for CREATE transactions
-            if (msg.calldata.len > 2 * 0x6000) return Errors.OutOfGas;
+            if (msg.calldata.len > 2 * fork.max_code_size) return Errors.OutOfGas;
             remaining_gas, _ = self.create(
+                fork,
                 state,
                 msg.caller,
                 msg.calldata,
@@ -339,6 +340,7 @@ pub const EVM = struct {
     // Failures are never propagated — the caller pushes 0 instead of an address.
     pub fn create(
         self: *Self,
+        comptime fork: Spec,
         state: *State,
         creator: u160,
         initcode: []const u8,
@@ -416,11 +418,11 @@ pub const EVM = struct {
         const deployed_len = self.return_data_size;
         self.return_data_size = 0;
         const deployed_code = self.return_buffer[0..deployed_len];
-        const deposit_gas: u31 = @intCast(deployed_len * 200);
+        const deposit_gas: u31 = @intCast(deployed_len * fork.code_deposit_gas);
 
-        if (deployed_len > 0x6000 or // EIP-170: max deployed code size = 0x6000
+        if (deployed_len > fork.max_code_size or // EIP-170
             (deployed_len > 0 and deployed_code[0] == 0xef) or // EIP-3541: reject EOF containers (0xEF prefix) in non-EOF deployments
-            frame.gas < deposit_gas) // Charge code deposit: 200 gas per deployed byte
+            frame.gas < deposit_gas) // Charge code deposit gas
         {
             state.revert(state_snap);
             self.revert(evm_snap);
@@ -443,16 +445,16 @@ pub const EVM = struct {
         return !self.warm_accounts.writeNoClobber(addr, {});
     }
 
-    pub fn accessAccountCost(self: *Self, addr: u160) i32 {
-        return if (self.accessAccount(addr)) 100 else 2600;
+    pub fn accessAccountCost(self: *Self, comptime fork: Spec, addr: u160) i32 {
+        return if (self.accessAccount(addr)) fork.warm_access_gas else fork.cold_account_access_gas;
     }
 
     pub fn accessSlot(self: *Self, addr: u160, slot: u256) bool {
         return !self.warm_slots.writeNoClobber(.{ .address = addr, .slot = slot }, {});
     }
 
-    pub fn accessSlotCost(self: *Self, addr: u160, slot: u256) i32 {
-        return if (self.accessSlot(addr, slot)) 100 else 2100;
+    pub fn accessSlotCost(self: *Self, comptime fork: Spec, addr: u160, slot: u256) i32 {
+        return if (self.accessSlot(addr, slot)) fork.warm_access_gas else fork.cold_sload_gas;
     }
 
     // EIP-2930: pre-warm all addresses and storage keys in the access list
@@ -521,12 +523,11 @@ fn create2Address(creator: u160, salt: u256, initcode: []const u8) u160 {
     return std.mem.readInt(u160, hash[12..32], .big);
 }
 
-// EIP-2930: 2400 per address + 1900 per storage key
-fn accessListGas(access_list: []const AccessListEntry) !u31 {
+fn accessListGas(comptime fork: Spec, access_list: []const AccessListEntry) !u31 {
     var gas: u31 = 0;
     for (access_list) |entry| {
-        gas = std.math.add(u31, gas, 2400) catch return Errors.OutOfGas;
-        const key_gas = std.math.mul(usize, entry.storage_keys.len, 1900) catch return Errors.OutOfGas;
+        gas = std.math.add(u31, gas, fork.access_list_address_gas) catch return Errors.OutOfGas;
+        const key_gas = std.math.mul(usize, entry.storage_keys.len, fork.access_list_storage_key_gas) catch return Errors.OutOfGas;
         gas = std.math.add(u31, gas, @intCast(key_gas)) catch return Errors.OutOfGas;
     }
     return gas;

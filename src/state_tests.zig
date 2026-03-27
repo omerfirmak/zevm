@@ -219,7 +219,8 @@ fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []con
     var rounded = RoundedAllocator{ .backing = fba.allocator() };
     const allocator = rounded.allocator();
     const tx = test_case.transaction;
-    const jump_table = ops.Ops(spec.Osaka).table();
+    const forkSpec = spec.Osaka;
+    const jump_table = ops.Ops(forkSpec).table();
 
     const post_entries = test_case.post.map.get(fork).?;
 
@@ -280,7 +281,7 @@ fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []con
         }
 
         const to = if (tx.to) |t| t.value else 0;
-        const tx_err: ?anyerror = if (vm.process(.{
+        const tx_err: ?anyerror = if (vm.process(forkSpec, .{
             .caller = tx.sender.value,
             .nonce = tx.nonce.value,
             .target = to,

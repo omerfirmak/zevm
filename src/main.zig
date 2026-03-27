@@ -10,7 +10,7 @@ pub fn main() !void {
     const allocator = gpa.allocator();
     var context: evm.Context = std.mem.zeroes(evm.Context);
     const jump_table = ops.Ops(spec.Osaka).table();
-    var vm = try evm.EVM.init(allocator, &context, jump_table);
+    var vm = try evm.EVM.init(allocator, &context, &spec.Osaka, jump_table);
     // const bytecodeRaw: []const u8 = &[_]u8{
     //     0x5b, // JUMPDEST
     //     0x5F, // PUSH0

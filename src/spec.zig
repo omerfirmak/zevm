@@ -13,6 +13,34 @@ pub const Spec = struct {
     fork: Fork,
     gas_table: [256]u32,
 
+    // EIP-2929: access cost tiers
+    warm_access_gas: i32,
+    cold_account_access_gas: i32,
+    cold_sload_gas: i32,
+
+    // EIP-2200/3529: SSTORE gas schedule
+    sstore_set_gas: i32,
+    sstore_reset_gas: i32,
+    sstore_clears_schedule: i32,
+
+    // EIP-170: max deployed code size and deposit cost per byte
+    max_code_size: usize,
+    code_deposit_gas: usize,
+
+    // EIP-2930: access list intrinsic gas
+    access_list_address_gas: u31,
+    access_list_storage_key_gas: u31,
+
+    // Intrinsic base gas per transaction type
+    tx_base_gas: u31,
+    tx_create_gas: u31,
+
+    // Per-word gas for hashing operations (KECCAK256, CREATE2)
+    keccak_word_gas: i32,
+
+    // EIP-150: denominator for the 63/64 gas forwarding rule
+    gas_forward_denom: i32,
+
     pub fn constantGas(self: *const Self, comptime op: Opcode) i32 {
         return @intCast(self.gas_table[@intFromEnum(op)]);
     }
@@ -21,6 +49,27 @@ pub const Spec = struct {
 // Osaka hardfork spec
 pub const Osaka = Spec{
     .fork = .Osaka,
+
+    .warm_access_gas = 100,
+    .cold_account_access_gas = 2600,
+    .cold_sload_gas = 2100,
+
+    .sstore_set_gas = 20000,
+    .sstore_reset_gas = 2900,
+    .sstore_clears_schedule = 4800,
+
+    .max_code_size = 0x6000,
+    .code_deposit_gas = 200,
+
+    .access_list_address_gas = 2400,
+    .access_list_storage_key_gas = 1900,
+
+    .tx_base_gas = 21000,
+    .tx_create_gas = 53000,
+
+    .keccak_word_gas = 6,
+    .gas_forward_denom = 64,
+
     .gas_table = std.enums.directEnumArrayDefault(Opcode, u32, 0, 256, .{
         .STOP = 0,
         .ADD = 3,
