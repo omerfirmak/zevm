@@ -443,8 +443,16 @@ pub const EVM = struct {
         return !self.warm_accounts.writeNoClobber(addr, {});
     }
 
+    pub fn accessAccountCost(self: *Self, addr: u160) i32 {
+        return if (self.accessAccount(addr)) 100 else 2600;
+    }
+
     pub fn accessSlot(self: *Self, addr: u160, slot: u256) bool {
         return !self.warm_slots.writeNoClobber(.{ .address = addr, .slot = slot }, {});
+    }
+
+    pub fn accessSlotCost(self: *Self, addr: u160, slot: u256) i32 {
+        return if (self.accessSlot(addr, slot)) 100 else 2100;
     }
 
     // EIP-2930: pre-warm all addresses and storage keys in the access list

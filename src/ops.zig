@@ -312,8 +312,7 @@ pub fn Ops(comptime spec: Spec) type {
         pub fn balance(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 1, 1);
             const target: u160 = @truncate(args[0]);
-            const is_warm = frame.evm.accessAccount(target);
-            const dynamic_cost: i32 = if (is_warm) 100 else 2600;
+            const dynamic_cost = frame.evm.accessAccountCost(target);
             args[0] = frame.state.accounts.read(target).balance;
             return next(next_ip, gas - spec.constantGas(.BALANCE) - dynamic_cost, new_stack_head, frame);
         }
@@ -380,8 +379,7 @@ pub fn Ops(comptime spec: Spec) type {
         pub fn extcodehash(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 1, 1);
             const target: u160 = @truncate(args[0]);
-            const is_warm = frame.evm.accessAccount(target);
-            const dynamic_cost: i32 = if (is_warm) 100 else 2600;
+            const dynamic_cost = frame.evm.accessAccountCost(target);
 
             const account = frame.state.accounts.read(target);
             args[0] = if (state.isEmptyAccount(account)) 0 else account.code_hash;
@@ -391,8 +389,7 @@ pub fn Ops(comptime spec: Spec) type {
         pub fn extcodesize(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 1, 1);
             const target: u160 = @truncate(args[0]);
-            const is_warm = frame.evm.accessAccount(target);
-            const dynamic_cost: i32 = if (is_warm) 100 else 2600;
+            const dynamic_cost = frame.evm.accessAccountCost(target);
 
             const code_hash = frame.state.accounts.read(target).code_hash;
             if (code_hash != state.empty_code_hash) {
@@ -407,9 +404,7 @@ pub fn Ops(comptime spec: Spec) type {
             const new_stack_head, const args = try frame.stackPop(stack_head, 4, 0);
             const available_gas = try frame.memory.growToFit(args[2], args[0], gas);
             const target: u160 = @truncate(args[3]);
-            const is_warm = frame.evm.accessAccount(target);
-            const account_access_cost: i32 = if (is_warm) 100 else 2600;
-            const dynamic_gas = mem.toWordSize(args[0]) * 3 + account_access_cost;
+            const dynamic_gas = mem.toWordSize(args[0]) * 3 + frame.evm.accessAccountCost(target);
 
             const code_hash = frame.state.accounts.read(target).code_hash;
             var slice: []const u8 = &[_]u8{};
@@ -501,8 +496,7 @@ pub fn Ops(comptime spec: Spec) type {
 
         pub fn sload(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 1, 1);
-            const is_warm = frame.evm.accessSlot(frame.target, args[0]);
-            const dynamic_gas: i32 = if (is_warm) 100 else 2100;
+            const dynamic_gas = frame.evm.accessSlotCost(frame.target, args[0]);
             args[0] = frame.state.contract_state.read(.{ .address = frame.target, .slot = args[0] });
             return next(next_ip, gas - spec.constantGas(.SLOAD) - dynamic_gas, new_stack_head, frame);
         }
@@ -669,9 +663,8 @@ pub fn Ops(comptime spec: Spec) type {
                     const addr: u160 = if (has_value_arg) @truncate(args[5]) else @truncate(args[4]);
                     const call_gas = if (has_value_arg) args[6] else args[5];
 
-                    const is_warm = frame.evm.accessAccount(addr);
+                    const address_access_cost = frame.evm.accessAccountCost(addr);
                     const code_account = frame.state.accounts.read(addr);
-                    const address_access_cost: i32 = if (is_warm) 100 else 2600;
                     if (available_gas < address_access_cost) {
                         return evm.Errors.OutOfGas;
                     }
