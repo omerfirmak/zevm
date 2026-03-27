@@ -365,14 +365,17 @@ pub const EVM = struct {
         const existing = state.accounts.read(new_addr);
         if (existing.nonce != 0 or existing.code_hash != empty_code_hash) return .{ 0, 0 };
 
+        // Increase creator nonce before the snapshot
+        var creator_acc = state.accounts.update(creator);
+        creator_acc.nonce += 1;
+
         const state_snap = state.snapshot();
         const evm_snap = self.snapshot();
         self.return_data_size = 0;
 
-        // Commit creator nonce increment and value transfer atomically
-        const acc = state.accounts.update(creator);
-        acc.nonce += 1;
-        acc.balance -= value;
+        // Commit value transfer
+        creator_acc = state.accounts.update(creator);
+        creator_acc.balance -= value;
         const new_contract_acc = state.accounts.update(new_addr);
         new_contract_acc.nonce = 1; // EIP-161
         new_contract_acc.balance += value;
