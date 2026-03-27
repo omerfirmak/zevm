@@ -377,6 +377,50 @@ pub fn Ops(comptime spec: Spec) type {
             return next(next_ip, available_gas - spec.constantGas(.CODECOPY) - dynamic_gas, new_stack_head, frame);
         }
 
+        pub fn extcodehash(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+            const new_stack_head, const args = try frame.stackPop(stack_head, 1, 1);
+            const target: u160 = @truncate(args[0]);
+            const is_warm = frame.evm.accessAccount(target);
+            const dynamic_cost: i32 = if (is_warm) 100 else 2600;
+
+            const account = frame.state.accounts.read(target);
+            args[0] = if (state.isEmptyAccount(account)) 0 else account.code_hash;
+            return next(next_ip, gas - spec.constantGas(.EXTCODEHASH) - dynamic_cost, new_stack_head, frame);
+        }
+
+        pub fn extcodesize(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+            const new_stack_head, const args = try frame.stackPop(stack_head, 1, 1);
+            const target: u160 = @truncate(args[0]);
+            const is_warm = frame.evm.accessAccount(target);
+            const dynamic_cost: i32 = if (is_warm) 100 else 2600;
+
+            const code_hash = frame.state.accounts.read(target).code_hash;
+            if (code_hash != state.empty_code_hash) {
+                args[0] = frame.state.code_storage.get(code_hash).?.bytes.len;
+            } else {
+                args[0] = 0;
+            }
+            return next(next_ip, gas - spec.constantGas(.EXTCODESIZE) - dynamic_cost, new_stack_head, frame);
+        }
+
+        pub fn extcodecopy(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+            const new_stack_head, const args = try frame.stackPop(stack_head, 4, 0);
+            const available_gas = try frame.memory.growToFit(args[2], args[0], gas);
+            const target: u160 = @truncate(args[3]);
+            const is_warm = frame.evm.accessAccount(target);
+            const account_access_cost: i32 = if (is_warm) 100 else 2600;
+            const dynamic_gas = mem.toWordSize(args[0]) * 3 + account_access_cost;
+
+            const code_hash = frame.state.accounts.read(target).code_hash;
+            var slice: []const u8 = &[_]u8{};
+            if (code_hash != state.empty_code_hash) {
+                const bytecode = frame.state.code_storage.get(code_hash).?;
+                slice = bytecode.safeSlice(args[1], @intCast(args[0]));
+            }
+            frame.memory.copyAndClearRemaining(@truncate(args[2]), @intCast(args[0]), slice);
+            return next(next_ip, available_gas - spec.constantGas(.EXTCODECOPY) - dynamic_gas, new_stack_head, frame);
+        }
+
         pub fn gasprice(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head = try frame.stackPush(stack_head, frame.context.gas_price);
             return next(next_ip, gas - spec.constantGas(.GASPRICE), new_stack_head, frame);
@@ -799,6 +843,9 @@ pub fn Ops(comptime spec: Spec) type {
                 .STATICCALL = call_variant(.STATICCALL),
                 .RETURN = return_variant(.RETURN),
                 .REVERT = return_variant(.REVERT),
+                .EXTCODECOPY = extcodecopy,
+                .EXTCODEHASH = extcodehash,
+                .EXTCODESIZE = extcodesize,
                 .RETURNDATASIZE = returndatasize,
                 .RETURNDATACOPY = returndatacopy,
             });

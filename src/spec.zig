@@ -65,6 +65,7 @@ pub const Osaka = Spec{
         .EXTCODECOPY = 0,
         .RETURNDATASIZE = 2,
         .RETURNDATACOPY = 3,
+        .EXTCODEHASH = 0,
         .BLOCKHASH = 20,
         .COINBASE = 2,
         .TIMESTAMP = 2,
