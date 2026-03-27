@@ -155,7 +155,7 @@ pub const EVM = struct {
     pub fn init(allocator: std.mem.Allocator, context: *const Context, jump_table: *const [256]ops.FnOpaquePtr) !Self {
         var pre_state: storage.SlotKeyedMap(u256) = .empty;
         try pre_state.ensureTotalCapacity(allocator, 10_000);
-        return Self{
+        var self = Self{
             .gpa = allocator,
             .context = context,
             .return_buffer = try allocator.alloc(u8, 16 * 1024 * 1024),
@@ -166,6 +166,8 @@ pub const EVM = struct {
             .gas_refund = 0,
             .jump_table = jump_table,
         };
+        _ = self.accessAccount(context.coinbase); // EIP-3651
+        return self;
     }
 
     pub fn snapshot(self: *Self) Snapshot {
