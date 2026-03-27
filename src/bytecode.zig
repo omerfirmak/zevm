@@ -17,8 +17,7 @@ threaded_code: []?ops.FnOpaquePtr,
 // Creates a new Bytecode instance by first building a threaded code from the given
 // raw bytecode and jumptable
 pub fn init(gpa: std.mem.Allocator, bytes: []const u8, jump_table: *const [256]ops.Fn) !Bytecode {
-    var threaded_code = try gpa.alloc(?ops.Fn, bytes.len + 32);
-    @memset(threaded_code[bytes.len..], jump_table[@intFromEnum(Opcode.STOP)]);
+    var threaded_code = try gpa.alloc(?ops.Fn, bytes.len + 33);
     var pc: usize = 0;
     while (pc < bytes.len) : (pc += 1) {
         const opcode = bytes[pc];
@@ -26,7 +25,7 @@ pub fn init(gpa: std.mem.Allocator, bytes: []const u8, jump_table: *const [256]o
         // Skip push data, leave the function pointer null
         if (opcode >= @intFromEnum(Opcode.PUSH1) and opcode <= @intFromEnum(Opcode.PUSH32)) {
             const data_len = opcode - @intFromEnum(Opcode.PUSH1) + 1;
-            const data_end = @min(bytes.len, pc + data_len + 1);
+            const data_end = pc + data_len + 1;
             // Fill positions of PUSH data bytes with null function pointers
             for (threaded_code[pc + 1 .. data_end]) |*slot| {
                 slot.* = null;
@@ -35,6 +34,7 @@ pub fn init(gpa: std.mem.Allocator, bytes: []const u8, jump_table: *const [256]o
             pc = data_end - 1;
         }
     }
+    @memset(threaded_code[pc..], jump_table[@intFromEnum(Opcode.STOP)]);
 
     return .{
         .bytes = bytes,
