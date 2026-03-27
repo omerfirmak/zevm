@@ -8,6 +8,7 @@ const State = @import("state.zig").State;
 
 const max_stack_size = 1024;
 const empty_code_hash = @import("state.zig").empty_code_hash;
+const empty_root_hash = @import("state.zig").empty_root_hash;
 const Spec = spec.Spec;
 
 pub const Errors = error{
@@ -365,9 +366,9 @@ pub const EVM = struct {
         // EIP-2929: warm the new address
         _ = self.accessAccount(new_addr);
 
-        // EIP-7610: fail on collision (non-zero nonce or existing code)
+        // EIP-7610: fail on collision (non-zero nonce or existing code or existing storage)
         const existing = state.accounts.read(new_addr);
-        if (existing.nonce != 0 or existing.code_hash != empty_code_hash) return .{ 0, 0 };
+        if (existing.nonce != 0 or existing.code_hash != empty_code_hash or existing.storage_hash != empty_root_hash) return .{ 0, 0 };
 
         // Increase creator nonce before the snapshot
         var creator_acc = state.accounts.update(creator);
