@@ -196,6 +196,7 @@ pub const EVM = struct {
             return Errors.FeeTooLow;
         }
 
+        _ = self.accessAccount(msg.caller);
         var caller_account = state.accounts.update(msg.caller);
         if (caller_account.nonce < msg.nonce) {
             return Errors.NonceTooLow;
@@ -227,6 +228,7 @@ pub const EVM = struct {
 
         var remaining_gas = gas_limit;
         if (msg.target != 0) {
+            _ = self.accessAccount(msg.target);
             const target_code_hash = state.accounts.read(msg.target).code_hash;
             const code = state.code_storage.get(target_code_hash);
             remaining_gas, _ = self.call(
