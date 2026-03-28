@@ -271,7 +271,9 @@ pub const EVM = struct {
         // EIP-1559: coinbase receives only the tip; the base fee is burned
         const tip = msg.gas_price - self.context.basefee;
         const gas_used: u256 = msg.gas_limit - remaining_gas;
-        state.accounts.update(self.context.coinbase).balance += gas_used * tip;
+        if (tip > 0) {
+            state.accounts.update(self.context.coinbase).balance += gas_used * tip;
+        }
     }
 
     // Returns { remaining_gas, optional_error }. Not an error union because Reverted
