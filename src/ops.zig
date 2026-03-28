@@ -488,10 +488,10 @@ pub fn Ops(comptime spec: Spec) type {
 
         pub fn mstore8(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 2, 0);
-            const available_gas = try frame.memory.growToFit(args[0], 1, gas);
+            const available_gas = try frame.memory.growToFit(args[1], 1, gas);
 
-            const bytes = frame.memory.slice(@intCast(args[0]), 1);
-            bytes[0] = @truncate(args[1]);
+            const bytes = frame.memory.slice(@intCast(args[1]), 1);
+            bytes[0] = @truncate(args[0]);
             return next(next_ip, available_gas - spec.constantGas(.MSTORE8), new_stack_head, frame);
         }
 
