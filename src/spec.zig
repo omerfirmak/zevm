@@ -41,6 +41,8 @@ pub const Spec = struct {
     // EIP-150: denominator for the 63/64 gas forwarding rule
     gas_forward_denom: i32,
 
+    selfdestruct_empty_target_gas: i32,
+
     pub fn constantGas(self: *const Self, comptime op: Opcode) i32 {
         return @intCast(self.gas_table[@intFromEnum(op)]);
     }
@@ -69,6 +71,8 @@ pub const Osaka = Spec{
 
     .keccak_word_gas = 6,
     .gas_forward_denom = 64,
+
+    .selfdestruct_empty_target_gas = 25000,
 
     .gas_table = std.enums.directEnumArrayDefault(Opcode, u32, 0, 256, .{
         .STOP = 0,
@@ -224,6 +228,6 @@ pub const Osaka = Spec{
         .CREATE2 = 32000,
         .STATICCALL = 0,
         .REVERT = 0,
-        .SELFDESTRUCT = 0,
+        .SELFDESTRUCT = 5000,
     }),
 };

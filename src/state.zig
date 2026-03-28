@@ -15,7 +15,7 @@ pub const Account = struct {
     code_hash: u256,
 };
 
-pub fn isEmptyAccount(acc: Account) bool {
+pub fn isEmptyAccount(acc: *const Account) bool {
     return acc.nonce == 0 and acc.balance == 0 and acc.code_hash == empty_code_hash;
 }
 

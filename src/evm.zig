@@ -153,10 +153,14 @@ pub const EVM = struct {
     gas_refund: i32,
     // jump table used to compile initcode during CREATE/CREATE2
     jump_table: *const [256]ops.FnOpaquePtr,
+    // Accounts created in this txn, also used to mark them for SELFDESTRUCT
+    created_accounts: storage.AddressKeyedMap(bool),
 
     pub fn init(allocator: std.mem.Allocator, context: *const Context, jump_table: *const [256]ops.FnOpaquePtr) !Self {
         var pre_state: storage.SlotKeyedMap(u256) = .empty;
         try pre_state.ensureTotalCapacity(allocator, 10_000);
+        var created_accounts: storage.AddressKeyedMap(bool) = .empty;
+        try created_accounts.ensureTotalCapacity(allocator, 1_000);
         var self = Self{
             .gpa = allocator,
             .context = context,
@@ -167,6 +171,7 @@ pub const EVM = struct {
             .warm_slots = try storage.SlotsAccessList.init(allocator, 10_000, 10_000),
             .gas_refund = 0,
             .jump_table = jump_table,
+            .created_accounts = created_accounts,
         };
         _ = self.accessAccount(context.coinbase); // EIP-3651
         return self;
@@ -438,7 +443,7 @@ pub const EVM = struct {
             state.deploy_code(code_hash, deployed_code, self.jump_table);
         }
         state.accounts.update(new_addr).code_hash = code_hash;
-
+        self.created_accounts.putAssumeCapacity(new_addr, true);
         return .{ frame.gas, new_addr };
     }
 
@@ -465,6 +470,12 @@ pub const EVM = struct {
             for (entry.storage_keys) |key| {
                 _ = self.accessSlot(entry.address, key);
             }
+        }
+    }
+
+    pub fn markForDestruction(self: *Self, addr: u160) void {
+        if (self.created_accounts.getEntry(addr)) |entry| {
+            entry.value_ptr.* = false;
         }
     }
 };

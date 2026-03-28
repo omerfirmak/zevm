@@ -382,7 +382,7 @@ pub fn Ops(comptime spec: Spec) type {
             const dynamic_cost = frame.evm.accessAccountCost(spec, target);
 
             const account = frame.state.accounts.read(target);
-            args[0] = if (state.isEmptyAccount(account)) 0 else account.code_hash;
+            args[0] = if (state.isEmptyAccount(&account)) 0 else account.code_hash;
             return next(next_ip, gas - spec.constantGas(.EXTCODEHASH) - dynamic_cost, new_stack_head, frame);
         }
 
@@ -767,6 +767,34 @@ pub fn Ops(comptime spec: Spec) type {
             return next(next_ip, available_gas - spec.constantGas(.RETURNDATACOPY) - dynamic_gas, new_stack_head, frame);
         }
 
+        pub fn selfdestruct(_: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+            if (frame.is_static) return evm.Errors.WriteProtection;
+
+            _, const args = try frame.stackPop(stack_head, 1, 0);
+            const beneficiary: u160 = @truncate(args[0]);
+
+            const is_warm = frame.evm.accessAccount(beneficiary);
+            const access_cost = if (!is_warm) spec.cold_account_access_gas else 0;
+
+            var empty_account_cost: u31 = 0;
+            var current_account = frame.state.accounts.update(frame.target);
+            const transferred_value = current_account.balance;
+            if (transferred_value > 0) {
+                var beneficiary_account = frame.state.accounts.update(beneficiary);
+                empty_account_cost = if (state.isEmptyAccount(beneficiary_account)) spec.selfdestruct_empty_target_gas else 0;
+                beneficiary_account.balance += transferred_value;
+            }
+            current_account.balance -= transferred_value;
+
+            const remaining = gas - access_cost - empty_account_cost - spec.constantGas(.SELFDESTRUCT);
+            if (remaining < 0) {
+                return evm.Errors.OutOfGas;
+            }
+            frame.gas = @intCast(remaining);
+
+            frame.evm.markForDestruction(frame.target);
+        }
+
         // Constructs a jump table for the given spec
         pub fn table() [256]Fn {
             var t = std.enums.directEnumArrayDefault(Opcode, Fn, invalid, 256, .{
@@ -841,6 +869,7 @@ pub fn Ops(comptime spec: Spec) type {
                 .EXTCODESIZE = extcodesize,
                 .RETURNDATASIZE = returndatasize,
                 .RETURNDATACOPY = returndatacopy,
+                .SELFDESTRUCT = selfdestruct,
             });
             inline for (0..33) |n| {
                 t[@intFromEnum(Opcode.PUSH0) + n] = pushN(n);
