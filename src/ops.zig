@@ -268,8 +268,9 @@ pub fn Ops(comptime spec: Spec) type {
         }
 
         pub fn opGas(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
-            const new_stack_head = try frame.stackPush(stack_head, @intCast(gas));
-            return next(next_ip, gas - spec.constantGas(.GAS), new_stack_head, frame);
+            const remaining_gas = gas - spec.constantGas(.GAS);
+            const new_stack_head = try frame.stackPush(stack_head, @intCast(remaining_gas));
+            return next(next_ip, remaining_gas, new_stack_head, frame);
         }
 
         pub fn pushN(comptime n: usize) Fn {
