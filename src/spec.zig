@@ -43,6 +43,9 @@ pub const Spec = struct {
 
     selfdestruct_empty_target_gas: i32,
 
+    // EIP-7623 TOTAL_COST_FLOOR_PER_TOKEN
+    total_cost_floor_per_token: u31,
+
     pub fn constantGas(self: *const Self, comptime op: Opcode) i32 {
         return @intCast(self.gas_table[@intFromEnum(op)]);
     }
@@ -73,6 +76,8 @@ pub const Osaka = Spec{
     .gas_forward_denom = 64,
 
     .selfdestruct_empty_target_gas = 25000,
+
+    .total_cost_floor_per_token = 10,
 
     .gas_table = std.enums.directEnumArrayDefault(Opcode, u32, 0, 256, .{
         .STOP = 0,

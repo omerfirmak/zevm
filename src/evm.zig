@@ -214,19 +214,20 @@ pub const EVM = struct {
         caller_account.balance -= gas_cost;
 
         const intrinsic_gas: u31 = if (msg.target == 0) fork.tx_create_gas else fork.tx_base_gas;
-        const calldata_gas = try calldataCost(msg.calldata);
+        const calldata_gas, const floor_data_cost = try calldataCost(fork, msg.calldata);
+        const floor_cost = fork.tx_base_gas + floor_data_cost; // EIP-7623
         const access_list_gas = try accessListGas(fork, msg.access_list);
         // EIP-3860: 2 gas per 32-byte initcode word, charged as intrinsic for CREATE txs
         const initcode_gas: u31 = if (msg.target == 0) initcodeWordCost(msg.calldata.len) else 0;
         const total_intrinsic = intrinsic_gas + calldata_gas + access_list_gas + initcode_gas;
-        if (msg.gas_limit < total_intrinsic) {
+        if (msg.gas_limit < total_intrinsic or msg.gas_limit < floor_cost) {
             return Errors.OutOfGas;
         }
-        const gas_limit = msg.gas_limit - total_intrinsic;
+        const execution_gas_limit = msg.gas_limit - total_intrinsic;
 
         self.applyAccessList(msg.access_list);
 
-        var remaining_gas = gas_limit;
+        var remaining_gas = execution_gas_limit;
         if (msg.target != 0) {
             _ = self.accessAccount(msg.target);
             const target_code_hash = state.accounts.read(msg.target).code_hash;
@@ -265,6 +266,11 @@ pub const EVM = struct {
         const effective_refund: u31 = @intCast(@min(@max(self.gas_refund, 0), max_refund));
         remaining_gas += effective_refund;
         self.gas_refund = 0;
+
+        const gas_used_by_execution = msg.gas_limit - remaining_gas;
+        if (gas_used_by_execution < floor_cost) {
+            remaining_gas = msg.gas_limit - floor_cost;
+        }
 
         state.accounts.update(msg.caller).balance += @as(u256, @intCast(remaining_gas)) * msg.gas_price;
 
@@ -551,11 +557,13 @@ fn accessListGas(comptime fork: Spec, access_list: []const AccessListEntry) !u31
     return gas;
 }
 
-fn calldataCost(calldata: []u8) !u31 {
+fn calldataCost(comptime fork: Spec, calldata: []u8) !struct { u31, u31 } {
     const zeros = std.mem.count(u8, calldata, &[_]u8{0});
     const cost = zeros * 4 + (calldata.len - zeros) * 16;
-    if (cost > std.math.maxInt(u31)) {
+    const tokens = zeros + (calldata.len - zeros) * 4;
+    const floor = std.math.mul(usize, tokens, fork.total_cost_floor_per_token) catch return Errors.OutOfGas;
+    if (cost > std.math.maxInt(u31) or floor > std.math.maxInt(u31)) {
         return Errors.OutOfGas;
     }
-    return @intCast(cost);
+    return .{ @intCast(cost), @intCast(floor) };
 }
