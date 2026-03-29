@@ -269,6 +269,9 @@ pub fn Ops(comptime spec: Spec) type {
 
         pub fn opGas(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const remaining_gas = gas - spec.constantGas(.GAS);
+            if (remaining_gas < 0) {
+                return evm.Errors.OutOfGas;
+            }
             const new_stack_head = try frame.stackPush(stack_head, @intCast(remaining_gas));
             return next(next_ip, remaining_gas, new_stack_head, frame);
         }
