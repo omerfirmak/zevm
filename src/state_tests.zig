@@ -126,10 +126,12 @@ pub const StateTest = struct {
 // Top-level JSON is a map of test name -> StateTest
 pub const StateTestFile = std.json.ArrayHashMap(StateTest);
 
+var print_mutex: std.Thread.Mutex = .{};
+
 test "state tests" {
     const supported_forks = [_][]const u8{"Osaka"};
 
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.GeneralPurposeAllocator(.{ .thread_safe = true }){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -141,20 +143,38 @@ test "state tests" {
     var dir = try std.fs.cwd().openDir("fixtures/state_tests", .{ .iterate = true });
     defer dir.close();
 
-    var walker = try dir.walk(allocator);
-    defer walker.deinit();
-
-    var any_failed = false;
-    while (try walker.next()) |entry| {
-        if (entry.kind != .file) continue;
-        if (!std.mem.endsWith(u8, entry.path, ".json")) continue;
-
-        runStateTestFile(allocator, dir, entry.path, supported_forks[0..]) catch |err| switch (err) {
-            error.StateTestFailed => any_failed = true,
-            else => return err,
-        };
+    var paths = std.ArrayListUnmanaged([]u8){};
+    defer {
+        for (paths.items) |p| allocator.free(p);
+        paths.deinit(allocator);
     }
-    if (any_failed) return error.StateTestFailed;
+    {
+        var walker = try dir.walk(allocator);
+        defer walker.deinit();
+        while (try walker.next()) |entry| {
+            if (entry.kind != .file) continue;
+            if (!std.mem.endsWith(u8, entry.path, ".json")) continue;
+            try paths.append(allocator, try allocator.dupe(u8, entry.path));
+        }
+    }
+
+    var any_failed = std.atomic.Value(bool).init(false);
+    var pool: std.Thread.Pool = undefined;
+    try pool.init(.{ .allocator = allocator });
+    defer pool.deinit();
+    var wg = std.Thread.WaitGroup{};
+    for (paths.items) |path| {
+        pool.spawnWg(&wg, fileWorker, .{ allocator, dir, path, supported_forks[0..], &any_failed });
+    }
+    pool.waitAndWork(&wg);
+
+    if (any_failed.load(.acquire)) return error.StateTestFailed;
+}
+
+fn fileWorker(allocator: std.mem.Allocator, dir: std.fs.Dir, path: []const u8, forks: []const []const u8, any_failed: *std.atomic.Value(bool)) void {
+    runStateTestFile(allocator, dir, path, forks) catch {
+        any_failed.store(true, .release);
+    };
 }
 
 fn runStateTestFile(allocator: std.mem.Allocator, dir: std.fs.Dir, path: []const u8, forks: []const []const u8) !void {
@@ -177,13 +197,13 @@ fn runStateTestFile(allocator: std.mem.Allocator, dir: std.fs.Dir, path: []const
         for (forks) |fork| {
             _ = test_case.post.map.get(fork) orelse continue;
 
-            std.debug.print("{s}/{s}: ", .{ name, fork });
-            runStateTest(allocator, &test_case, fork) catch |err| {
-                std.debug.print("FAIL: {}\n", .{err});
+            const test_err = runStateTest(allocator, &test_case, fork);
+            print_mutex.lock();
+            test_err catch |err| {
+                std.debug.print("{s}: FAIL: {}\n", .{ name, err });
                 any_failed = true;
-                continue;
             };
-            std.debug.print("PASS\n", .{});
+            print_mutex.unlock();
         }
     }
     if (any_failed) return error.StateTestFailed;
