@@ -306,7 +306,9 @@ pub const EVM = struct {
                 return .{ initial_gas, Errors.NotEnoughFunds };
             }
             caller_account.balance -= value;
-            state.accounts.update(target).balance += value;
+            if (value > 0) {
+                state.accounts.update(target).balance += value;
+            }
         }
 
         if (code == null) {
