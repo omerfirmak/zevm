@@ -116,8 +116,21 @@ pub fn Ops(comptime spec: Spec) type {
 
         pub fn exp(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 2, 1);
-            args[0] = std.math.pow(u256, args[1], args[0]);
-            return next(next_ip, gas - spec.constantGas(.EXP), new_stack_head, frame);
+            var exponent = args[0];
+            const exp_bytes: i32 = if (exponent == 0) 0 else @divFloor(256 - @as(i32, @clz(exponent)) + 7, 8);
+            const dynamic_gas = spec.exp_per_byte_gas * exp_bytes;
+
+            var base: u512 = args[1];
+            var result: u512 = 1;
+
+            while (exponent > 0) : (exponent >>= 1) {
+                if (@as(u1, @truncate(exponent)) == 1) {
+                    result = @mod(result * base, std.math.maxInt(u256));
+                }
+                base = @mod(base * base, std.math.maxInt(u256));
+            }
+            args[0] = @intCast(result);
+            return next(next_ip, gas - spec.constantGas(.EXP) - dynamic_gas, new_stack_head, frame);
         }
 
         pub fn signextend(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
@@ -844,6 +857,7 @@ pub fn Ops(comptime spec: Spec) type {
                 .ADDMOD = addmod,
                 .MULMOD = mulmod,
                 .SIGNEXTEND = signextend,
+                .EXP = exp,
                 .LT = lt,
                 .GT = gt,
                 .SLT = slt,

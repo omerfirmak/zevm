@@ -46,6 +46,9 @@ pub const Spec = struct {
     // EIP-7623 TOTAL_COST_FLOOR_PER_TOKEN
     total_cost_floor_per_token: u31,
 
+    // EIP-160: gas per byte of exponent in EXP
+    exp_per_byte_gas: i32,
+
     // CALL gas constants
     call_value_gas: i32, // charged when CALL/CALLCODE sends non-zero value
     call_new_account_gas: i32, // charged when CALL creates a new (empty) account
@@ -87,6 +90,8 @@ pub const Osaka = Spec{
     .call_value_gas = 9000,
     .call_new_account_gas = 25000,
     .call_stipend = 2300,
+
+    .exp_per_byte_gas = 50,
 
     .gas_table = std.enums.directEnumArrayDefault(Opcode, u32, 0, 256, .{
         .STOP = 0,
