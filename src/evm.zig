@@ -453,7 +453,9 @@ pub const EVM = struct {
         // Store deployed code and update account code hash
         var code_hash: u256 = empty_code_hash;
         if (deployed_len > 0) {
-            std.crypto.hash.sha3.Keccak256.hash(deployed_code, @ptrCast(&code_hash), .{});
+            var hash: [32]u8 = undefined;
+            std.crypto.hash.sha3.Keccak256.hash(deployed_code, &hash, .{});
+            code_hash = std.mem.readInt(u256, &hash, .big);
             state.deploy_code(code_hash, deployed_code, self.jump_table);
         }
         state.accounts.update(new_addr).code_hash = code_hash;
