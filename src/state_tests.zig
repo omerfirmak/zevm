@@ -282,7 +282,9 @@ fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []con
 
             var code_hash: u256 = state_mod.empty_code_hash;
             if (pre_acct.code.value.len > 0) {
-                std.crypto.hash.sha3.Keccak256.hash(pre_acct.code.value, @ptrCast(&code_hash), .{});
+                var hash_bytes: [32]u8 = undefined;
+                std.crypto.hash.sha3.Keccak256.hash(pre_acct.code.value, &hash_bytes, .{});
+                code_hash = std.mem.readInt(u256, &hash_bytes, .big);
                 state.code_storage.putAssumeCapacity(code_hash, try Bytecode.init(allocator, pre_acct.code.value, &jump_table));
             }
 
