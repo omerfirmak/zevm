@@ -335,7 +335,10 @@ fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []con
         while (actual_it.next()) |entry| {
             const ca_entry = vm.created_accounts.getEntry(entry.*);
             if (ca_entry == null or ca_entry.?.value_ptr.* == true) {
-                num_alive_accounts += 1;
+                const acc = state.accounts.read(entry.*);
+                if (!@import("state.zig").isEmptyAccount(&acc)) {
+                    num_alive_accounts += 1;
+                }
             }
         }
 
