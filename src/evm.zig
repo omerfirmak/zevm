@@ -5,11 +5,11 @@ const storage = @import("storage.zig");
 const Bytecode = @import("bytecode.zig").Bytecode;
 const Memory = @import("memory.zig").Memory;
 const State = @import("state.zig").State;
+const Spec = spec.Spec;
 
 const max_stack_size = 1024;
 const empty_code_hash = @import("state.zig").empty_code_hash;
 const empty_root_hash = @import("state.zig").empty_root_hash;
-const Spec = spec.Spec;
 
 pub const Errors = error{
     OutOfGas,
