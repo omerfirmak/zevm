@@ -46,6 +46,11 @@ pub const Spec = struct {
     // EIP-7623 TOTAL_COST_FLOOR_PER_TOKEN
     total_cost_floor_per_token: u31,
 
+    // CALL gas constants
+    call_value_gas: i32, // charged when CALL/CALLCODE sends non-zero value
+    call_new_account_gas: i32, // charged when CALL creates a new (empty) account
+    call_stipend: u31, // bonus gas given to callee when value is transferred
+
     pub fn constantGas(self: *const Self, comptime op: Opcode) i32 {
         return @intCast(self.gas_table[@intFromEnum(op)]);
     }
@@ -78,6 +83,10 @@ pub const Osaka = Spec{
     .selfdestruct_empty_target_gas = 25000,
 
     .total_cost_floor_per_token = 10,
+
+    .call_value_gas = 9000,
+    .call_new_account_gas = 25000,
+    .call_stipend = 2300,
 
     .gas_table = std.enums.directEnumArrayDefault(Opcode, u32, 0, 256, .{
         .STOP = 0,

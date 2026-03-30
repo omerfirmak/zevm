@@ -691,10 +691,39 @@ pub fn Ops(comptime spec: Spec) type {
 
                     const address_access_cost = frame.evm.accessAccountCost(spec, addr);
                     const code_account = frame.state.accounts.read(addr);
-                    if (available_gas < address_access_cost) {
+
+                    const call_caller: u160 = if (variant == .DELEGATECALL) frame.caller else frame.target;
+                    const call_target: u160 = switch (variant) {
+                        .CALL, .STATICCALL => addr,
+                        .CALLCODE, .DELEGATECALL => frame.target,
+                        else => unreachable,
+                    };
+                    const value: u256 = switch (variant) {
+                        .CALL, .CALLCODE => args[4],
+                        .DELEGATECALL => frame.value,
+                        .STATICCALL => 0,
+                        else => unreachable,
+                    };
+
+                    const value_is_positive = value > 0;
+                    // Value transfer is forbidden in static context
+                    if (frame.is_static and value_is_positive) return evm.Errors.WriteProtection;
+
+                    const positive_value_cost = if ((variant == .CALL or variant == .CALLCODE) and value_is_positive)
+                        spec.call_value_gas
+                    else
+                        0;
+                    const stipend = if (positive_value_cost > 0) spec.call_stipend else 0;
+                    const target_account = frame.state.accounts.read(call_target);
+                    const positive_value_to_new_acc_cost = if (variant == .CALL and value_is_positive and state.isEmptyAccount(&target_account))
+                        spec.call_new_account_gas
+                    else
+                        0;
+                    const dynamic_cost = address_access_cost + positive_value_cost + positive_value_to_new_acc_cost;
+                    if (available_gas < dynamic_cost) {
                         return evm.Errors.OutOfGas;
                     }
-                    available_gas -= address_access_cost;
+                    available_gas -= dynamic_cost;
 
                     // EIP-150: forward at most (denom-1)/denom of remaining gas to sub-calls
                     const forwarded_gas: u31 = @intCast(@min(call_gas, available_gas - @divFloor(available_gas, spec.gas_forward_denom)));
@@ -703,45 +732,24 @@ pub fn Ops(comptime spec: Spec) type {
                     const calldata = frame.memory.slice(@truncate(args[3]), @intCast(args[2]));
                     const return_buffer = frame.memory.slice(@truncate(args[1]), @intCast(args[0]));
 
-                    // Per-variant: who is caller, who is target, what value, skip balance transfer?
-                    const value: u256 = switch (variant) {
-                        .CALL, .CALLCODE => args[4],
-                        .DELEGATECALL => frame.value,
-                        .STATICCALL => 0,
-                        else => unreachable,
-                    };
-                    const call_caller: u160 = if (variant == .DELEGATECALL) frame.caller else frame.target;
-                    const call_target: u160 = switch (variant) {
-                        .CALL, .STATICCALL => addr,
-                        .CALLCODE, .DELEGATECALL => frame.target,
-                        else => unreachable,
-                    };
-
-                    // Value transfer is forbidden in static context
-                    if (frame.is_static and value != 0) return evm.Errors.WriteProtection;
-
                     const code_hash = code_account.code_hash;
-                    var leftover_gas = forwarded_gas;
-                    var err: ?evm.Errors = null;
-                    if (code_hash != state.empty_code_hash) {
-                        leftover_gas, err = frame.evm.call(
-                            frame.state,
-                            call_caller,
-                            call_target,
-                            frame.state.code_storage.get(code_hash).?,
-                            forwarded_gas,
-                            calldata,
-                            value,
-                            frame.depth,
-                            return_buffer,
-                            comptime (variant == .DELEGATECALL),
-                            frame.is_static or (variant == .STATICCALL),
-                        );
-                    }
+                    const leftover_gas, const err = frame.evm.call(
+                        frame.state,
+                        call_caller,
+                        call_target,
+                        frame.state.code_storage.get(code_hash),
+                        forwarded_gas + stipend,
+                        calldata,
+                        value,
+                        frame.depth,
+                        return_buffer,
+                        comptime (variant == .DELEGATECALL),
+                        frame.is_static or (variant == .STATICCALL),
+                    );
 
                     args[0] = if (err != null) 0 else 1;
                     available_gas += leftover_gas;
-                    return next(next_ip, available_gas - spec.constantGas(variant), new_stack_head, frame);
+                    return next(next_ip, available_gas, new_stack_head, frame);
                 }
             }.call;
         }
