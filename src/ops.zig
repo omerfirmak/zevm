@@ -313,6 +313,12 @@ pub fn Ops(comptime spec: Spec) type {
             return next(next_ip, gas - spec.constantGas(.ADDRESS), new_stack_head, frame);
         }
 
+        pub fn selfbalance(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+            const acc = frame.state.accounts.read(frame.target);
+            const new_stack_head = try frame.stackPush(stack_head, acc.balance);
+            return next(next_ip, gas - spec.constantGas(.SELFBALANCE), new_stack_head, frame);
+        }
+
         pub fn balance(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 1, 1);
             const target: u160 = @truncate(args[0]);
@@ -475,6 +481,16 @@ pub fn Ops(comptime spec: Spec) type {
         pub fn gaslimit(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head = try frame.stackPush(stack_head, frame.context.gas_limit);
             return next(next_ip, gas - spec.constantGas(.GASLIMIT), new_stack_head, frame);
+        }
+
+        pub fn chainid(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+            const new_stack_head = try frame.stackPush(stack_head, frame.context.chainid);
+            return next(next_ip, gas - spec.constantGas(.CHAINID), new_stack_head, frame);
+        }
+
+        pub fn basefee(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+            const new_stack_head = try frame.stackPush(stack_head, frame.context.basefee);
+            return next(next_ip, gas - spec.constantGas(.BASEFEE), new_stack_head, frame);
         }
 
         pub fn mload(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
@@ -881,6 +897,9 @@ pub fn Ops(comptime spec: Spec) type {
                 .RETURNDATASIZE = returndatasize,
                 .RETURNDATACOPY = returndatacopy,
                 .SELFDESTRUCT = selfdestruct,
+                .BASEFEE = basefee,
+                .SELFBALANCE = selfbalance,
+                .CHAINID = chainid,
             });
             inline for (0..33) |n| {
                 t[@intFromEnum(Opcode.PUSH0) + n] = pushN(n);

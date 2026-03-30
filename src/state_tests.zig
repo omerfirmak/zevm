@@ -254,6 +254,7 @@ fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []con
     } else if (tx.gasPrice) |gp| gp.value else 0;
 
     const context = evm.Context{
+        .chainid = 1,
         .number = test_case.env.currentNumber.value,
         .coinbase = test_case.env.currentCoinbase.value,
         .time = test_case.env.currentTimestamp.value,

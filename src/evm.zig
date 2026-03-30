@@ -30,6 +30,8 @@ pub const Errors = error{
 };
 
 pub const Context = struct {
+    chainid: u64,
+
     // Block level context
     number: u64,
     coinbase: u160,
