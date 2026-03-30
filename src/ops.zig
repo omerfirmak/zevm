@@ -446,6 +446,12 @@ pub fn Ops(comptime spec: Spec) type {
             return next(next_ip, gas - spec.constantGas(.MSIZE), new_stack_head, frame);
         }
 
+        pub fn blockhash(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+            const new_stack_head, const args = try frame.stackPop(stack_head, 1, 1);
+            args[0] = 0; // todo
+            return next(next_ip, gas - spec.constantGas(.BLOCKHASH), new_stack_head, frame);
+        }
+
         pub fn coinbase(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head = try frame.stackPush(stack_head, frame.context.coinbase);
             return next(next_ip, gas - spec.constantGas(.COINBASE), new_stack_head, frame);
@@ -847,6 +853,7 @@ pub fn Ops(comptime spec: Spec) type {
                 .PC = pc,
                 .KECCAK256 = keccak256,
                 .MSIZE = msize,
+                .BLOCKHASH = blockhash,
                 .COINBASE = coinbase,
                 .TIMESTAMP = timestamp,
                 .NUMBER = number,
