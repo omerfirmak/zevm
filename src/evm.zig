@@ -385,13 +385,13 @@ pub const EVM = struct {
         // EIP-2929: warm the new address
         _ = self.accessAccount(new_addr);
 
-        // EIP-7610: fail on collision (non-zero nonce or existing code or existing storage)
-        const existing = state.accounts.read(new_addr);
-        if (existing.nonce != 0 or existing.code_hash != empty_code_hash or existing.storage_hash != empty_root_hash) return .{ 0, 0 };
-
         // Increase creator nonce before the snapshot
         var creator_acc = state.accounts.update(creator);
         creator_acc.nonce += 1;
+
+        // EIP-7610: fail on collision (non-zero nonce or existing code or existing storage)
+        const existing = state.accounts.read(new_addr);
+        if (existing.nonce != 0 or existing.code_hash != empty_code_hash or existing.storage_hash != empty_root_hash) return .{ 0, 0 };
 
         const state_snap = state.snapshot();
         const evm_snap = self.snapshot();
