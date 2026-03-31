@@ -50,6 +50,10 @@ pub const ContractStorage = JournaledStorage(StorageLookup, u256, SlotKeyedMap(u
 
 pub const SlotsAccessList = JournaledStorage(StorageLookup, void, SlotKeyedMap(void), {});
 
+pub const Lifecycle = enum(u2) { None, Created, Selfdestructed };
+
+pub const CreatedAccounts = JournaledStorage(u160, Lifecycle, AddressKeyedMap(Lifecycle), .None);
+
 // In-memory journaled storage with snapshot/revert support.
 // `dirties` holds the current (modified) values. `journal` records every write
 // as { key, old_value } so any prefix of writes can be rolled back to a snapshot.

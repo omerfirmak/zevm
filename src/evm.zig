@@ -134,6 +134,7 @@ const Snapshot = struct {
     accounts: usize,
     slots: usize,
     gas_refund: i32,
+    created: usize,
 };
 
 pub const EVM = struct {
@@ -156,13 +157,11 @@ pub const EVM = struct {
     // jump table used to compile initcode during CREATE/CREATE2
     jump_table: *const [256]ops.FnOpaquePtr,
     // Accounts created in this txn, also used to mark them for SELFDESTRUCT
-    created_accounts: storage.AddressKeyedMap(bool),
+    created_accounts: storage.CreatedAccounts,
 
     pub fn init(allocator: std.mem.Allocator, context: *const Context, jump_table: *const [256]ops.FnOpaquePtr) !Self {
         var pre_state: storage.SlotKeyedMap(u256) = .empty;
         try pre_state.ensureTotalCapacity(allocator, 10_000);
-        var created_accounts: storage.AddressKeyedMap(bool) = .empty;
-        try created_accounts.ensureTotalCapacity(allocator, 1_000);
         var self = Self{
             .gpa = allocator,
             .context = context,
@@ -173,7 +172,7 @@ pub const EVM = struct {
             .warm_slots = try storage.SlotsAccessList.init(allocator, 10_000, 10_000),
             .gas_refund = 0,
             .jump_table = jump_table,
-            .created_accounts = created_accounts,
+            .created_accounts = try storage.CreatedAccounts.init(allocator, 1_000, 2_000),
         };
         _ = self.accessAccount(context.coinbase); // EIP-3651
         return self;
@@ -184,6 +183,7 @@ pub const EVM = struct {
             .accounts = self.warm_accounts.snapshot(),
             .slots = self.warm_slots.snapshot(),
             .gas_refund = self.gas_refund,
+            .created = self.created_accounts.snapshot(),
         };
     }
 
@@ -191,6 +191,7 @@ pub const EVM = struct {
         self.warm_accounts.revert(snapshot_ids.accounts);
         self.warm_slots.revert(snapshot_ids.slots);
         self.gas_refund = snapshot_ids.gas_refund;
+        self.created_accounts.revert(snapshot_ids.created);
     }
 
     pub fn process(self: *Self, comptime fork: Spec, msg: Message, state: *State) !void {
@@ -427,6 +428,9 @@ pub const EVM = struct {
         };
         defer frame.memory.deinit();
 
+        // Register before execution so SELFDESTRUCT in initcode can mark it destroyed.
+        // Use write() (journaled) so the caller's revert can undo this entry if needed.
+        _ = self.created_accounts.write(new_addr, .Created);
         frame.enter() catch |err| {
             if (err != Errors.Reverted) frame.gas = 0;
             state.revert(state_snap);
@@ -459,7 +463,7 @@ pub const EVM = struct {
             state.deploy_code(code_hash, deployed_code, self.jump_table);
         }
         state.accounts.update(new_addr).code_hash = code_hash;
-        self.created_accounts.putAssumeCapacity(new_addr, true);
+        // created_accounts was registered before frame.enter(); SELFDESTRUCT may have marked it false — don't overwrite.
         return .{ frame.gas, new_addr };
     }
 
@@ -489,10 +493,12 @@ pub const EVM = struct {
         }
     }
 
-    pub fn markForDestruction(self: *Self, addr: u160) void {
-        if (self.created_accounts.getEntry(addr)) |entry| {
-            entry.value_ptr.* = false;
+    pub fn markForDestruction(self: *Self, addr: u160) bool {
+        if (self.created_accounts.dirties.getEntry(addr)) |_| {
+            _ = self.created_accounts.write(addr, .Selfdestructed);
+            return true;
         }
+        return false;
     }
 };
 

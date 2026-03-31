@@ -336,8 +336,8 @@ fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []con
         // Verify no alive account in actual state is missing from post state
         var actual_it = state.accounts.dirties.keyIterator();
         while (actual_it.next()) |entry| {
-            const ca_entry = vm.created_accounts.getEntry(entry.*);
-            if (ca_entry == null or ca_entry.?.value_ptr.* == true) {
+            const ca_entry = vm.created_accounts.dirties.getEntry(entry.*);
+            if (ca_entry == null or ca_entry.?.value_ptr.* == .Created) {
                 const acc = state.accounts.read(entry.*);
                 if (!@import("state.zig").isEmptyAccount(&acc)) {
                     num_alive_accounts += 1;

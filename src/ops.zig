@@ -827,20 +827,20 @@ pub fn Ops(comptime spec: Spec) type {
             var empty_account_cost: u31 = 0;
             var current_account = frame.state.accounts.update(frame.target);
             const transferred_value = current_account.balance;
-            if (transferred_value > 0) {
+            const is_new_account = frame.evm.markForDestruction(frame.target);
+            const should_transfer = transferred_value > 0 and (is_new_account or beneficiary != frame.target);
+            if (should_transfer) {
                 var beneficiary_account = frame.state.accounts.update(beneficiary);
                 empty_account_cost = if (state.isEmptyAccount(beneficiary_account)) spec.selfdestruct_empty_target_gas else 0;
                 beneficiary_account.balance += transferred_value;
+                current_account.balance = 0;
             }
-            current_account.balance -= transferred_value;
 
             const remaining = gas - access_cost - empty_account_cost - spec.constantGas(.SELFDESTRUCT);
             if (remaining < 0) {
                 return evm.Errors.OutOfGas;
             }
             frame.gas = @intCast(remaining);
-
-            frame.evm.markForDestruction(frame.target);
         }
 
         // Constructs a jump table for the given spec
