@@ -358,6 +358,8 @@ pub const EVM = struct {
         frame.enter() catch |err| {
             if (err != Errors.Reverted) {
                 frame.gas = 0;
+                // OOG and other non-revert failures leave no return data
+                self.return_data_size = 0;
             }
             state.revert(state_snap);
             self.revert(evm_snap);
