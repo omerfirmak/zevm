@@ -120,16 +120,16 @@ pub fn Ops(comptime spec: Spec) type {
             const exp_bytes: i32 = if (exponent == 0) 0 else @divFloor(256 - @as(i32, @clz(exponent)) + 7, 8);
             const dynamic_gas = spec.exp_per_byte_gas * exp_bytes;
 
-            var base: u512 = args[1];
-            var result: u512 = 1;
+            var base: u256 = args[1];
+            var result: u256 = 1;
 
             while (exponent > 0) : (exponent >>= 1) {
                 if (@as(u1, @truncate(exponent)) == 1) {
-                    result = @mod(result * base, std.math.maxInt(u256));
+                    result = @truncate(@as(u512, result) * @as(u512, base));
                 }
-                base = @mod(base * base, std.math.maxInt(u256));
+                base = @truncate(@as(u512, base) * @as(u512, base));
             }
-            args[0] = @intCast(result);
+            args[0] = result;
             return next(next_ip, gas - spec.constantGas(.EXP) - dynamic_gas, new_stack_head, frame);
         }
 
