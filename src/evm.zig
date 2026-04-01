@@ -415,13 +415,14 @@ pub const EVM = struct {
         depth: usize,
         salt: ?u256,
     ) struct { u31, u160 } {
-        if (depth >= 1024) return .{ 0, 0 };
+        // Depth/nonce/balance failures are "never started" — return all forwarded gas to caller.
+        if (depth >= 1024) return .{ initial_gas, 0 };
 
         const creator_account = state.accounts.read(creator);
         const nonce = creator_account.nonce;
         // Nonce must not overflow (u64 range enforced at tx entry; sub-calls inherit that invariant)
-        if (nonce >= std.math.maxInt(u64)) return .{ 0, 0 };
-        if (creator_account.balance < value) return .{ 0, 0 };
+        if (nonce >= std.math.maxInt(u64)) return .{ initial_gas, 0 };
+        if (creator_account.balance < value) return .{ initial_gas, 0 };
 
         const new_addr: u160 = if (salt) |s|
             create2Address(creator, s, initcode)
