@@ -28,6 +28,7 @@ pub const Errors = error{
     Reverted,
     WriteProtection,
     InitcodeSizeExceeded,
+    SenderNotEOA,
 };
 
 pub const Context = struct {
@@ -122,7 +123,7 @@ pub const AccessListEntry = struct {
 pub const Message = struct {
     caller: u160,
     nonce: u64,
-    target: u160,
+    target: ?u160, // null = CREATE, some(addr) = CALL (including to address 0)
     gas_limit: u31,
     gas_price: u256,
     calldata: []u8,
@@ -205,8 +206,10 @@ pub const EVM = struct {
             return Errors.GasOverflow;
         }
 
+        const is_create = msg.target == null;
+
         // EIP-3860: reject CREATE transactions with oversized initcode before any state changes
-        if (msg.target == 0 and msg.calldata.len > 2 * fork.max_code_size) {
+        if (is_create and msg.calldata.len > 2 * fork.max_code_size) {
             return Errors.InitcodeSizeExceeded;
         }
 
@@ -220,19 +223,27 @@ pub const EVM = struct {
             return Errors.NonceMax;
         }
 
-        const gas_cost = std.math.mul(u256, @intCast(msg.gas_limit), msg.gas_price) catch return Errors.NotEnoughFunds;
-        if (caller_account.balance < gas_cost) {
+        // EIP-3607: reject transaction if sender has code (is a contract)
+        if (caller_account.code_hash != empty_code_hash) {
+            return Errors.SenderNotEOA;
+        }
+
+        const gas_cost = std.math.mul(u256, @intCast(msg.gas_limit), msg.gas_price) catch return Errors.GasOverflow;
+        // Upfront cost check: sender must cover gas + value before any state changes
+        const upfront_cost = std.math.add(u256, gas_cost, msg.value) catch return Errors.NotEnoughFunds;
+        if (caller_account.balance < upfront_cost) {
             return Errors.NotEnoughFunds;
         }
-        if (msg.target != 0) caller_account.nonce = msg.nonce + 1;
+        // For CALL txs, increment nonce here; for CREATE, create() handles nonce increment.
+        if (!is_create) caller_account.nonce = msg.nonce + 1;
         caller_account.balance -= gas_cost;
 
-        const intrinsic_gas: u31 = if (msg.target == 0) fork.tx_create_gas else fork.tx_base_gas;
+        const intrinsic_gas: u31 = if (is_create) fork.tx_create_gas else fork.tx_base_gas;
         const calldata_gas, const floor_data_cost = try calldataCost(fork, msg.calldata);
         const floor_cost = fork.tx_base_gas + floor_data_cost; // EIP-7623
         const access_list_gas = try accessListGas(fork, msg.access_list);
         // EIP-3860: 2 gas per 32-byte initcode word, charged as intrinsic for CREATE txs
-        const initcode_gas: u31 = if (msg.target == 0) initcodeWordCost(msg.calldata.len) else 0;
+        const initcode_gas: u31 = if (is_create) initcodeWordCost(msg.calldata.len) else 0;
         const total_intrinsic = intrinsic_gas + calldata_gas + access_list_gas + initcode_gas;
         if (msg.gas_limit < total_intrinsic or msg.gas_limit < floor_cost) {
             return Errors.OutOfGas;
@@ -242,14 +253,14 @@ pub const EVM = struct {
         self.applyAccessList(msg.access_list);
 
         var remaining_gas = execution_gas_limit;
-        if (msg.target != 0) {
-            _ = self.accessAccount(msg.target);
-            const target_code_hash = state.accounts.read(msg.target).code_hash;
+        if (msg.target) |target| {
+            _ = self.accessAccount(target);
+            const target_code_hash = state.accounts.read(target).code_hash;
             const code = state.code_storage.get(target_code_hash);
             remaining_gas, _ = self.call(
                 state,
                 msg.caller,
-                msg.target,
+                target,
                 code,
                 remaining_gas,
                 msg.calldata,

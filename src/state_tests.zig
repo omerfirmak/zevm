@@ -25,6 +25,18 @@ pub fn HexInt(comptime Int: type) type {
     };
 }
 
+// Parses an address field where empty string means "no address" (CREATE tx).
+pub const HexAddress = struct {
+    value: ?u160,
+
+    pub fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) !@This() {
+        const str = try std.json.innerParse([]const u8, allocator, source, options);
+        const hex = if (std.mem.startsWith(u8, str, "0x")) str[2..] else str;
+        if (hex.len == 0) return .{ .value = null };
+        return .{ .value = try std.fmt.parseInt(u160, hex, 16) };
+    }
+};
+
 pub const HexBytes = struct {
     value: []u8,
 
@@ -68,7 +80,7 @@ pub const Transaction = struct {
     maxFeePerGas: ?HexInt(u256) = null,
     maxPriorityFeePerGas: ?HexInt(u256) = null,
     gasLimit: []HexInt(u64),
-    to: ?HexInt(u160) = null,
+    to: ?HexAddress = null,
     value: []HexInt(u256),
     data: []HexBytes,
     sender: HexInt(u160),
@@ -219,6 +231,7 @@ fn mapException(name: []const u8) ?anyerror {
         .{ "TransactionException.INTRINSIC_GAS_BELOW_FLOOR_GAS_COST", evm.Errors.OutOfGas },
         .{ "TransactionException.NONCE_IS_MAX", evm.Errors.NonceMax },
         .{ "TransactionException.INITCODE_SIZE_EXCEEDED", evm.Errors.InitcodeSizeExceeded },
+        .{ "TransactionException.SENDER_NOT_EOA", evm.Errors.SenderNotEOA },
     };
     inline for (map) |entry| {
         if (std.mem.eql(u8, name, entry[0])) return entry[1];
@@ -313,7 +326,7 @@ fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []con
             dst.* = .{ .address = src.address.value, .storage_keys = keys };
         }
 
-        const to = if (tx.to) |t| t.value else 0;
+        const to: ?u160 = if (tx.to) |t| t.value else null; // HexAddress.value is ?u160; null JSON or empty string both yield null
         const tx_err: ?anyerror = if (vm.process(forkSpec, .{
             .caller = tx.sender.value,
             .nonce = tx.nonce.value,
