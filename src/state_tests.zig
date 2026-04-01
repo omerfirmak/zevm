@@ -218,6 +218,7 @@ fn mapException(name: []const u8) ?anyerror {
         .{ "TransactionException.INTRINSIC_GAS_TOO_LOW", evm.Errors.OutOfGas },
         .{ "TransactionException.INTRINSIC_GAS_BELOW_FLOOR_GAS_COST", evm.Errors.OutOfGas },
         .{ "TransactionException.NONCE_IS_MAX", evm.Errors.NonceMax },
+        .{ "TransactionException.INITCODE_SIZE_EXCEEDED", evm.Errors.InitcodeSizeExceeded },
     };
     inline for (map) |entry| {
         if (std.mem.eql(u8, name, entry[0])) return entry[1];

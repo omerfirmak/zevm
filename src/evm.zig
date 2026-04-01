@@ -27,6 +27,7 @@ pub const Errors = error{
     FeeTooLow,
     Reverted,
     WriteProtection,
+    InitcodeSizeExceeded,
 };
 
 pub const Context = struct {
@@ -199,6 +200,11 @@ pub const EVM = struct {
             return Errors.FeeTooLow;
         }
 
+        // EIP-3860: reject CREATE transactions with oversized initcode before any state changes
+        if (msg.target == 0 and msg.calldata.len > 2 * fork.max_code_size) {
+            return Errors.InitcodeSizeExceeded;
+        }
+
         _ = self.accessAccount(msg.caller);
         var caller_account = state.accounts.update(msg.caller);
         if (caller_account.nonce < msg.nonce) {
@@ -249,8 +255,6 @@ pub const EVM = struct {
                 false,
             );
         } else {
-            // EIP-3860: max initcode size for CREATE transactions
-            if (msg.calldata.len > 2 * fork.max_code_size) return Errors.OutOfGas;
             remaining_gas, _ = self.create(
                 fork,
                 state,
