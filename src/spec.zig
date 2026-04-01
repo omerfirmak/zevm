@@ -46,6 +46,9 @@ pub const Spec = struct {
     // EIP-7623 TOTAL_COST_FLOOR_PER_TOKEN
     total_cost_floor_per_token: u31,
 
+    // EIP-7825: maximum transaction gas limit
+    max_tx_gas: u31,
+
     // EIP-160: gas per byte of exponent in EXP
     exp_per_byte_gas: i32,
 
@@ -86,6 +89,8 @@ pub const Osaka = Spec{
     .selfdestruct_empty_target_gas = 25000,
 
     .total_cost_floor_per_token = 10,
+
+    .max_tx_gas = 1 << 24,
 
     .call_value_gas = 9000,
     .call_new_account_gas = 25000,

@@ -200,6 +200,11 @@ pub const EVM = struct {
             return Errors.FeeTooLow;
         }
 
+        // EIP-7825: transaction gas limit cap
+        if (msg.gas_limit > fork.max_tx_gas) {
+            return Errors.GasOverflow;
+        }
+
         // EIP-3860: reject CREATE transactions with oversized initcode before any state changes
         if (msg.target == 0 and msg.calldata.len > 2 * fork.max_code_size) {
             return Errors.InitcodeSizeExceeded;
