@@ -232,6 +232,8 @@ fn mapException(name: []const u8) ?anyerror {
         .{ "TransactionException.NONCE_IS_MAX", evm.Errors.NonceMax },
         .{ "TransactionException.INITCODE_SIZE_EXCEEDED", evm.Errors.InitcodeSizeExceeded },
         .{ "TransactionException.SENDER_NOT_EOA", evm.Errors.SenderNotEOA },
+        .{ "TransactionException.INSUFFICIENT_MAX_FEE_PER_GAS", evm.Errors.FeeTooLow },
+        .{ "TransactionException.PRIORITY_GREATER_THAN_MAX_FEE_PER_GAS", evm.Errors.PriorityFeeTooHigh },
     };
     inline for (map) |entry| {
         if (std.mem.eql(u8, name, entry[0])) return entry[1];
@@ -342,7 +344,9 @@ fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []con
             .nonce = tx.nonce.value,
             .target = to,
             .gas_limit = @intCast(gas_limit),
-            .gas_price = effective_gas_price,
+            .effective_gas_price = effective_gas_price,
+            .max_fee_per_gas = if (tx.maxFeePerGas) |mfpg| mfpg.value else null,
+            .max_priority_fee_per_gas = if (tx.maxPriorityFeePerGas) |mpfpg| mpfpg.value else null,
             .calldata = calldata,
             .value = value,
             .access_list = access_list,

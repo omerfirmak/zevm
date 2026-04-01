@@ -25,6 +25,7 @@ pub const Errors = error{
     ReturnDataOutOfBounds,
     CallDepthExceeded,
     FeeTooLow,
+    PriorityFeeTooHigh,
     Reverted,
     WriteProtection,
     InitcodeSizeExceeded,
@@ -125,7 +126,9 @@ pub const Message = struct {
     nonce: u64,
     target: ?u160, // null = CREATE, some(addr) = CALL (including to address 0)
     gas_limit: u31,
-    gas_price: u256,
+    effective_gas_price: u256,
+    max_fee_per_gas: ?u256 = null,
+    max_priority_fee_per_gas: ?u256 = null,
     calldata: []u8,
     value: u256,
     // EIP-2930: accounts and slots to pre-warm before execution
@@ -220,8 +223,20 @@ pub const EVM = struct {
     }
 
     pub fn process(self: *Self, comptime fork: Spec, msg: Message, state: *State) !void {
-        if (msg.gas_price < self.context.basefee) {
+        if (msg.effective_gas_price < self.context.basefee) {
             return Errors.FeeTooLow;
+        }
+
+        // EIP-1559: maxPriorityFeePerGas must not exceed maxFeePerGas
+        if (msg.max_fee_per_gas) |mfpg| {
+            if (msg.max_priority_fee_per_gas) |mpfpg| {
+                if (mpfpg > mfpg) return Errors.PriorityFeeTooHigh;
+            }
+        }
+
+        // tx gas limit must not exceed block gas limit
+        if (msg.gas_limit > self.context.gas_limit) {
+            return Errors.GasOverflow;
         }
 
         // EIP-7825: transaction gas limit cap
@@ -251,14 +266,17 @@ pub const EVM = struct {
             return Errors.SenderNotEOA;
         }
 
-        const gas_cost = std.math.mul(u256, @intCast(msg.gas_limit), msg.gas_price) catch return Errors.GasOverflow;
-        // Upfront cost check: sender must cover gas + value before any state changes
-        const upfront_cost = std.math.add(u256, gas_cost, msg.value) catch return Errors.NotEnoughFunds;
+        // EIP-1559: upfront balance check uses maxFeePerGas (worst-case gas cost) if set
+        const balance_check_price = msg.max_fee_per_gas orelse msg.effective_gas_price;
+        const balance_check_cost = std.math.mul(u256, @intCast(msg.gas_limit), balance_check_price) catch return Errors.GasOverflow;
+        const upfront_cost = std.math.add(u256, balance_check_cost, msg.value) catch return Errors.NotEnoughFunds;
         if (caller_account.balance < upfront_cost) {
             return Errors.NotEnoughFunds;
         }
+
         // For CALL txs, increment nonce here; for CREATE, create() handles nonce increment.
         if (!is_create) caller_account.nonce = msg.nonce + 1;
+        const gas_cost = std.math.mul(u256, @intCast(msg.gas_limit), msg.effective_gas_price) catch return Errors.GasOverflow;
         caller_account.balance -= gas_cost;
 
         const intrinsic_gas: u31 = if (is_create) fork.tx_create_gas else fork.tx_base_gas;
@@ -318,10 +336,10 @@ pub const EVM = struct {
             remaining_gas = msg.gas_limit - floor_cost;
         }
 
-        state.accounts.update(msg.caller).balance += @as(u256, @intCast(remaining_gas)) * msg.gas_price;
+        state.accounts.update(msg.caller).balance += @as(u256, @intCast(remaining_gas)) * msg.effective_gas_price;
 
         // EIP-1559: coinbase receives only the tip; the base fee is burned
-        const tip = msg.gas_price - self.context.basefee;
+        const tip = msg.effective_gas_price - self.context.basefee;
         const gas_used: u256 = msg.gas_limit - remaining_gas;
         if (tip > 0) {
             state.accounts.update(self.context.coinbase).balance += gas_used * tip;
