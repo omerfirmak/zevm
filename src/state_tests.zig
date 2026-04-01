@@ -296,6 +296,7 @@ fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []con
 
         for (test_case.pre.map.keys(), test_case.pre.map.values()) |addr_str, pre_acct| {
             const addr = try parseHex(u160, addr_str);
+            const has_storage = pre_acct.storage.map.count() > 0;
             for (pre_acct.storage.map.keys(), pre_acct.storage.map.values()) |slot_str, slot_val| {
                 const slot = try parseHex(u256, slot_str);
                 if (slot_val.value != 0) {
@@ -315,7 +316,7 @@ fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []con
                 .nonce = pre_acct.nonce.value,
                 .balance = pre_acct.balance.value,
                 .code_hash = code_hash,
-                .storage_hash = state_mod.empty_root_hash,
+                .storage_hash = if (has_storage) 1 else state_mod.empty_root_hash,
             });
         }
 
