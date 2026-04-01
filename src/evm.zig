@@ -496,7 +496,10 @@ pub const EVM = struct {
         // Use write() (journaled) so the caller's revert can undo this entry if needed.
         _ = self.created_accounts.write(new_addr, .Created);
         frame.enter() catch |err| {
-            if (err != Errors.Reverted) frame.gas = 0;
+            if (err != Errors.Reverted) {
+                frame.gas = 0;
+                self.return_data_size = 0;
+            }
             state.revert(state_snap);
             self.revert(evm_snap);
             return .{ frame.gas, 0 };
