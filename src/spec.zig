@@ -57,6 +57,8 @@ pub const Spec = struct {
     call_new_account_gas: i32, // charged when CALL creates a new (empty) account
     call_stipend: u31, // bonus gas given to callee when value is transferred
 
+    log_size_gas_factor: u31,
+
     pub fn constantGas(self: *const Self, comptime op: Opcode) i32 {
         return @intCast(self.gas_table[@intFromEnum(op)]);
     }
@@ -97,6 +99,8 @@ pub const Osaka = Spec{
     .call_stipend = 2300,
 
     .exp_per_byte_gas = 50,
+
+    .log_size_gas_factor = 8,
 
     .gas_table = std.enums.directEnumArrayDefault(Opcode, u32, 0, 256, .{
         .STOP = 0,
@@ -239,10 +243,10 @@ pub const Osaka = Spec{
         .SWAP16 = 3,
 
         .LOG0 = 375,
-        .LOG1 = 375,
-        .LOG2 = 375,
-        .LOG3 = 375,
-        .LOG4 = 375,
+        .LOG1 = 750,
+        .LOG2 = 1125,
+        .LOG3 = 1500,
+        .LOG4 = 1875,
 
         .CREATE = 32000,
         .CALL = 0,

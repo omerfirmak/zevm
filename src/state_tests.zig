@@ -253,6 +253,9 @@ fn exceptionMatches(err: anyerror, expected: []const u8) bool {
 fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []const u8) !void {
     var fba = std.heap.FixedBufferAllocator.init(try gpa.alloc(u8, 1_024_000_000));
     defer gpa.free(fba.buffer);
+    var logs_allocator = std.heap.FixedBufferAllocator.init(try gpa.alloc(u8, 16_000_000));
+    defer gpa.free(logs_allocator.buffer);
+    var logs: std.DoublyLinkedList = .{};
     var rounded = RoundedAllocator{ .backing = fba.allocator() };
     const allocator = rounded.allocator();
     const tx = test_case.transaction;
@@ -278,7 +281,13 @@ fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []con
         .from = tx.sender.value,
         .gas_price = effective_gas_price,
     };
-    var vm = try evm.EVM.init(allocator, &context, @ptrCast(&jump_table));
+    var vm = try evm.EVM.init(
+        allocator,
+        logs_allocator.allocator(),
+        &logs,
+        &context,
+        @ptrCast(&jump_table),
+    );
 
     for (post_entries) |post_entry| {
         // Build fresh state from pre for each post entry

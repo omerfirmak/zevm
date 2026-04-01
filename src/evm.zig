@@ -137,6 +137,13 @@ const Snapshot = struct {
     slots: usize,
     gas_refund: i32,
     created: usize,
+    num_logs: usize,
+};
+
+pub const Log = struct {
+    address: u160,
+    topics: []u256,
+    data: []u8,
 };
 
 pub const EVM = struct {
@@ -144,6 +151,11 @@ pub const EVM = struct {
 
     gpa: std.mem.Allocator,
     context: *const Context,
+
+    // LOG handling
+    logs_allocator: std.mem.Allocator,
+    logs: *std.DoublyLinkedList,
+    num_logs: usize,
 
     // global return data buffer shared across all call frames; size tracks valid bytes
     return_buffer: []u8,
@@ -161,7 +173,13 @@ pub const EVM = struct {
     // Accounts created in this txn, also used to mark them for SELFDESTRUCT
     created_accounts: storage.CreatedAccounts,
 
-    pub fn init(allocator: std.mem.Allocator, context: *const Context, jump_table: *const [256]ops.FnOpaquePtr) !Self {
+    pub fn init(
+        allocator: std.mem.Allocator,
+        logs_allocator: std.mem.Allocator,
+        logs: *std.DoublyLinkedList,
+        context: *const Context,
+        jump_table: *const [256]ops.FnOpaquePtr,
+    ) !Self {
         var pre_state: storage.SlotKeyedMap(u256) = .empty;
         try pre_state.ensureTotalCapacity(allocator, 10_000);
         var self = Self{
@@ -175,6 +193,9 @@ pub const EVM = struct {
             .gas_refund = 0,
             .jump_table = jump_table,
             .created_accounts = try storage.CreatedAccounts.init(allocator, 1_000, 2_000),
+            .logs_allocator = logs_allocator,
+            .logs = logs,
+            .num_logs = 0,
         };
         _ = self.accessAccount(context.coinbase); // EIP-3651
         return self;
@@ -186,6 +207,7 @@ pub const EVM = struct {
             .slots = self.warm_slots.snapshot(),
             .gas_refund = self.gas_refund,
             .created = self.created_accounts.snapshot(),
+            .num_logs = self.num_logs,
         };
     }
 
@@ -194,6 +216,7 @@ pub const EVM = struct {
         self.warm_slots.revert(snapshot_ids.slots);
         self.gas_refund = snapshot_ids.gas_refund;
         self.created_accounts.revert(snapshot_ids.created);
+        for (snapshot_ids.num_logs..self.num_logs) |_| self.popLog();
     }
 
     pub fn process(self: *Self, comptime fork: Spec, msg: Message, state: *State) !void {
@@ -487,6 +510,30 @@ pub const EVM = struct {
         state.accounts.update(new_addr).code_hash = code_hash;
         // created_accounts was registered before frame.enter(); SELFDESTRUCT may have marked it false — don't overwrite.
         return .{ frame.gas, new_addr };
+    }
+
+    const LogNode = struct { log: Log, node: std.DoublyLinkedList.Node };
+
+    pub fn pushLog(self: *Self, address: u160, topics: []const u256, data: []const u8) void {
+        const ln = self.logs_allocator.create(LogNode) catch @panic("OutOfMemory");
+        ln.* = LogNode{ .log = .{
+            .address = address,
+            .topics = self.logs_allocator.dupe(u256, topics) catch @panic("OutOfMemory"),
+            .data = self.logs_allocator.dupe(u8, data) catch @panic("OutOfMemory"),
+        }, .node = .{} };
+        self.logs.append(&ln.node);
+        self.num_logs += 1;
+    }
+
+    pub fn popLog(self: *Self) void {
+        if (self.logs.pop()) |node| {
+            const ln: *LogNode = @alignCast(@fieldParentPtr("node", node));
+            // make sure to free in the reverse of the order they were allocated
+            self.logs_allocator.free(ln.log.data);
+            self.logs_allocator.free(ln.log.topics);
+            self.logs_allocator.destroy(ln);
+            self.num_logs -= 1;
+        }
     }
 
     pub fn accessAccount(self: *Self, addr: u160) bool {

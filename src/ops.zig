@@ -843,6 +843,32 @@ pub fn Ops(comptime spec: Spec) type {
             frame.gas = @intCast(remaining);
         }
 
+        pub fn log_variant(comptime variant: Opcode) Fn {
+            return struct {
+                pub fn log(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+                    if (frame.is_static) return evm.Errors.WriteProtection;
+                    const topic_count = @intFromEnum(variant) - @intFromEnum(Opcode.LOG0);
+                    const num_args = 2 + topic_count;
+                    // stackPop returns bottom-to-top: args[0] is deepest, args[n-1] is top.
+                    // Stack layout: [...topics (deepest first)..., memSize, memOffset (top)]
+                    const new_stack_head, const args = try frame.stackPop(stack_head, num_args, 0);
+                    const mem_size = args[topic_count];
+                    const mem_offset = args[topic_count + 1];
+                    const available_gas = try frame.memory.growToFit(mem_offset, mem_size, gas);
+                    const dynamic_gas = spec.log_size_gas_factor * @as(u31, @intCast(mem_size));
+
+                    const data = frame.memory.slice(@truncate(mem_offset), @intCast(mem_size));
+                    // Topics are deepest-first in args; reverse to get push order (topic1 first).
+                    var topics: [4]u256 = undefined;
+                    for (0..topic_count) |i| topics[i] = args[topic_count - 1 - i];
+
+                    frame.evm.pushLog(frame.target, topics[0..topic_count], data);
+
+                    return next(next_ip, available_gas - spec.constantGas(variant) - dynamic_gas, new_stack_head, frame);
+                }
+            }.log;
+        }
+
         // Constructs a jump table for the given spec
         pub fn table() [256]Fn {
             var t = std.enums.directEnumArrayDefault(Opcode, Fn, invalid, 256, .{
@@ -923,6 +949,11 @@ pub fn Ops(comptime spec: Spec) type {
                 .BASEFEE = basefee,
                 .SELFBALANCE = selfbalance,
                 .CHAINID = chainid,
+                .LOG0 = log_variant(.LOG0),
+                .LOG1 = log_variant(.LOG1),
+                .LOG2 = log_variant(.LOG2),
+                .LOG3 = log_variant(.LOG3),
+                .LOG4 = log_variant(.LOG4),
             });
             inline for (0..33) |n| {
                 t[@intFromEnum(Opcode.PUSH0) + n] = pushN(n);
