@@ -588,7 +588,7 @@ pub fn Ops(comptime spec: Spec) type {
 
         pub fn sstore(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             if (frame.is_static) return evm.Errors.WriteProtection;
-            if (gas < spec.call_stipend) return evm.Errors.OutOfGas;
+            if (gas <= spec.call_stipend) return evm.Errors.OutOfGas;
             const new_stack_head, const args = try frame.stackPop(stack_head, 2, 0);
             const lookup: storage.StorageLookup = .{ .address = frame.target, .slot = args[1] };
             const is_warm = frame.evm.accessSlot(frame.target, args[1]);
