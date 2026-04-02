@@ -748,6 +748,7 @@ pub fn Ops(comptime spec: Spec) type {
 
                     const code_hash = code_account.code_hash;
                     const leftover_gas, const err = frame.evm.call(
+                        spec,
                         frame.state,
                         call_caller,
                         call_target,

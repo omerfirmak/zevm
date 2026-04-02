@@ -2,6 +2,7 @@ const std = @import("std");
 const ops = @import("ops.zig");
 const spec = @import("spec.zig");
 const storage = @import("storage.zig");
+const precompile = @import("precompile.zig");
 const Bytecode = @import("bytecode.zig").Bytecode;
 const Memory = @import("memory.zig").Memory;
 const State = @import("state.zig").State;
@@ -185,7 +186,7 @@ pub const EVM = struct {
     ) !Self {
         var pre_state: storage.SlotKeyedMap(u256) = .empty;
         try pre_state.ensureTotalCapacity(allocator, 10_000);
-        var self = Self{
+        return Self{
             .gpa = allocator,
             .context = context,
             .return_buffer = try allocator.alloc(u8, 16 * 1024 * 1024),
@@ -200,8 +201,6 @@ pub const EVM = struct {
             .logs = logs,
             .num_logs = 0,
         };
-        _ = self.accessAccount(context.coinbase); // EIP-3651
-        return self;
     }
 
     pub fn snapshot(self: *Self) Snapshot {
@@ -291,6 +290,12 @@ pub const EVM = struct {
         }
         const execution_gas_limit = msg.gas_limit - total_intrinsic;
 
+        inline for (precompile.Handlers(fork).table(), 0..) |handler, addr| {
+            if (handler) |_| {
+                _ = self.accessAccount(addr);
+            }
+        }
+        _ = self.accessAccount(self.context.coinbase); // EIP-3651
         self.applyAccessList(msg.access_list);
 
         var remaining_gas = execution_gas_limit;
@@ -299,6 +304,7 @@ pub const EVM = struct {
             const target_code_hash = state.accounts.read(target).code_hash;
             const code = state.code_storage.get(target_code_hash);
             remaining_gas, _ = self.call(
+                fork,
                 state,
                 msg.caller,
                 target,
@@ -352,6 +358,7 @@ pub const EVM = struct {
     // sub-frame without actually moving ETH (the original transfer already happened).
     pub fn call(
         self: *Self,
+        comptime fork: Spec,
         state: *State,
         caller: u160,
         target: u160,
@@ -381,43 +388,69 @@ pub const EVM = struct {
             }
         }
 
-        if (code == null) {
-            return .{ initial_gas, null };
+        var remaining_gas, var err = .{ initial_gas, @as(?Errors, null) };
+        if (code != null) {
+            var frame = self.gpa.create(Frame) catch @panic("OutOfMemory");
+            defer self.gpa.destroy(frame);
+            frame.* = Frame{
+                .evm = self,
+                .context = self.context,
+                .state = state,
+                .code = code.?,
+
+                .caller = caller,
+                .target = target,
+                .calldata = calldata,
+                .value = value,
+                .is_static = is_static,
+                .return_buffer = return_buffer,
+
+                .gas = initial_gas,
+                .stack = undefined,
+                .memory = Memory.init(self.gpa),
+                .depth = depth + 1,
+            };
+            defer frame.memory.deinit();
+
+            frame.enter() catch |frameErr| {
+                err = frameErr;
+            };
+            remaining_gas = frame.gas;
+        } else if (fork.getPrecompile(target)) |precompile_handler| {
+            remaining_gas, err = self.callPrecompile(
+                precompile_handler,
+                initial_gas,
+                calldata,
+                return_buffer,
+            );
         }
 
-        var frame = self.gpa.create(Frame) catch @panic("OutOfMemory");
-        defer self.gpa.destroy(frame);
-        frame.* = Frame{
-            .evm = self,
-            .context = self.context,
-            .state = state,
-            .code = code.?,
-
-            .caller = caller,
-            .target = target,
-            .calldata = calldata,
-            .value = value,
-            .is_static = is_static,
-            .return_buffer = return_buffer,
-
-            .gas = initial_gas,
-            .stack = undefined,
-            .memory = Memory.init(self.gpa),
-            .depth = depth + 1,
-        };
-        defer frame.memory.deinit();
-
-        frame.enter() catch |err| {
-            if (err != Errors.Reverted) {
-                frame.gas = 0;
+        if (err != null) {
+            if (err.? != Errors.Reverted) {
+                remaining_gas = 0;
                 // OOG and other non-revert failures leave no return data
                 self.return_data_size = 0;
             }
             state.revert(state_snap);
             self.revert(evm_snap);
-            return .{ frame.gas, err };
-        };
-        return .{ frame.gas, null };
+        }
+        return .{ remaining_gas, err };
+    }
+
+    pub fn callPrecompile(
+        self: *Self,
+        handler: precompile.Handler,
+        initial_gas: u31,
+        calldata: []u8,
+        return_buffer: []u8,
+    ) struct { u31, ?Errors } {
+        const result = handler(initial_gas, calldata, self.return_buffer);
+        self.return_data_size = result.return_size;
+        if (result.return_size > 0) {
+            const copy_len = @min(result.return_size, return_buffer.len);
+            @memcpy(return_buffer[0..copy_len], self.return_buffer[0..copy_len]);
+        }
+        return .{ result.remaining_gas, result.err };
     }
 
     // Returns { remaining_gas, new_address }. Address is 0 on any failure.

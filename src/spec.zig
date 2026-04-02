@@ -1,6 +1,7 @@
-const ops = @import("ops.zig");
-const Opcode = @import("opcode.zig").Opcode;
 const std = @import("std");
+const ops = @import("ops.zig");
+const precompile = @import("precompile.zig");
+const Opcode = @import("opcode.zig").Opcode;
 
 pub const Fork = enum(u8) {
     Osaka,
@@ -59,8 +60,20 @@ pub const Spec = struct {
 
     log_size_gas_factor: u31,
 
+    // Identity precompile
+    identity_base_gas: u31,
+    identity_per_word_gas: u31,
+
     pub fn constantGas(self: *const Self, comptime op: Opcode) i32 {
         return @intCast(self.gas_table[@intFromEnum(op)]);
+    }
+
+    pub fn getPrecompile(comptime self: Self, addr: u160) ?precompile.Handler {
+        const handlers = comptime precompile.Handlers(self).table();
+        if (addr >= handlers.len) {
+            return null;
+        }
+        return handlers[@intCast(addr)];
     }
 };
 
@@ -101,6 +114,9 @@ pub const Osaka = Spec{
     .exp_per_byte_gas = 50,
 
     .log_size_gas_factor = 8,
+
+    .identity_base_gas = 15,
+    .identity_per_word_gas = 3,
 
     .gas_table = std.enums.directEnumArrayDefault(Opcode, u32, 0, 256, .{
         .STOP = 0,
