@@ -80,44 +80,30 @@ pub const Spec = struct {
 // Osaka hardfork spec
 pub const Osaka = Spec{
     .fork = .Osaka,
-
     .warm_access_gas = 100,
     .cold_account_access_gas = 2600,
     .cold_sload_gas = 2100,
-
     .sstore_set_gas = 20000,
     .sstore_reset_gas = 2900,
     .sstore_clears_schedule = 4800,
-
     .max_code_size = 0x6000,
     .code_deposit_gas = 200,
-
     .access_list_address_gas = 2400,
     .access_list_storage_key_gas = 1900,
-
     .tx_base_gas = 21000,
     .tx_create_gas = 53000,
-
     .keccak_word_gas = 6,
     .gas_forward_denom = 64,
-
     .selfdestruct_empty_target_gas = 25000,
-
     .total_cost_floor_per_token = 10,
-
     .max_tx_gas = 1 << 24,
-
     .call_value_gas = 9000,
     .call_new_account_gas = 25000,
     .call_stipend = 2300,
-
     .exp_per_byte_gas = 50,
-
     .log_size_gas_factor = 8,
-
     .identity_base_gas = 15,
     .identity_per_word_gas = 3,
-
     .gas_table = std.enums.directEnumArrayDefault(Opcode, u32, 0, 256, .{
         .STOP = 0,
         .ADD = 3,
