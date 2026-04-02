@@ -782,7 +782,7 @@ pub fn Ops(comptime spec: Spec) type {
                         const min_len = @min(frame.return_buffer.len, source.len);
 
                         @memcpy(frame.return_buffer[0..min_len], source[0..min_len]);
-                        if (source.len > frame.evm.return_buffer.len) @panic("OutOfMemory");
+                        if (source.len > frame.evm.return_buffer.len) unreachable;
                         @memcpy(frame.evm.return_buffer[0..source.len], source);
                     }
                     frame.evm.return_data_size = @intCast(args[0]);

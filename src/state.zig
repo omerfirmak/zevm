@@ -69,8 +69,8 @@ pub const State = struct {
 
     pub fn deploy_code(self: *Self, hash: u256, code: []const u8, jump_table: *const [256]ops.FnOpaquePtr) void {
         const allocator = self.deployed_bytecode_allocator.allocator();
-        const code_bytes = allocator.dupe(u8, code) catch @panic("OutOfMemory");
-        const bytecode = Bytecode.init(allocator, code_bytes, @ptrCast(jump_table)) catch @panic("OutOfMemory");
+        const code_bytes = allocator.dupe(u8, code) catch unreachable;
+        const bytecode = Bytecode.init(allocator, code_bytes, @ptrCast(jump_table)) catch unreachable;
         self.code_storage.putAssumeCapacity(hash, bytecode);
     }
 };

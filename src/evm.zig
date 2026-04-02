@@ -403,7 +403,7 @@ pub const EVM = struct {
 
         var remaining_gas, var err = .{ initial_gas, @as(?Errors, null) };
         if (code != null) {
-            var frame = self.gpa.create(Frame) catch @panic("OutOfMemory");
+            var frame = self.gpa.create(Frame) catch unreachable;
             defer self.gpa.destroy(frame);
             frame.* = Frame{
                 .evm = self,
@@ -516,9 +516,9 @@ pub const EVM = struct {
         new_contract_acc.balance += value;
 
         // Compile and execute initcode
-        const initcode_bytecode = Bytecode.init(self.gpa, initcode, @ptrCast(self.jump_table)) catch @panic("OutOfMemory");
+        const initcode_bytecode = Bytecode.init(self.gpa, initcode, @ptrCast(self.jump_table)) catch unreachable;
         defer initcode_bytecode.deinit(self.gpa);
-        var frame = self.gpa.create(Frame) catch @panic("OutOfMemory");
+        var frame = self.gpa.create(Frame) catch unreachable;
         defer self.gpa.destroy(frame);
         frame.* = Frame{
             .evm = self,
@@ -583,11 +583,11 @@ pub const EVM = struct {
     const LogNode = struct { log: Log, node: std.DoublyLinkedList.Node };
 
     pub fn pushLog(self: *Self, address: u160, topics: []const u256, data: []const u8) void {
-        const ln = self.logs_allocator.create(LogNode) catch @panic("OutOfMemory");
+        const ln = self.logs_allocator.create(LogNode) catch unreachable;
         ln.* = LogNode{ .log = .{
             .address = address,
-            .topics = self.logs_allocator.dupe(u256, topics) catch @panic("OutOfMemory"),
-            .data = self.logs_allocator.dupe(u8, data) catch @panic("OutOfMemory"),
+            .topics = self.logs_allocator.dupe(u256, topics) catch unreachable,
+            .data = self.logs_allocator.dupe(u8, data) catch unreachable,
         }, .node = .{} };
         self.logs.append(&ln.node);
         self.num_logs += 1;
