@@ -704,7 +704,6 @@ pub fn Ops(comptime spec: Spec) type {
                     const call_gas = if (has_value_arg) args[6] else args[5];
 
                     const address_access_cost = frame.evm.accessAccountCost(spec, addr);
-                    const code_account = frame.state.accounts.read(addr);
 
                     const call_caller: u160 = if (variant == .DELEGATECALL) frame.caller else frame.target;
                     const call_target: u160 = switch (variant) {
@@ -746,13 +745,12 @@ pub fn Ops(comptime spec: Spec) type {
                     const calldata = frame.memory.slice(@truncate(args[3]), @intCast(args[2]));
                     const return_buffer = frame.memory.slice(@truncate(args[1]), @intCast(args[0]));
 
-                    const code_hash = code_account.code_hash;
                     const leftover_gas, const err = frame.evm.call(
                         spec,
                         frame.state,
                         call_caller,
                         call_target,
-                        frame.state.code_storage.get(code_hash),
+                        addr,
                         forwarded_gas + stipend,
                         calldata,
                         value,

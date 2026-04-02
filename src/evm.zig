@@ -314,14 +314,12 @@ pub const EVM = struct {
         var remaining_gas = execution_gas_limit;
         if (msg.target) |target| {
             _ = self.accessAccount(target);
-            const target_code_hash = state.accounts.read(target).code_hash;
-            const code = state.code_storage.get(target_code_hash);
             remaining_gas, _ = self.call(
                 fork,
                 state,
                 msg.caller,
                 target,
-                code,
+                target,
                 remaining_gas,
                 msg.calldata,
                 msg.value,
@@ -375,7 +373,7 @@ pub const EVM = struct {
         state: *State,
         caller: u160,
         target: u160,
-        code: ?Bytecode,
+        code_addr: u160,
         initial_gas: u31,
         calldata: []u8,
         value: u256,
@@ -401,15 +399,18 @@ pub const EVM = struct {
             }
         }
 
+        const code_account = state.accounts.read(code_addr);
+        const code_hash = code_account.code_hash;
+
         var remaining_gas, var err = .{ initial_gas, @as(?Errors, null) };
-        if (code != null) {
+        if (code_hash != empty_code_hash) {
             var frame = self.gpa.create(Frame) catch unreachable;
             defer self.gpa.destroy(frame);
             frame.* = Frame{
                 .evm = self,
                 .context = self.context,
                 .state = state,
-                .code = code.?,
+                .code = state.code_storage.get(code_hash).?,
 
                 .caller = caller,
                 .target = target,
@@ -429,7 +430,7 @@ pub const EVM = struct {
                 err = frameErr;
             };
             remaining_gas = frame.gas;
-        } else if (fork.getPrecompile(target)) |precompile_handler| {
+        } else if (fork.getPrecompile(code_addr)) |precompile_handler| {
             remaining_gas, err = self.callPrecompile(
                 precompile_handler,
                 initial_gas,
