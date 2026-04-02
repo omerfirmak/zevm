@@ -64,6 +64,10 @@ pub const Spec = struct {
     identity_base_gas: u31,
     identity_per_word_gas: u31,
 
+    // SHA2-256 precompile
+    sha2256_base_gas: u31,
+    sha2256_per_word_gas: u31,
+
     pub fn constantGas(self: *const Self, comptime op: Opcode) i32 {
         return @intCast(self.gas_table[@intFromEnum(op)]);
     }
@@ -104,6 +108,8 @@ pub const Osaka = Spec{
     .log_size_gas_factor = 8,
     .identity_base_gas = 15,
     .identity_per_word_gas = 3,
+    .sha2256_base_gas = 60,
+    .sha2256_per_word_gas = 12,
     .gas_table = std.enums.directEnumArrayDefault(Opcode, u32, 0, 256, .{
         .STOP = 0,
         .ADD = 3,

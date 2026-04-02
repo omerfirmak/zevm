@@ -59,10 +59,25 @@ pub fn Handlers(comptime fork: Spec) type {
             return .{ .return_size = calldata.len, .remaining_gas = gas - cost, .err = null };
         }
 
+        pub fn sha2_256(
+            gas: u31,
+            calldata: []const u8,
+            return_buffer: []u8,
+        ) PrecompileResult {
+            const cost = mem.toWordSize(calldata.len) * fork.sha2256_per_word_gas + fork.sha2256_per_word_gas;
+            if (gas < cost) {
+                return .{ .return_size = 0, .remaining_gas = 0, .err = evm.Errors.OutOfGas };
+            }
+
+            const digest_length = std.crypto.hash.sha2.Sha256.digest_length;
+            std.crypto.hash.sha2.Sha256.hash(calldata, return_buffer[0..digest_length], .{});
+            return .{ .return_size = digest_length, .remaining_gas = gas - cost, .err = null };
+        }
+
         pub fn table() [257]?Handler {
             return std.enums.directEnumArrayDefault(Precompiles, ?Handler, @as(?Handler, null), 257, .{
                 .ecrecover = unimplemented,
-                .sha2_256 = unimplemented,
+                .sha2_256 = sha2_256,
                 .ripemd_160 = unimplemented,
                 .identity = identity,
                 .modexp = unimplemented,
