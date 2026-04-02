@@ -46,7 +46,6 @@ pub const Context = struct {
 
     // Tx level context
     from: u160,
-    gas_price: u256,
 };
 
 pub const Frame = struct {
@@ -127,7 +126,7 @@ pub const Message = struct {
     nonce: u64,
     target: ?u160, // null = CREATE, some(addr) = CALL (including to address 0)
     gas_limit: u31,
-    effective_gas_price: u256,
+    gas_price: ?u256 = null, // legacy gas price; null for EIP-1559 txs
     max_fee_per_gas: ?u256 = null,
     max_priority_fee_per_gas: ?u256 = null,
     calldata: []u8,
@@ -172,6 +171,8 @@ pub const EVM = struct {
     warm_slots: storage.SlotsAccessList,
     // EIP-2200/EIP-3529: accumulated gas refund counter; may go negative mid-tx
     gas_refund: i32,
+    // effective gas price for the current transaction (set in process())
+    gas_price: u256,
     // jump table used to compile initcode during CREATE/CREATE2
     jump_table: *const [256]ops.FnOpaquePtr,
     // Accounts created in this txn, also used to mark them for SELFDESTRUCT
@@ -195,6 +196,7 @@ pub const EVM = struct {
             .warm_accounts = try storage.AccountsAccessList.init(allocator, 10_000, 10_000),
             .warm_slots = try storage.SlotsAccessList.init(allocator, 10_000, 10_000),
             .gas_refund = 0,
+            .gas_price = 0,
             .jump_table = jump_table,
             .created_accounts = try storage.CreatedAccounts.init(allocator, 1_000, 2_000),
             .logs_allocator = logs_allocator,
@@ -221,8 +223,19 @@ pub const EVM = struct {
         for (snapshot_ids.num_logs..self.num_logs) |_| self.popLog();
     }
 
+    pub fn effectiveGasPrice(msg: Message, basefee: u256) u256 {
+        const priority = msg.max_priority_fee_per_gas orelse 0;
+        return if (msg.max_fee_per_gas) |mfpg|
+            @min(mfpg, basefee + priority)
+        else
+            msg.gas_price orelse 0;
+    }
+
     pub fn process(self: *Self, comptime fork: Spec, msg: Message, state: *State) !void {
-        if (msg.effective_gas_price < self.context.basefee) {
+        const effective_gas_price = effectiveGasPrice(msg, self.context.basefee);
+        self.gas_price = effective_gas_price;
+
+        if (effective_gas_price < self.context.basefee) {
             return Errors.FeeTooLow;
         }
 
@@ -266,7 +279,7 @@ pub const EVM = struct {
         }
 
         // EIP-1559: upfront balance check uses maxFeePerGas (worst-case gas cost) if set
-        const balance_check_price = msg.max_fee_per_gas orelse msg.effective_gas_price;
+        const balance_check_price = msg.max_fee_per_gas orelse effective_gas_price;
         const balance_check_cost = std.math.mul(u256, @intCast(msg.gas_limit), balance_check_price) catch return Errors.GasOverflow;
         const upfront_cost = std.math.add(u256, balance_check_cost, msg.value) catch return Errors.NotEnoughFunds;
         if (caller_account.balance < upfront_cost) {
@@ -275,7 +288,7 @@ pub const EVM = struct {
 
         // For CALL txs, increment nonce here; for CREATE, create() handles nonce increment.
         if (!is_create) caller_account.nonce = msg.nonce + 1;
-        const gas_cost = std.math.mul(u256, @intCast(msg.gas_limit), msg.effective_gas_price) catch return Errors.GasOverflow;
+        const gas_cost = std.math.mul(u256, @intCast(msg.gas_limit), effective_gas_price) catch return Errors.GasOverflow;
         caller_account.balance -= gas_cost;
 
         const intrinsic_gas: u31 = if (is_create) fork.tx_create_gas else fork.tx_base_gas;
@@ -342,10 +355,10 @@ pub const EVM = struct {
             remaining_gas = msg.gas_limit - floor_cost;
         }
 
-        state.accounts.update(msg.caller).balance += @as(u256, @intCast(remaining_gas)) * msg.effective_gas_price;
+        state.accounts.update(msg.caller).balance += @as(u256, @intCast(remaining_gas)) * effective_gas_price;
 
         // EIP-1559: coinbase receives only the tip; the base fee is burned
-        const tip = msg.effective_gas_price - self.context.basefee;
+        const tip = effective_gas_price - self.context.basefee;
         const gas_used: u256 = msg.gas_limit - remaining_gas;
         if (tip > 0) {
             state.accounts.update(self.context.coinbase).balance += gas_used * tip;

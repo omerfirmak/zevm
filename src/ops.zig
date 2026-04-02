@@ -440,7 +440,7 @@ pub fn Ops(comptime spec: Spec) type {
         }
 
         pub fn gasprice(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
-            const new_stack_head = try frame.stackPush(stack_head, frame.context.gas_price);
+            const new_stack_head = try frame.stackPush(stack_head, frame.evm.gas_price);
             return next(next_ip, gas - spec.constantGas(.GASPRICE), new_stack_head, frame);
         }
 

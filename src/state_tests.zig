@@ -266,12 +266,6 @@ fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []con
 
     const post_entries = test_case.post.map.get(fork).?;
 
-    const basefee = test_case.env.currentBaseFee.?.value;
-    const effective_gas_price: u256 = if (tx.maxFeePerGas) |mfpg| blk: {
-        const priority: u256 = if (tx.maxPriorityFeePerGas) |mpfpg| mpfpg.value else 0;
-        break :blk @min(mfpg.value, basefee + priority);
-    } else if (tx.gasPrice) |gp| gp.value else 0;
-
     const context = evm.Context{
         .chainid = 1,
         .number = test_case.env.currentNumber.value,
@@ -279,9 +273,8 @@ fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []con
         .time = test_case.env.currentTimestamp.value,
         .random = if (test_case.env.currentRandom) |r| r.value else 0,
         .gas_limit = test_case.env.currentGasLimit.value,
-        .basefee = basefee,
+        .basefee = test_case.env.currentBaseFee.?.value,
         .from = tx.sender.value,
-        .gas_price = effective_gas_price,
     };
     var vm = try evm.EVM.init(
         allocator,
@@ -344,7 +337,7 @@ fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []con
             .nonce = tx.nonce.value,
             .target = to,
             .gas_limit = @intCast(gas_limit),
-            .effective_gas_price = effective_gas_price,
+            .gas_price = if (tx.gasPrice) |gp| gp.value else null,
             .max_fee_per_gas = if (tx.maxFeePerGas) |mfpg| mfpg.value else null,
             .max_priority_fee_per_gas = if (tx.maxPriorityFeePerGas) |mpfpg| mpfpg.value else null,
             .calldata = calldata,
