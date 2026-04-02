@@ -68,6 +68,10 @@ pub const Spec = struct {
     sha2256_base_gas: u31,
     sha2256_per_word_gas: u31,
 
+    // RIPEMD160 precompile
+    ripemd160_base_gas: u31,
+    ripemd160_per_word_gas: u31,
+
     pub fn constantGas(self: *const Self, comptime op: Opcode) i32 {
         return @intCast(self.gas_table[@intFromEnum(op)]);
     }
@@ -110,6 +114,8 @@ pub const Osaka = Spec{
     .identity_per_word_gas = 3,
     .sha2256_base_gas = 60,
     .sha2256_per_word_gas = 12,
+    .ripemd160_base_gas = 600,
+    .ripemd160_per_word_gas = 120,
     .gas_table = std.enums.directEnumArrayDefault(Opcode, u32, 0, 256, .{
         .STOP = 0,
         .ADD = 3,

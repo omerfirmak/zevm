@@ -1,6 +1,7 @@
 const std = @import("std");
 const evm = @import("evm.zig");
 const mem = @import("memory.zig");
+const Ripemd160 = @import("crypto/ripemd160.zig").Ripemd160;
 const Spec = @import("spec.zig").Spec;
 
 pub const PrecompileResult = struct {
@@ -74,11 +75,26 @@ pub fn Handlers(comptime fork: Spec) type {
             return .{ .return_size = digest_length, .remaining_gas = gas - cost, .err = null };
         }
 
+        pub fn ripemd_160(
+            gas: u31,
+            calldata: []const u8,
+            return_buffer: []u8,
+        ) PrecompileResult {
+            const cost = mem.toWordSize(calldata.len) * fork.ripemd160_per_word_gas + fork.ripemd160_base_gas;
+            if (gas < cost) {
+                return .{ .return_size = 0, .remaining_gas = 0, .err = evm.Errors.OutOfGas };
+            }
+
+            @memset(return_buffer[0..12], 0);
+            Ripemd160.hash(calldata, return_buffer[12 .. 12 + Ripemd160.digest_length], .{});
+            return .{ .return_size = 32, .remaining_gas = gas - cost, .err = null };
+        }
+
         pub fn table() [257]?Handler {
             return std.enums.directEnumArrayDefault(Precompiles, ?Handler, @as(?Handler, null), 257, .{
                 .ecrecover = unimplemented,
                 .sha2_256 = sha2_256,
-                .ripemd_160 = unimplemented,
+                .ripemd_160 = ripemd_160,
                 .identity = identity,
                 .modexp = unimplemented,
                 .ecadd = unimplemented,
