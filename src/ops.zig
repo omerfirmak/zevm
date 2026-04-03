@@ -44,6 +44,7 @@ pub fn Ops(comptime spec: Spec) type {
             // I would rather just return this instead of writing it to the frame
             // but https://github.com/ziglang/zig/issues/18189
             frame.gas = @intCast(gas);
+            frame.evm.return_data_size = 0;
         }
 
         pub fn pop(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
