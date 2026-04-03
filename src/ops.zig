@@ -342,7 +342,7 @@ pub fn Ops(comptime spec: Spec) type {
         }
 
         pub fn origin(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
-            const new_stack_head = try frame.stackPush(stack_head, frame.context.from);
+            const new_stack_head = try frame.stackPush(stack_head, frame.evm.msg.caller);
             return next(next_ip, gas - spec.constantGas(.ORIGIN), new_stack_head, frame);
         }
 
@@ -441,7 +441,7 @@ pub fn Ops(comptime spec: Spec) type {
         }
 
         pub fn gasprice(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
-            const new_stack_head = try frame.stackPush(stack_head, frame.evm.gas_price);
+            const new_stack_head = try frame.stackPush(stack_head, frame.evm.effective_gas_price);
             return next(next_ip, gas - spec.constantGas(.GASPRICE), new_stack_head, frame);
         }
 
@@ -505,6 +505,22 @@ pub fn Ops(comptime spec: Spec) type {
         pub fn basefee(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head = try frame.stackPush(stack_head, frame.context.basefee);
             return next(next_ip, gas - spec.constantGas(.BASEFEE), new_stack_head, frame);
+        }
+
+        pub fn blobhash(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+            const new_stack_head, const args = try frame.stackPop(stack_head, 1, 1);
+            const hashes = frame.evm.msg.blob_versioned_hashes;
+            args[0] = if (std.math.cast(usize, args[0])) |i|
+                if (i < hashes.len) hashes[i] else 0
+            else
+                0;
+            return next(next_ip, gas - spec.constantGas(.BLOBHASH), new_stack_head, frame);
+        }
+
+        pub fn blobbasefee(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+            const blob_fee = evm.blobBaseFee(frame.context.excess_blob_gas, frame.context.blob_base_fee_update_fraction);
+            const new_stack_head = try frame.stackPush(stack_head, blob_fee);
+            return next(next_ip, gas - spec.constantGas(.BLOBBASEFEE), new_stack_head, frame);
         }
 
         pub fn mload(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
@@ -947,6 +963,8 @@ pub fn Ops(comptime spec: Spec) type {
                 .RETURNDATACOPY = returndatacopy,
                 .SELFDESTRUCT = selfdestruct,
                 .BASEFEE = basefee,
+                .BLOBHASH = blobhash,
+                .BLOBBASEFEE = blobbasefee,
                 .SELFBALANCE = selfbalance,
                 .CHAINID = chainid,
                 .LOG0 = log_variant(.LOG0),

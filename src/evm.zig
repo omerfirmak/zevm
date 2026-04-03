@@ -31,6 +31,11 @@ pub const Errors = error{
     WriteProtection,
     InitcodeSizeExceeded,
     SenderNotEOA,
+    CreateBlobTx,
+    ZeroBlobs,
+    TooManyBlobs,
+    InvalidBlobVersionedHash,
+    InsufficientMaxFeePerBlobGas,
 };
 
 pub const Context = struct {
@@ -44,8 +49,10 @@ pub const Context = struct {
     basefee: u256,
     gas_limit: u64,
 
-    // Tx level context
-    from: u160,
+    // EIP-4844
+    excess_blob_gas: u64,
+    max_blobs_per_block: u64,
+    blob_base_fee_update_fraction: u64,
 };
 
 pub const Frame = struct {
@@ -127,12 +134,16 @@ pub const Message = struct {
     target: ?u160, // null = CREATE, some(addr) = CALL (including to address 0)
     gas_limit: u31,
     gas_price: ?u256 = null, // legacy gas price; null for EIP-1559 txs
-    max_fee_per_gas: ?u256 = null,
-    max_priority_fee_per_gas: ?u256 = null,
     calldata: []u8,
     value: u256,
+    // EIP-1559
+    max_fee_per_gas: ?u256 = null,
+    max_priority_fee_per_gas: ?u256 = null,
     // EIP-2930: accounts and slots to pre-warm before execution
     access_list: []const AccessListEntry = &.{},
+    // EIP-4844: non-null marks this as a type-3 blob tx
+    max_fee_per_blob_gas: ?u256 = null,
+    blob_versioned_hashes: []u256 = &.{},
 };
 
 const Snapshot = struct {
@@ -153,6 +164,7 @@ pub const EVM = struct {
     const Self = @This();
 
     gpa: std.mem.Allocator,
+    msg: *const Message,
     context: *const Context,
 
     // LOG handling
@@ -171,8 +183,8 @@ pub const EVM = struct {
     warm_slots: storage.SlotsAccessList,
     // EIP-2200/EIP-3529: accumulated gas refund counter; may go negative mid-tx
     gas_refund: i32,
-    // effective gas price for the current transaction (set in process())
-    gas_price: u256,
+    // effective gas price for the current transaction
+    effective_gas_price: u256,
     // jump table used to compile initcode during CREATE/CREATE2
     jump_table: *const [256]ops.FnOpaquePtr,
     // Accounts created in this txn, also used to mark them for SELFDESTRUCT
@@ -182,6 +194,7 @@ pub const EVM = struct {
         allocator: std.mem.Allocator,
         logs_allocator: std.mem.Allocator,
         logs: *std.DoublyLinkedList,
+        msg: *const Message,
         context: *const Context,
         jump_table: *const [256]ops.FnOpaquePtr,
     ) !Self {
@@ -189,6 +202,7 @@ pub const EVM = struct {
         try pre_state.ensureTotalCapacity(allocator, 10_000);
         return Self{
             .gpa = allocator,
+            .msg = msg,
             .context = context,
             .return_buffer = try allocator.alloc(u8, 16 * 1024 * 1024),
             .return_data_size = 0,
@@ -196,7 +210,7 @@ pub const EVM = struct {
             .warm_accounts = try storage.AccountsAccessList.init(allocator, 10_000, 10_000),
             .warm_slots = try storage.SlotsAccessList.init(allocator, 10_000, 10_000),
             .gas_refund = 0,
-            .gas_price = 0,
+            .effective_gas_price = effectiveGasPrice(msg, context.basefee),
             .jump_table = jump_table,
             .created_accounts = try storage.CreatedAccounts.init(allocator, 1_000, 2_000),
             .logs_allocator = logs_allocator,
@@ -223,7 +237,7 @@ pub const EVM = struct {
         for (snapshot_ids.num_logs..self.num_logs) |_| self.popLog();
     }
 
-    pub fn effectiveGasPrice(msg: Message, basefee: u256) u256 {
+    pub fn effectiveGasPrice(msg: *const Message, basefee: u256) u256 {
         const priority = msg.max_priority_fee_per_gas orelse 0;
         return if (msg.max_fee_per_gas) |mfpg|
             @min(mfpg, basefee + priority)
@@ -231,11 +245,30 @@ pub const EVM = struct {
             msg.gas_price orelse 0;
     }
 
-    pub fn process(self: *Self, comptime fork: Spec, msg: Message, state: *State) !void {
-        const effective_gas_price = effectiveGasPrice(msg, self.context.basefee);
-        self.gas_price = effective_gas_price;
+    pub fn validateAndPriceBlobTx(self: *const Self, fork: Spec, blob_base_fee: u256) !struct { u31, u256 } {
+        const msg = self.msg;
+        if (msg.max_fee_per_blob_gas) |max_fee_per_blob| {
+            const hashes = msg.blob_versioned_hashes;
+            if (msg.target == null) return Errors.CreateBlobTx;
+            if (hashes.len == 0) return Errors.ZeroBlobs;
+            if (hashes.len > self.context.max_blobs_per_block)
+                return Errors.TooManyBlobs;
+            for (hashes) |hash| {
+                if (hash >> 248 != 0x01) return Errors.InvalidBlobVersionedHash;
+            }
+            if (max_fee_per_blob < blob_base_fee) return Errors.InsufficientMaxFeePerBlobGas;
 
-        if (effective_gas_price < self.context.basefee) {
+            const gas = @as(u31, @intCast(hashes.len)) * fork.gas_per_blob;
+            const upfront = std.math.mul(u256, gas, max_fee_per_blob) catch return Errors.NotEnoughFunds;
+            return .{ gas, upfront };
+        }
+        return .{ 0, 0 };
+    }
+
+    pub fn process(self: *Self, comptime fork: Spec, state: *State) !void {
+        const msg = self.msg;
+
+        if (self.effective_gas_price < self.context.basefee) {
             return Errors.FeeTooLow;
         }
 
@@ -278,18 +311,25 @@ pub const EVM = struct {
             return Errors.SenderNotEOA;
         }
 
+        // EIP-4844: blob transaction validation
+        const blob_base_fee = blobBaseFee(self.context.excess_blob_gas, self.context.blob_base_fee_update_fraction);
+        const blob_gas, const blob_upfront = try self.validateAndPriceBlobTx(fork, blob_base_fee);
+
         // EIP-1559: upfront balance check uses maxFeePerGas (worst-case gas cost) if set
-        const balance_check_price = msg.max_fee_per_gas orelse effective_gas_price;
+        const balance_check_price = msg.max_fee_per_gas orelse self.effective_gas_price;
         const balance_check_cost = std.math.mul(u256, @intCast(msg.gas_limit), balance_check_price) catch return Errors.GasOverflow;
-        const upfront_cost = std.math.add(u256, balance_check_cost, msg.value) catch return Errors.NotEnoughFunds;
+        const upfront_gas_cost = std.math.add(u256, balance_check_cost, blob_upfront) catch return Errors.NotEnoughFunds;
+        const upfront_cost = std.math.add(u256, upfront_gas_cost, msg.value) catch return Errors.NotEnoughFunds;
         if (caller_account.balance < upfront_cost) {
             return Errors.NotEnoughFunds;
         }
 
         // For CALL txs, increment nonce here; for CREATE, create() handles nonce increment.
         if (!is_create) caller_account.nonce = msg.nonce + 1;
-        const gas_cost = std.math.mul(u256, @intCast(msg.gas_limit), effective_gas_price) catch return Errors.GasOverflow;
+        const gas_cost = std.math.mul(u256, @intCast(msg.gas_limit), self.effective_gas_price) catch return Errors.GasOverflow;
         caller_account.balance -= gas_cost;
+        // EIP-4844: deduct blob gas fee (non-refundable, uses actual base fee not max)
+        caller_account.balance -= @as(u256, blob_gas) * blob_base_fee;
 
         const intrinsic_gas: u31 = if (is_create) fork.tx_create_gas else fork.tx_base_gas;
         const calldata_gas, const floor_data_cost = try calldataCost(fork, msg.calldata);
@@ -353,10 +393,10 @@ pub const EVM = struct {
             remaining_gas = msg.gas_limit - floor_cost;
         }
 
-        state.accounts.update(msg.caller).balance += @as(u256, @intCast(remaining_gas)) * effective_gas_price;
+        state.accounts.update(msg.caller).balance += @as(u256, @intCast(remaining_gas)) * self.effective_gas_price;
 
         // EIP-1559: coinbase receives only the tip; the base fee is burned
-        const tip = effective_gas_price - self.context.basefee;
+        const tip = self.effective_gas_price - self.context.basefee;
         const gas_used: u256 = msg.gas_limit - remaining_gas;
         if (tip > 0) {
             state.accounts.update(self.context.coinbase).balance += gas_used * tip;
@@ -714,4 +754,19 @@ fn calldataCost(comptime fork: Spec, calldata: []u8) !struct { u31, u31 } {
         return Errors.OutOfGas;
     }
     return .{ @intCast(cost), @intCast(floor) };
+}
+
+pub fn blobBaseFee(excess_blob_gas: u64, update_fraction: u64) u256 {
+    if (update_fraction == 0) return 1;
+    // fake_exponential(1, excess_blob_gas, update_fraction)
+    const denom: u256 = update_fraction;
+    var i: u256 = 1;
+    var output: u256 = 0;
+    var accum: u256 = denom; // factor(1) * denominator
+    while (accum > 0) {
+        output += accum;
+        accum = accum * excess_blob_gas / (denom * i);
+        i += 1;
+    }
+    return output / denom;
 }

@@ -87,6 +87,9 @@ pub const Transaction = struct {
     secretKey: ?HexBytes = null,
     // EIP-2930: one access list per data index (parallel to data[]/gasLimit[]/value[])
     accessLists: ?[][]AccessListEntry = null,
+    // EIP-4844: blob transaction fields
+    maxFeePerBlobGas: ?HexInt(u256) = null,
+    blobVersionedHashes: ?[]HexInt(u256) = null,
 };
 
 pub const PostIndexes = struct {
@@ -234,6 +237,12 @@ fn mapException(name: []const u8) ?anyerror {
         .{ "TransactionException.SENDER_NOT_EOA", evm.Errors.SenderNotEOA },
         .{ "TransactionException.INSUFFICIENT_MAX_FEE_PER_GAS", evm.Errors.FeeTooLow },
         .{ "TransactionException.PRIORITY_GREATER_THAN_MAX_FEE_PER_GAS", evm.Errors.PriorityFeeTooHigh },
+        .{ "TransactionException.TYPE_3_TX_ZERO_BLOBS", evm.Errors.ZeroBlobs },
+        .{ "TransactionException.TYPE_3_TX_INVALID_BLOB_VERSIONED_HASH", evm.Errors.InvalidBlobVersionedHash },
+        .{ "TransactionException.TYPE_3_TX_MAX_BLOB_GAS_ALLOWANCE_EXCEEDED", evm.Errors.TooManyBlobs },
+        .{ "TransactionException.TYPE_3_TX_BLOB_COUNT_EXCEEDED", evm.Errors.TooManyBlobs },
+        .{ "TransactionException.TYPE_3_TX_CONTRACT_CREATION", evm.Errors.CreateBlobTx },
+        .{ "TransactionException.INSUFFICIENT_MAX_FEE_PER_BLOB_GAS", evm.Errors.InsufficientMaxFeePerBlobGas },
     };
     inline for (map) |entry| {
         if (std.mem.eql(u8, name, entry[0])) return entry[1];
@@ -266,23 +275,19 @@ fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []con
 
     const post_entries = test_case.post.map.get(fork).?;
 
-    const context = evm.Context{
-        .chainid = 1,
-        .number = test_case.env.currentNumber.value,
-        .coinbase = test_case.env.currentCoinbase.value,
-        .time = test_case.env.currentTimestamp.value,
-        .random = if (test_case.env.currentRandom) |r| r.value else 0,
-        .gas_limit = test_case.env.currentGasLimit.value,
-        .basefee = test_case.env.currentBaseFee.?.value,
-        .from = tx.sender.value,
-    };
-    var vm = try evm.EVM.init(
-        allocator,
-        logs_allocator.allocator(),
-        &logs,
-        &context,
-        @ptrCast(&jump_table),
-    );
+    // EIP-4844: build blob versioned hashes slice for context (BLOBHASH opcode)
+    const blob_hashes: []u256 = if (tx.blobVersionedHashes) |bvh| blk: {
+        const hashes = try allocator.alloc(u256, bvh.len);
+        for (bvh, hashes) |src, *dst| {
+            dst.* = src.value;
+        }
+        break :blk hashes;
+    } else &.{};
+
+    // EIP-4844: get blob schedule for this fork
+    const blob_schedule = if (test_case.config.blobSchedule) |bs| bs.map.get(fork) else null;
+    const blob_update_fraction: u64 = if (blob_schedule) |s| s.baseFeeUpdateFraction.value else 0;
+    const max_blobs: u64 = if (blob_schedule) |s| s.max.value else 0;
 
     for (post_entries) |post_entry| {
         // Build fresh state from pre for each post entry
@@ -332,18 +337,41 @@ fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []con
         }
 
         const to: ?u160 = if (tx.to) |t| t.value else null; // HexAddress.value is ?u160; null JSON or empty string both yield null
-        const tx_err: ?anyerror = if (vm.process(forkSpec, .{
-            .caller = tx.sender.value,
-            .nonce = tx.nonce.value,
-            .target = to,
-            .gas_limit = @intCast(gas_limit),
-            .gas_price = if (tx.gasPrice) |gp| gp.value else null,
-            .max_fee_per_gas = if (tx.maxFeePerGas) |mfpg| mfpg.value else null,
-            .max_priority_fee_per_gas = if (tx.maxPriorityFeePerGas) |mpfpg| mpfpg.value else null,
-            .calldata = calldata,
-            .value = value,
-            .access_list = access_list,
-        }, &state)) |_| null else |err| err;
+        const context = evm.Context{
+            .chainid = 1,
+            .number = test_case.env.currentNumber.value,
+            .coinbase = test_case.env.currentCoinbase.value,
+            .time = test_case.env.currentTimestamp.value,
+            .random = if (test_case.env.currentRandom) |r| r.value else 0,
+            .gas_limit = test_case.env.currentGasLimit.value,
+            .basefee = test_case.env.currentBaseFee.?.value,
+            .excess_blob_gas = if (test_case.env.currentExcessBlobGas) |ebg| ebg.value else 0,
+            .blob_base_fee_update_fraction = blob_update_fraction,
+            .max_blobs_per_block = max_blobs,
+        };
+        var vm = try evm.EVM.init(
+            allocator,
+            logs_allocator.allocator(),
+            &logs,
+            &.{
+                .caller = tx.sender.value,
+                .nonce = tx.nonce.value,
+                .target = to,
+                .gas_limit = @intCast(gas_limit),
+                .gas_price = if (tx.gasPrice) |gp| gp.value else null,
+                .max_fee_per_gas = if (tx.maxFeePerGas) |mfpg| mfpg.value else null,
+                .max_priority_fee_per_gas = if (tx.maxPriorityFeePerGas) |mpfpg| mpfpg.value else null,
+                .calldata = calldata,
+                .value = value,
+                .access_list = access_list,
+                .max_fee_per_blob_gas = if (tx.maxFeePerBlobGas) |mfpbg| mfpbg.value else null,
+                .blob_versioned_hashes = blob_hashes,
+            },
+            &context,
+            @ptrCast(&jump_table),
+        );
+
+        const tx_err: ?anyerror = if (vm.process(forkSpec, &state)) |_| null else |err| err;
 
         if (post_entry.expectException) |expected| {
             const actual = tx_err orelse return error.ExpectedExceptionButSucceeded;

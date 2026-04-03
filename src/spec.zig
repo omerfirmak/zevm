@@ -78,6 +78,9 @@ pub const Spec = struct {
     // P256VERIFY precompile (EIP-7951)
     p256verify_gas: u31,
 
+    // EIP-4844
+    gas_per_blob: u31,
+
     pub fn constantGas(self: *const Self, comptime op: Opcode) i32 {
         return @intCast(self.gas_table[@intFromEnum(op)]);
     }
@@ -124,6 +127,7 @@ pub const Osaka = Spec{
     .ripemd160_per_word_gas = 120,
     .ecrecover_gas = 3000,
     .p256verify_gas = 6900,
+    .gas_per_blob = 1 << 17,
     .gas_table = std.enums.directEnumArrayDefault(Opcode, u32, 0, 256, .{
         .STOP = 0,
         .ADD = 3,
