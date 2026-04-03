@@ -100,6 +100,7 @@ pub fn Handlers(comptime fork: Spec) type {
                 return .{ .return_size = 0, .remaining_gas = 0, .err = evm.Errors.OutOfGas };
             }
             const remaining_gas = gas - fork.ecrecover_gas;
+            const err_result: Result = .{ .return_size = 0, .remaining_gas = remaining_gas, .err = null };
             const curve = secp256k1.Secp256k1.init() catch unreachable;
 
             var msg: secp256k1.Message = [_]u8{0} ** 32;
@@ -115,16 +116,16 @@ pub fn Handlers(comptime fork: Spec) type {
                 @branchHint(.likely);
                 // v is a big-endian u256 at bytes 32..64; high 31 bytes must be zero, low byte must be 27 or 28
                 for (32..@min(63, calldata.len)) |i| {
-                    if (calldata[i] != 0) return .{ .return_size = 0, .remaining_gas = remaining_gas, .err = null };
+                    if (calldata[i] != 0) return err_result;
                 }
             }
             if (calldata.len > 63) {
                 @branchHint(.likely);
                 const v = calldata[63];
-                if (v != 27 and v != 28) return .{ .return_size = 0, .remaining_gas = remaining_gas, .err = null };
+                if (v != 27 and v != 28) return err_result;
                 sig[64] = v - 27;
             } else {
-                return .{ .return_size = 0, .remaining_gas = remaining_gas, .err = null };
+                return err_result;
             }
 
             if (calldata.len > 64) {
@@ -135,7 +136,7 @@ pub fn Handlers(comptime fork: Spec) type {
             }
 
             const pubkey = curve.recoverPubkey(msg, sig) catch {
-                return .{ .return_size = 0, .remaining_gas = remaining_gas, .err = null };
+                return err_result;
             };
 
             // Keccak256 of uncompressed pubkey (skip 0x04 prefix byte), take last 20 bytes as address
@@ -144,6 +145,64 @@ pub fn Handlers(comptime fork: Spec) type {
             @memset(return_buffer[0..12], 0);
             @memcpy(return_buffer[12..32], pubkey_hash[12..32]);
 
+            return .{ .return_size = 32, .remaining_gas = remaining_gas, .err = null };
+        }
+
+        pub fn p256verify(
+            gas: u31,
+            calldata: []const u8,
+            return_buffer: []u8,
+        ) Result {
+            if (gas < fork.p256verify_gas) {
+                return .{ .return_size = 0, .remaining_gas = 0, .err = evm.Errors.OutOfGas };
+            }
+            const remaining_gas = gas - fork.p256verify_gas;
+            const err_result: Result = .{ .return_size = 0, .remaining_gas = remaining_gas, .err = null };
+
+            // Input must be exactly 160 bytes: hash(32) || r(32) || s(32) || qx(32) || qy(32)
+            if (calldata.len != 160) return err_result;
+
+            const P256 = std.crypto.ecc.P256;
+            const Scalar = P256.scalar.Scalar;
+
+            const hash = calldata[0..32];
+            const r_bytes = calldata[32..64];
+            const s_bytes = calldata[64..96];
+            const qx_bytes = calldata[96..128];
+            const qy_bytes = calldata[128..160];
+
+            // r and s must be in (0, n)
+            const r = Scalar.fromBytes(r_bytes.*, .big) catch return err_result;
+            if (r.isZero()) return err_result;
+            const s = Scalar.fromBytes(s_bytes.*, .big) catch return err_result;
+            if (s.isZero()) return err_result;
+
+            // Parse and validate public key — rejects if not on curve, not canonical, or identity
+            const Q = P256.fromSerializedAffineCoordinates(qx_bytes.*, qy_bytes.*, .big) catch
+                return err_result;
+            Q.rejectIdentity() catch return err_result;
+
+            // ECDSA verification: R' = s^{-1}*hash*G + s^{-1}*r*Q
+            // Reduce hash mod n via fromBytes48 (hash is 32 bytes, may exceed n)
+            var hash_padded: [48]u8 = [_]u8{0} ** 48;
+            @memcpy(hash_padded[16..48], hash);
+            const e = Scalar.fromBytes48(hash_padded, .big);
+            const s_inv = s.invert();
+            const u_1 = s_inv.mul(e).toBytes(.big);
+            const u_2 = s_inv.mul(r).toBytes(.big);
+
+            const R = P256.basePoint.mulDoubleBasePublic(u_1, Q, u_2, .big) catch
+                return err_result;
+            R.rejectIdentity() catch return err_result;
+
+            // R.x mod n must equal r (mod n comparison per EIP-7951)
+            var rx_padded: [48]u8 = [_]u8{0} ** 48;
+            @memcpy(rx_padded[16..48], &R.affineCoordinates().x.toBytes(.big));
+            const r_check = Scalar.fromBytes48(rx_padded, .big).toBytes(.big);
+            if (!std.mem.eql(u8, &r_check, r_bytes)) return err_result;
+
+            @memset(return_buffer[0..31], 0);
+            return_buffer[31] = 1;
             return .{ .return_size = 32, .remaining_gas = remaining_gas, .err = null };
         }
 
@@ -166,7 +225,7 @@ pub fn Handlers(comptime fork: Spec) type {
                 .bls12_pairing_check = unimplemented,
                 .bls12_map_fp_to_g1 = unimplemented,
                 .bls12_map_fp2_to_g2 = unimplemented,
-                .p256verify = unimplemented,
+                .p256verify = p256verify,
             });
         }
     };
