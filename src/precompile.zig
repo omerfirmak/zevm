@@ -1,10 +1,11 @@
 const std = @import("std");
 const evm = @import("evm.zig");
 const mem = @import("memory.zig");
+const secp256k1 = @import("zig-eth-secp256k1");
 const Ripemd160 = @import("crypto/ripemd160.zig").Ripemd160;
 const Spec = @import("spec.zig").Spec;
 
-pub const PrecompileResult = struct {
+pub const Result = struct {
     return_size: usize,
     remaining_gas: u31,
     err: ?evm.Errors,
@@ -14,7 +15,7 @@ pub const Handler = *const fn (
     gas: u31,
     calldata: []const u8,
     return_buffer: []u8,
-) PrecompileResult;
+) Result;
 
 pub const Precompiles = enum(u9) {
     ecrecover = 0x01,
@@ -43,7 +44,7 @@ pub fn Handlers(comptime fork: Spec) type {
             gas: u31,
             _: []const u8,
             _: []u8,
-        ) PrecompileResult {
+        ) Result {
             return .{ .return_size = 0, .remaining_gas = gas, .err = null };
         }
 
@@ -51,7 +52,7 @@ pub fn Handlers(comptime fork: Spec) type {
             gas: u31,
             calldata: []const u8,
             return_buffer: []u8,
-        ) PrecompileResult {
+        ) Result {
             const cost = mem.toWordSize(calldata.len) * fork.identity_per_word_gas + fork.identity_base_gas;
             if (gas < cost) {
                 return .{ .return_size = 0, .remaining_gas = 0, .err = evm.Errors.OutOfGas };
@@ -64,7 +65,7 @@ pub fn Handlers(comptime fork: Spec) type {
             gas: u31,
             calldata: []const u8,
             return_buffer: []u8,
-        ) PrecompileResult {
+        ) Result {
             const cost = mem.toWordSize(calldata.len) * fork.sha2256_per_word_gas + fork.sha2256_per_word_gas;
             if (gas < cost) {
                 return .{ .return_size = 0, .remaining_gas = 0, .err = evm.Errors.OutOfGas };
@@ -79,7 +80,7 @@ pub fn Handlers(comptime fork: Spec) type {
             gas: u31,
             calldata: []const u8,
             return_buffer: []u8,
-        ) PrecompileResult {
+        ) Result {
             const cost = mem.toWordSize(calldata.len) * fork.ripemd160_per_word_gas + fork.ripemd160_base_gas;
             if (gas < cost) {
                 return .{ .return_size = 0, .remaining_gas = 0, .err = evm.Errors.OutOfGas };
@@ -90,9 +91,65 @@ pub fn Handlers(comptime fork: Spec) type {
             return .{ .return_size = 32, .remaining_gas = gas - cost, .err = null };
         }
 
+        pub fn ecrecover(
+            gas: u31,
+            calldata: []const u8,
+            return_buffer: []u8,
+        ) Result {
+            if (gas < fork.ecrecover_gas) {
+                return .{ .return_size = 0, .remaining_gas = 0, .err = evm.Errors.OutOfGas };
+            }
+            const remaining_gas = gas - fork.ecrecover_gas;
+            const curve = secp256k1.Secp256k1.init() catch unreachable;
+
+            var msg: secp256k1.Message = [_]u8{0} ** 32;
+            var sig: secp256k1.Signature = [_]u8{0} ** 65;
+
+            if (calldata.len > 0) {
+                @branchHint(.likely);
+                const msg_end = @min(32, calldata.len);
+                @memcpy(msg[0..msg_end], calldata[0..msg_end]);
+            }
+
+            if (calldata.len > 32) {
+                @branchHint(.likely);
+                // v is a big-endian u256 at bytes 32..64; high 31 bytes must be zero, low byte must be 27 or 28
+                for (32..@min(63, calldata.len)) |i| {
+                    if (calldata[i] != 0) return .{ .return_size = 0, .remaining_gas = remaining_gas, .err = null };
+                }
+            }
+            if (calldata.len > 63) {
+                @branchHint(.likely);
+                const v = calldata[63];
+                if (v != 27 and v != 28) return .{ .return_size = 0, .remaining_gas = remaining_gas, .err = null };
+                sig[64] = v - 27;
+            } else {
+                return .{ .return_size = 0, .remaining_gas = remaining_gas, .err = null };
+            }
+
+            if (calldata.len > 64) {
+                @branchHint(.likely);
+                const rs_end = @min(128, calldata.len);
+                const rs_len = rs_end - 64;
+                @memcpy(sig[0..rs_len], calldata[64..rs_end]);
+            }
+
+            const pubkey = curve.recoverPubkey(msg, sig) catch {
+                return .{ .return_size = 0, .remaining_gas = remaining_gas, .err = null };
+            };
+
+            // Keccak256 of uncompressed pubkey (skip 0x04 prefix byte), take last 20 bytes as address
+            var pubkey_hash: [32]u8 = undefined;
+            std.crypto.hash.sha3.Keccak256.hash(pubkey[1..65], &pubkey_hash, .{});
+            @memset(return_buffer[0..12], 0);
+            @memcpy(return_buffer[12..32], pubkey_hash[12..32]);
+
+            return .{ .return_size = 32, .remaining_gas = remaining_gas, .err = null };
+        }
+
         pub fn table() [257]?Handler {
             return std.enums.directEnumArrayDefault(Precompiles, ?Handler, @as(?Handler, null), 257, .{
-                .ecrecover = unimplemented,
+                .ecrecover = ecrecover,
                 .sha2_256 = sha2_256,
                 .ripemd_160 = ripemd_160,
                 .identity = identity,

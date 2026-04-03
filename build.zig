@@ -4,11 +4,17 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    _ = b.addModule("zevm", .{
+    const secp256k1_dep = b.dependency("zig_eth_secp256k1", .{ .target = target, .optimize = optimize });
+    const secp256k1_mod = secp256k1_dep.module("zig-eth-secp256k1");
+    const secp256k1_lib = secp256k1_dep.artifact("secp256k1");
+
+    const zevm_mod = b.addModule("zevm", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
     });
+    zevm_mod.addImport("zig-eth-secp256k1", secp256k1_mod);
+    zevm_mod.linkLibrary(secp256k1_lib);
 
     const test_step = b.step("test", "Run unit tests");
     const unit_tests = b.addTest(.{
@@ -18,6 +24,8 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
+    unit_tests.root_module.addImport("zig-eth-secp256k1", secp256k1_mod);
+    unit_tests.root_module.linkLibrary(secp256k1_lib);
     test_step.dependOn(&b.addRunArtifact(unit_tests).step);
 
     const state_test_step = b.step("state-tests", "Run EVM state tests");
@@ -28,6 +36,8 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
+    state_tests.root_module.addImport("zig-eth-secp256k1", secp256k1_mod);
+    state_tests.root_module.linkLibrary(secp256k1_lib);
     state_tests.stack_size = 64 * 1024 * 1024;
     const run_state_tests = b.addRunArtifact(state_tests);
     run_state_tests.setCwd(b.path("."));

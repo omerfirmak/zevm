@@ -36,9 +36,9 @@
     // Once all dependencies are fetched, `zig build` no longer requires
     // internet connectivity.
     .dependencies = .{
-        .rlp = .{
-            .url = "git+https://github.com/gballet/zig-rlp#a4e049dd9bf8f471872c270768ea89bcf6eb3dbc",
-            .hash = "rlp-0.1.0-7i0JtKySAADCoPhAVJLmrBR0VlrYDl3d63pNkyCTnF1i",
+        .zig_eth_secp256k1 = .{
+            .url = "git+https://github.com/jsign/zig-eth-secp256k1.git#cf93d6597dacbd444b4b55728111c063f0efa962",
+            .hash = "zig_eth_secp256k1-0.1.0-_U97sBjqDACdmkjL_I_1dncMBvOZ0iSxbcMg4pIcVM4P",
         },
     },
     .paths = .{
