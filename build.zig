@@ -28,6 +28,19 @@ pub fn build(b: *std.Build) void {
     unit_tests.root_module.linkLibrary(secp256k1_lib);
     test_step.dependOn(&b.addRunArtifact(unit_tests).step);
 
+    const example_step = b.step("example", "Run the example program");
+    const example = b.addExecutable(.{
+        .name = "example",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/example.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    example.root_module.addImport("zig-eth-secp256k1", secp256k1_mod);
+    example.root_module.linkLibrary(secp256k1_lib);
+    example_step.dependOn(&b.addRunArtifact(example).step);
+
     const state_test_step = b.step("state-tests", "Run EVM state tests");
     const state_tests = b.addTest(.{
         .root_module = b.createModule(.{

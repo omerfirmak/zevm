@@ -38,6 +38,26 @@ Run a single fixture file:
 zig build state-tests -Dstate-test=/path/to/fixture.json
 ```
 
+## Usage
+
+Add zevm as a dependency in your `build.zig.zon`, then import the `evm` module from `src/root.zig`.
+
+The entry point for executing a transaction is `EVM.init` followed by `EVM.process`. You need to provide a `Message` (transaction parameters), a `Context` (block parameters), and a `State` (account/storage world state).
+
+See `src/example.zig` for a working end-to-end example (`zig build example` to run it).
+
+### Key types
+
+| Type | Purpose |
+|------|---------|
+| `evm.Message` | Transaction parameters: caller, target, calldata, value, gas, access list, etc. |
+| `evm.Context` | Block parameters: number, coinbase, basefee, chainid, blob gas, etc. |
+| `evm.EVM` | Executor. Call `init` then `process` to run a transaction. |
+| `state.State` | World state: accounts, contract storage, transient storage, deployed code. |
+| `spec.Osaka` | Fork specification with gas constants and opcode table. |
+
+`Message.target = null` triggers a CREATE transaction. `Message.authorization_list` (non-null) marks the transaction as EIP-7702 type-4. `Message.max_fee_per_blob_gas` (non-null) marks it as EIP-4844 type-3.
+
 ## Architecture
 
 | File | Description |
