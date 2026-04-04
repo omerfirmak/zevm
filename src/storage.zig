@@ -74,6 +74,7 @@ pub fn JournaledStorage(comptime Key: type, comptime Value: type, comptime Map: 
 
         pub fn deinit(self: *Self, gpa: std.mem.Allocator) void {
             self.dirties.deinit(gpa);
+            self.journal.deinit(gpa);
         }
 
         pub fn read(self: *Self, key: Key) Value {

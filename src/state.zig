@@ -48,9 +48,11 @@ pub const State = struct {
     }
 
     pub fn deinit(self: *Self, gpa: std.mem.Allocator) void {
+        self.code_storage.deinit(gpa);
         self.accounts.deinit(gpa);
         self.contract_state.deinit(gpa);
         self.transient_storage.deinit(gpa);
+        gpa.free(self.deployed_bytecode_allocator.buffer);
     }
 
     pub fn snapshot(self: *Self) Snapshot {
