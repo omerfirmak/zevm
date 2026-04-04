@@ -286,7 +286,6 @@ fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []con
     const allocator = rounded.allocator();
     const tx = test_case.transaction;
     const forkSpec = spec.Osaka;
-    const jump_table = ops.Ops(forkSpec).table();
 
     const post_entries = test_case.post.map.get(fork).?;
 
@@ -338,7 +337,7 @@ fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []con
                 var hash_bytes: [32]u8 = undefined;
                 std.crypto.hash.sha3.Keccak256.hash(pre_acct.code.value, &hash_bytes, .{});
                 code_hash = std.mem.readInt(u256, &hash_bytes, .big);
-                state.code_storage.putAssumeCapacity(code_hash, try Bytecode.init(allocator, pre_acct.code.value, &jump_table));
+                state.code_storage.putAssumeCapacity(code_hash, try Bytecode.init(allocator, pre_acct.code.value, forkSpec));
             }
 
             _ = state.accounts.write(addr, .{
@@ -398,7 +397,6 @@ fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []con
                 .authorization_list = auth_list,
             },
             &context,
-            @ptrCast(&jump_table),
         );
 
         const tx_err: ?anyerror = if (vm.process(forkSpec, &state)) |_| null else |err| err;

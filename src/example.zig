@@ -11,7 +11,6 @@ pub fn main() !void {
 
     // Choose a fork and build the jump table for it.
     const fork = spec.Osaka;
-    const jump_table = ops.Ops(fork).table();
 
     // Set up world state with enough capacity for this example.
     var state = try state_mod.State.init(allocator, 100_000);
@@ -32,7 +31,7 @@ pub fn main() !void {
     var code_hash_bytes: [32]u8 = undefined;
     std.crypto.hash.sha3.Keccak256.hash(&bytecode, &code_hash_bytes, .{});
     const code_hash = std.mem.readInt(u256, &code_hash_bytes, .big);
-    state.deploy_code(code_hash, &bytecode, @ptrCast(&jump_table));
+    state.deploy_code(code_hash, &bytecode, fork);
 
     const contract: u160 = 0xcafe;
     _ = state.accounts.write(contract, .{
@@ -75,7 +74,7 @@ pub fn main() !void {
     const vm_alloc = vm_arena.allocator();
 
     var logs: std.DoublyLinkedList = .{};
-    var vm = try evm.EVM.init(vm_alloc, vm_alloc, &logs, &msg, &context, @ptrCast(&jump_table));
+    var vm = try evm.EVM.init(vm_alloc, vm_alloc, &logs, &msg, &context);
 
     // process() returns an error only for invalid transactions (bad nonce, insufficient
     // funds, etc.). Reverts are NOT errors — check return data for revert payloads.

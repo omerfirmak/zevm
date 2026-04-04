@@ -196,8 +196,6 @@ pub const EVM = struct {
     gas_refund: i32,
     // effective gas price for the current transaction
     effective_gas_price: u256,
-    // jump table used to compile initcode during CREATE/CREATE2
-    jump_table: *const [256]ops.FnOpaquePtr,
     // Accounts created in this txn, also used to mark them for SELFDESTRUCT
     created_accounts: storage.CreatedAccounts,
 
@@ -207,7 +205,6 @@ pub const EVM = struct {
         logs: *std.DoublyLinkedList,
         msg: *const Message,
         context: *const Context,
-        jump_table: *const [256]ops.FnOpaquePtr,
     ) !Self {
         var pre_state: storage.SlotKeyedMap(u256) = .empty;
         try pre_state.ensureTotalCapacity(allocator, 10_000);
@@ -222,7 +219,6 @@ pub const EVM = struct {
             .warm_slots = try storage.SlotsAccessList.init(allocator, 10_000, 10_000),
             .gas_refund = 0,
             .effective_gas_price = effectiveGasPrice(msg, context.basefee),
-            .jump_table = jump_table,
             .created_accounts = try storage.CreatedAccounts.init(allocator, 1_000, 2_000),
             .logs_allocator = logs_allocator,
             .logs = logs,
@@ -599,7 +595,7 @@ pub const EVM = struct {
         new_contract_acc.balance += value;
 
         // Compile and execute initcode
-        const initcode_bytecode = Bytecode.init(self.gpa, initcode, @ptrCast(self.jump_table)) catch unreachable;
+        const initcode_bytecode = Bytecode.init(self.gpa, initcode, fork) catch unreachable;
         defer initcode_bytecode.deinit(self.gpa);
         var frame = self.gpa.create(Frame) catch unreachable;
         defer self.gpa.destroy(frame);
@@ -656,7 +652,7 @@ pub const EVM = struct {
             var hash: [32]u8 = undefined;
             std.crypto.hash.sha3.Keccak256.hash(deployed_code, &hash, .{});
             code_hash = std.mem.readInt(u256, &hash, .big);
-            state.deploy_code(code_hash, deployed_code, self.jump_table);
+            state.deploy_code(code_hash, deployed_code, fork);
         }
         state.accounts.update(new_addr).code_hash = code_hash;
         // created_accounts was registered before frame.enter(); SELFDESTRUCT may have marked it false — don't overwrite.
@@ -739,7 +735,7 @@ pub const EVM = struct {
                 const dg_hash = delegationCodeHash(auth.address);
                 if (state.code_storage.get(dg_hash) == null) {
                     const dg_code = delegationCode(auth.address);
-                    state.deploy_code(dg_hash, &dg_code, self.jump_table);
+                    state.deploy_code(dg_hash, &dg_code, fork);
                 }
                 auth_mutable.code_hash = dg_hash;
             }

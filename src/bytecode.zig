@@ -1,6 +1,7 @@
 const std = @import("std");
 const ops = @import("ops.zig");
 const Opcode = @import("opcode.zig").Opcode;
+const Spec = @import("spec.zig").Spec;
 
 // Represents a contract's code. Also stores threaded representation
 // and valid jump destinations that the EVM utilizes
@@ -16,7 +17,8 @@ threaded_code: []?ops.FnOpaquePtr,
 
 // Creates a new Bytecode instance by first building a threaded code from the given
 // raw bytecode and jumptable
-pub fn init(gpa: std.mem.Allocator, bytes: []const u8, jump_table: *const [256]ops.Fn) !Bytecode {
+pub fn init(gpa: std.mem.Allocator, bytes: []const u8, comptime fork: Spec) !Bytecode {
+    const jump_table = comptime ops.Ops(fork).table();
     var threaded_code = try gpa.alloc(?ops.Fn, bytes.len + 33);
     var pc: usize = 0;
     while (pc < bytes.len) : (pc += 1) {

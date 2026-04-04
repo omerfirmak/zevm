@@ -2,6 +2,7 @@ const std = @import("std");
 const storage = @import("storage.zig");
 const ops = @import("ops.zig");
 const Bytecode = @import("bytecode.zig").Bytecode;
+const Spec = @import("spec.zig").Spec;
 
 // keccak256("") — used to identify accounts with no deployed code
 pub const empty_code_hash = 0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470;
@@ -69,10 +70,10 @@ pub const State = struct {
         self.transient_storage.revert(snapshot_ids.tstorage);
     }
 
-    pub fn deploy_code(self: *Self, hash: u256, code: []const u8, jump_table: *const [256]ops.FnOpaquePtr) void {
+    pub fn deploy_code(self: *Self, hash: u256, code: []const u8, comptime fork: Spec) void {
         const allocator = self.deployed_bytecode_allocator.allocator();
         const code_bytes = allocator.dupe(u8, code) catch unreachable;
-        const bytecode = Bytecode.init(allocator, code_bytes, @ptrCast(jump_table)) catch unreachable;
+        const bytecode = Bytecode.init(allocator, code_bytes, fork) catch unreachable;
         self.code_storage.putAssumeCapacity(hash, bytecode);
     }
 };
