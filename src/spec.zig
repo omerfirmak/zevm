@@ -29,12 +29,12 @@ pub const Spec = struct {
     code_deposit_gas: usize,
 
     // EIP-2930: access list intrinsic gas
-    access_list_address_gas: u31,
-    access_list_storage_key_gas: u31,
+    access_list_address_gas: i32,
+    access_list_storage_key_gas: i32,
 
     // Intrinsic base gas per transaction type
-    tx_base_gas: u31,
-    tx_create_gas: u31,
+    tx_base_gas: i32,
+    tx_create_gas: i32,
 
     // Per-word gas for hashing operations (KECCAK256, CREATE2)
     keccak_word_gas: i32,
@@ -45,10 +45,10 @@ pub const Spec = struct {
     selfdestruct_empty_target_gas: i32,
 
     // EIP-7623 TOTAL_COST_FLOOR_PER_TOKEN
-    total_cost_floor_per_token: u31,
+    total_cost_floor_per_token: i32,
 
     // EIP-7825: maximum transaction gas limit
-    max_tx_gas: u31,
+    max_tx_gas: i32,
 
     // EIP-160: gas per byte of exponent in EXP
     exp_per_byte_gas: i32,
@@ -56,34 +56,34 @@ pub const Spec = struct {
     // CALL gas constants
     call_value_gas: i32, // charged when CALL/CALLCODE sends non-zero value
     call_new_account_gas: i32, // charged when CALL creates a new (empty) account
-    call_stipend: u31, // bonus gas given to callee when value is transferred
+    call_stipend: i32, // bonus gas given to callee when value is transferred
 
-    log_size_gas_factor: u31,
+    log_size_gas_factor: i32,
 
     // Identity precompile
-    identity_base_gas: u31,
-    identity_per_word_gas: u31,
+    identity_base_gas: i32,
+    identity_per_word_gas: i32,
 
     // SHA2-256 precompile
-    sha2256_base_gas: u31,
-    sha2256_per_word_gas: u31,
+    sha2256_base_gas: i32,
+    sha2256_per_word_gas: i32,
 
     // RIPEMD160 precompile
-    ripemd160_base_gas: u31,
-    ripemd160_per_word_gas: u31,
+    ripemd160_base_gas: i32,
+    ripemd160_per_word_gas: i32,
 
     // ECRECOVER precompile
-    ecrecover_gas: u31,
+    ecrecover_gas: i32,
 
     // P256VERIFY precompile (EIP-7951)
-    p256verify_gas: u31,
+    p256verify_gas: i32,
 
     // EIP-4844
-    gas_per_blob: u31,
+    gas_per_blob: i32,
 
     // EIP-7702: set code for EOAs
-    per_empty_account_cost: u31, // intrinsic cost per authorization tuple
-    per_auth_base_cost: u31, // refund amount when authority account is non-empty
+    per_empty_account_cost: i32, // intrinsic cost per authorization tuple
+    per_auth_base_cost: i32, // refund amount when authority account is non-empty
 
     pub fn constantGas(self: *const Self, comptime op: Opcode) i32 {
         return @intCast(self.gas_table[@intFromEnum(op)]);

@@ -7,12 +7,12 @@ const Spec = @import("spec.zig").Spec;
 
 pub const Result = struct {
     return_size: usize,
-    remaining_gas: u31,
+    remaining_gas: i32,
     err: ?evm.Errors,
 };
 
 pub const Handler = *const fn (
-    gas: u31,
+    gas: i32,
     calldata: []const u8,
     return_buffer: []u8,
 ) Result;
@@ -41,7 +41,7 @@ pub const Precompiles = enum(u9) {
 pub fn Handlers(comptime fork: Spec) type {
     return struct {
         pub fn unimplemented(
-            gas: u31,
+            gas: i32,
             _: []const u8,
             _: []u8,
         ) Result {
@@ -49,7 +49,7 @@ pub fn Handlers(comptime fork: Spec) type {
         }
 
         pub fn identity(
-            gas: u31,
+            gas: i32,
             calldata: []const u8,
             return_buffer: []u8,
         ) Result {
@@ -62,7 +62,7 @@ pub fn Handlers(comptime fork: Spec) type {
         }
 
         pub fn sha2_256(
-            gas: u31,
+            gas: i32,
             calldata: []const u8,
             return_buffer: []u8,
         ) Result {
@@ -77,7 +77,7 @@ pub fn Handlers(comptime fork: Spec) type {
         }
 
         pub fn ripemd_160(
-            gas: u31,
+            gas: i32,
             calldata: []const u8,
             return_buffer: []u8,
         ) Result {
@@ -92,7 +92,7 @@ pub fn Handlers(comptime fork: Spec) type {
         }
 
         pub fn ecrecover(
-            gas: u31,
+            gas: i32,
             calldata: []const u8,
             return_buffer: []u8,
         ) Result {
@@ -149,7 +149,7 @@ pub fn Handlers(comptime fork: Spec) type {
         }
 
         pub fn p256verify(
-            gas: u31,
+            gas: i32,
             calldata: []const u8,
             return_buffer: []u8,
         ) Result {

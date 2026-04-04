@@ -680,7 +680,7 @@ pub fn Ops(comptime spec: Spec) type {
                     }
 
                     // EIP-150: forward at most (denom-1)/denom of remaining gas
-                    const max_forwardable: u31 = @intCast(available_gas - @divFloor(available_gas, spec.gas_forward_denom));
+                    const max_forwardable = available_gas - @divFloor(available_gas, spec.gas_forward_denom);
                     available_gas -= max_forwardable;
 
                     const initcode = frame.memory.slice(@truncate(offset), @intCast(size));
@@ -759,7 +759,7 @@ pub fn Ops(comptime spec: Spec) type {
                     available_gas -= dynamic_cost;
 
                     // EIP-150: forward at most (denom-1)/denom of remaining gas to sub-calls
-                    const forwarded_gas: u31 = @intCast(@min(call_gas, available_gas - @divFloor(available_gas, spec.gas_forward_denom)));
+                    const forwarded_gas = @min(call_gas, available_gas - @divFloor(available_gas, spec.gas_forward_denom));
                     available_gas -= forwarded_gas;
 
                     const calldata = frame.memory.slice(@truncate(args[3]), @intCast(args[2]));
@@ -843,7 +843,7 @@ pub fn Ops(comptime spec: Spec) type {
             const is_warm = frame.evm.accessAccount(beneficiary);
             const access_cost = if (!is_warm) spec.cold_account_access_gas else 0;
 
-            var empty_account_cost: u31 = 0;
+            var empty_account_cost: i32 = 0;
             var current_account = frame.state.accounts.update(frame.target);
             const transferred_value = current_account.balance;
             const is_new_account = frame.evm.markForDestruction(frame.target);
@@ -874,7 +874,7 @@ pub fn Ops(comptime spec: Spec) type {
                     const mem_size = args[topic_count];
                     const mem_offset = args[topic_count + 1];
                     const available_gas = try frame.memory.growToFit(mem_offset, mem_size, gas);
-                    const dynamic_gas = spec.log_size_gas_factor * @as(u31, @intCast(mem_size));
+                    const dynamic_gas = spec.log_size_gas_factor * @as(i32, @intCast(mem_size));
 
                     const data = frame.memory.slice(@truncate(mem_offset), @intCast(mem_size));
                     // Topics are deepest-first in args; reverse to get push order (topic1 first).
