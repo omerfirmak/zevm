@@ -73,6 +73,17 @@ pub const AccessListEntry = struct {
     storageKeys: []HexInt(u256),
 };
 
+pub const AuthorizationTuple = struct {
+    chainId: HexInt(u64),
+    address: HexInt(u160),
+    nonce: HexInt(u64),
+    signer: HexInt(u160),
+    v: ?HexInt(u64) = null,
+    yParity: ?HexInt(u64) = null,
+    r: ?HexBytes = null,
+    s: ?HexBytes = null,
+};
+
 pub const Transaction = struct {
     nonce: HexInt(u64),
     gasPrice: ?HexInt(u256) = null,
@@ -90,6 +101,8 @@ pub const Transaction = struct {
     // EIP-4844: blob transaction fields
     maxFeePerBlobGas: ?HexInt(u256) = null,
     blobVersionedHashes: ?[]HexInt(u256) = null,
+    // EIP-7702: authorization list (type-4 tx)
+    authorizationList: ?[]AuthorizationTuple = null,
 };
 
 pub const PostIndexes = struct {
@@ -243,6 +256,8 @@ fn mapException(name: []const u8) ?anyerror {
         .{ "TransactionException.TYPE_3_TX_BLOB_COUNT_EXCEEDED", evm.Errors.TooManyBlobs },
         .{ "TransactionException.TYPE_3_TX_CONTRACT_CREATION", evm.Errors.CreateBlobTx },
         .{ "TransactionException.INSUFFICIENT_MAX_FEE_PER_BLOB_GAS", evm.Errors.InsufficientMaxFeePerBlobGas },
+        .{ "TransactionException.TYPE_4_EMPTY_AUTHORIZATION_LIST", evm.Errors.EmptyAuthorizationList },
+        .{ "TransactionException.TYPE_4_TX_CONTRACT_CREATION", evm.Errors.CreateSetCodeTx },
     };
     inline for (map) |entry| {
         if (std.mem.eql(u8, name, entry[0])) return entry[1];
@@ -288,6 +303,20 @@ fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []con
     const blob_schedule = if (test_case.config.blobSchedule) |bs| bs.map.get(fork) else null;
     const blob_update_fraction: u64 = if (blob_schedule) |s| s.baseFeeUpdateFraction.value else 0;
     const max_blobs: u64 = if (blob_schedule) |s| s.max.value else 0;
+
+    // EIP-7702: build authorization list
+    const auth_list: ?[]evm.Authorization = if (tx.authorizationList) |al| blk: {
+        const list = try allocator.alloc(evm.Authorization, al.len);
+        for (al, list) |src, *dst| {
+            dst.* = .{
+                .chain_id = src.chainId.value,
+                .address = src.address.value,
+                .nonce = src.nonce.value,
+                .authority = src.signer.value,
+            };
+        }
+        break :blk list;
+    } else null;
 
     for (post_entries) |post_entry| {
         // Build fresh state from pre for each post entry
@@ -366,6 +395,7 @@ fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []con
                 .access_list = access_list,
                 .max_fee_per_blob_gas = if (tx.maxFeePerBlobGas) |mfpbg| mfpbg.value else null,
                 .blob_versioned_hashes = blob_hashes,
+                .authorization_list = auth_list,
             },
             &context,
             @ptrCast(&jump_table),

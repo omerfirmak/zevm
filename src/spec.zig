@@ -81,6 +81,10 @@ pub const Spec = struct {
     // EIP-4844
     gas_per_blob: u31,
 
+    // EIP-7702: set code for EOAs
+    per_empty_account_cost: u31, // intrinsic cost per authorization tuple
+    per_auth_base_cost: u31, // refund amount when authority account is non-empty
+
     pub fn constantGas(self: *const Self, comptime op: Opcode) i32 {
         return @intCast(self.gas_table[@intFromEnum(op)]);
     }
@@ -128,6 +132,8 @@ pub const Osaka = Spec{
     .ecrecover_gas = 3000,
     .p256verify_gas = 6900,
     .gas_per_blob = 1 << 17,
+    .per_empty_account_cost = 25000,
+    .per_auth_base_cost = 12500,
     .gas_table = std.enums.directEnumArrayDefault(Opcode, u32, 0, 256, .{
         .STOP = 0,
         .ADD = 3,

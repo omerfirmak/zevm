@@ -721,6 +721,9 @@ pub fn Ops(comptime spec: Spec) type {
                     const call_gas = if (has_value_arg) args[6] else args[5];
 
                     const address_access_cost = frame.evm.accessAccountCost(spec, addr);
+                    // EIP-7702: if addr has a delegation designator, charge EIP-2929 access cost
+                    // for following it. Charged here (from caller's gas), not from forwarded gas.
+                    const delegation_cost = frame.evm.delegationAccessCost(spec, addr, frame.state);
 
                     const call_caller: u160 = if (variant == .DELEGATECALL) frame.caller else frame.target;
                     const call_target: u160 = switch (variant) {
@@ -749,7 +752,7 @@ pub fn Ops(comptime spec: Spec) type {
                         spec.call_new_account_gas
                     else
                         0;
-                    const dynamic_cost = address_access_cost + positive_value_cost + positive_value_to_new_acc_cost;
+                    const dynamic_cost = address_access_cost + delegation_cost + positive_value_cost + positive_value_to_new_acc_cost;
                     if (available_gas < dynamic_cost) {
                         return evm.Errors.OutOfGas;
                     }
