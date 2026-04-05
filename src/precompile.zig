@@ -5,6 +5,10 @@ const secp256k1 = @import("zig-eth-secp256k1");
 const bls12 = @import("crypto/blst.zig");
 const Ripemd160 = @import("crypto/ripemd160.zig").Ripemd160;
 const Spec = @import("spec.zig").Spec;
+const BigInt = std.math.big.int;
+const BigIntMutable = BigInt.Mutable;
+const BigIntConst = BigInt.Const;
+const BigIntLimb = std.math.big.Limb;
 
 pub const Result = struct {
     return_size: usize = 0,
@@ -83,6 +87,64 @@ const blake2b_sigma = [10][16]u8{
     [_]u8{ 6, 15, 14, 9, 11, 3, 0, 8, 12, 2, 13, 7, 1, 4, 10, 5 },
     [_]u8{ 10, 2, 8, 4, 7, 6, 1, 5, 15, 11, 9, 14, 3, 12, 13, 0 },
 };
+
+const modexp_max_length = 1024;
+const modexp_max_bits = modexp_max_length * 8;
+const modexp_value_limbs = BigInt.calcTwosCompLimbCount(modexp_max_bits);
+const modexp_product_limbs = modexp_value_limbs * 2 + 1;
+const modexp_div_limbs = BigInt.calcDivLimbsBufferLen(modexp_product_limbs, modexp_value_limbs);
+
+fn copyPadded(dst: []u8, src: []const u8, offset: usize) void {
+    @memset(dst, 0);
+    if (offset >= src.len) return;
+    const copy_len = @min(dst.len, src.len - offset);
+    @memcpy(dst[0..copy_len], src[offset .. offset + copy_len]);
+}
+
+fn parseModexpLength(calldata: []const u8, offset: usize) ?usize {
+    var buf: [32]u8 = undefined;
+    copyPadded(&buf, calldata, offset);
+    for (buf[0..30]) |byte| {
+        if (byte != 0) return null;
+    }
+    const len = std.mem.readInt(u16, @ptrCast(buf[30..32].ptr), .big);
+    if (len > modexp_max_length) return null;
+    return len;
+}
+
+fn highestBitIndex(bytes: []const u8) ?usize {
+    for (bytes, 0..) |byte, i| {
+        if (byte == 0) continue;
+        return (bytes.len - i - 1) * 8 + std.math.log2_int(u8, byte);
+    }
+    return null;
+}
+
+fn modexpReduce(
+    out: *BigIntMutable,
+    value: BigIntConst,
+    modulus: BigIntConst,
+    quotient: *BigIntMutable,
+    remainder: *BigIntMutable,
+    div_buffer: []BigIntLimb,
+) void {
+    quotient.divTrunc(remainder, value, modulus, div_buffer);
+    out.copy(remainder.toConst());
+}
+
+fn modexpMulMod(
+    out: *BigIntMutable,
+    lhs: BigIntConst,
+    rhs: BigIntConst,
+    modulus: BigIntConst,
+    product: *BigIntMutable,
+    quotient: *BigIntMutable,
+    remainder: *BigIntMutable,
+    div_buffer: []BigIntLimb,
+) void {
+    product.mulNoAlias(lhs, rhs, null);
+    modexpReduce(out, product.toConst(), modulus, quotient, remainder, div_buffer);
+}
 
 fn blake2bMix(v: *[16]u64, m: *const [16]u64, s: [16]u8, a: usize, b: usize, c: usize, d: usize, x: usize, y: usize) void {
     v[a] = v[a] +% v[b] +% m[s[x]];
@@ -316,6 +378,119 @@ pub fn Handlers(comptime fork: Spec) type {
             return .{ .return_size = 64, .remaining_gas = gas - cost };
         }
 
+        fn modexpGasCost(base_len: usize, mod_len: usize, exp_len: usize, exp_head: []const u8) i32 {
+            const max_len = @max(base_len, mod_len);
+            const words = (max_len + 7) / 8;
+            const multiplication_complexity: u64 = if (max_len > fork.modexp_small_length)
+                @as(u64, fork.modexp_large_multiplier) * @as(u64, words) * @as(u64, words)
+            else
+                @as(u64, fork.modexp_small_cost);
+
+            const small_head_bit = if (exp_len <= fork.modexp_small_length)
+                highestBitIndex(exp_head[0..exp_len]) orelse 0
+            else
+                0;
+            const large_head_bit = highestBitIndex(exp_head) orelse 0;
+            const adjusted_exp_len: u64 = if (exp_len <= fork.modexp_small_length)
+                small_head_bit
+            else
+                16 * @as(u64, exp_len - fork.modexp_small_length) + large_head_bit;
+            const iteration_count = @max(adjusted_exp_len, 1);
+            const cost = @max(@as(u64, fork.modexp_minimum_cost), multiplication_complexity * iteration_count);
+            return if (cost > std.math.maxInt(i32)) std.math.maxInt(i32) else @intCast(cost);
+        }
+
+        pub fn modexp(
+            gas: i32,
+            calldata: []const u8,
+            return_buffer: []u8,
+        ) Result {
+            const base_len = parseModexpLength(calldata, 0) orelse return invalid_input;
+            const exp_len = parseModexpLength(calldata, 32) orelse return invalid_input;
+            const mod_len = parseModexpLength(calldata, 64) orelse return invalid_input;
+
+            const base_offset = 96;
+            const exp_offset = base_offset + base_len;
+            const mod_offset = exp_offset + exp_len;
+
+            var exp_head: [32]u8 = undefined;
+            copyPadded(&exp_head, calldata, exp_offset);
+
+            const cost = modexpGasCost(base_len, mod_len, exp_len, &exp_head);
+            if (gas < cost) return out_of_gas;
+
+            if (mod_len == 0) {
+                return .{ .remaining_gas = gas - cost };
+            }
+
+            var base_buf: [modexp_max_length]u8 = undefined;
+            copyPadded(base_buf[0..base_len], calldata, base_offset);
+            var exp_buf: [modexp_max_length]u8 = undefined;
+            copyPadded(exp_buf[0..exp_len], calldata, exp_offset);
+            var mod_buf: [modexp_max_length]u8 = undefined;
+            copyPadded(mod_buf[0..mod_len], calldata, mod_offset);
+
+            var base_storage: [modexp_value_limbs]BigIntLimb = undefined;
+            var base = BigIntMutable.init(&base_storage, 0);
+            base.readTwosComplement(base_buf[0..base_len], base_len * 8, .big, .unsigned);
+
+            var modulus_storage: [modexp_value_limbs]BigIntLimb = undefined;
+            var modulus = BigIntMutable.init(&modulus_storage, 0);
+            modulus.readTwosComplement(mod_buf[0..mod_len], mod_len * 8, .big, .unsigned);
+
+            if (modulus.eqlZero()) {
+                @memset(return_buffer[0..mod_len], 0);
+                return .{ .return_size = mod_len, .remaining_gas = gas - cost };
+            }
+
+            var result_storage: [modexp_value_limbs]BigIntLimb = undefined;
+            var result = BigIntMutable.init(&result_storage, 1);
+            var quotient_storage: [modexp_product_limbs]BigIntLimb = undefined;
+            var quotient = BigIntMutable.init(&quotient_storage, 0);
+            var remainder_storage: [modexp_value_limbs]BigIntLimb = undefined;
+            var remainder = BigIntMutable.init(&remainder_storage, 0);
+            var product_storage: [modexp_product_limbs]BigIntLimb = undefined;
+            var product = BigIntMutable.init(&product_storage, 0);
+            var div_buffer: [modexp_div_limbs]BigIntLimb = undefined;
+
+            modexpReduce(&base, base.toConst(), modulus.toConst(), &quotient, &remainder, &div_buffer);
+            modexpReduce(&result, result.toConst(), modulus.toConst(), &quotient, &remainder, &div_buffer);
+
+            const exponent_is_zero = std.mem.allEqual(u8, exp_buf[0..exp_len], 0);
+            if (!exponent_is_zero) {
+                for (exp_buf[0..exp_len]) |byte| {
+                    var mask: u8 = 0x80;
+                    while (mask != 0) : (mask >>= 1) {
+                        modexpMulMod(
+                            &result,
+                            result.toConst(),
+                            result.toConst(),
+                            modulus.toConst(),
+                            &product,
+                            &quotient,
+                            &remainder,
+                            &div_buffer,
+                        );
+                        if (byte & mask != 0) {
+                            modexpMulMod(
+                                &result,
+                                result.toConst(),
+                                base.toConst(),
+                                modulus.toConst(),
+                                &product,
+                                &quotient,
+                                &remainder,
+                                &div_buffer,
+                            );
+                        }
+                    }
+                }
+            }
+
+            result.toConst().writeTwosComplement(return_buffer[0..mod_len], .big);
+            return .{ .return_size = mod_len, .remaining_gas = gas - cost };
+        }
+
         pub fn bls12G1add(
             gas: i32,
             calldata: []const u8,
@@ -482,7 +657,7 @@ pub fn Handlers(comptime fork: Spec) type {
                 .sha2_256 = sha2_256,
                 .ripemd_160 = ripemd_160,
                 .identity = identity,
-                .modexp = unimplemented,
+                .modexp = modexp,
                 .ecadd = unimplemented,
                 .ecmul = unimplemented,
                 .ecpairing = unimplemented,

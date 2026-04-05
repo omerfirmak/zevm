@@ -91,6 +91,12 @@ pub const Spec = struct {
     // EIP-4844
     gas_per_blob: i32,
 
+    // EIP-7883 / 7823 modexp pricing helpers
+    modexp_minimum_cost: i32,
+    modexp_small_length: usize,
+    modexp_small_cost: i32,
+    modexp_large_multiplier: i32,
+
     // EIP-7702: set code for EOAs
     per_empty_account_cost: i32, // intrinsic cost per authorization tuple
     per_auth_base_cost: i32, // refund amount when authority account is non-empty
@@ -149,6 +155,10 @@ pub const Osaka = Spec{
     .bls12_pairing_per_pair_gas = 32_600,
     .bls12_map_fp_to_g1_gas = 5_500,
     .bls12_map_fp2_to_g2_gas = 23_800,
+    .modexp_minimum_cost = 500,
+    .modexp_small_length = 32,
+    .modexp_small_cost = 16,
+    .modexp_large_multiplier = 2,
     .gas_per_blob = 1 << 17,
     .per_empty_account_cost = 25000,
     .per_auth_base_cost = 12500,
