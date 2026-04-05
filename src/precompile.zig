@@ -66,7 +66,7 @@ pub fn Handlers(comptime fork: Spec) type {
             calldata: []const u8,
             return_buffer: []u8,
         ) Result {
-            const cost = mem.toWordSize(calldata.len) * fork.sha2256_per_word_gas + fork.sha2256_per_word_gas;
+            const cost = mem.toWordSize(calldata.len) * fork.sha2256_per_word_gas + fork.sha2256_base_gas;
             if (gas < cost) {
                 return .{ .return_size = 0, .remaining_gas = 0, .err = evm.Errors.OutOfGas };
             }
