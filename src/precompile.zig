@@ -60,6 +60,70 @@ const bls12_g2_discounts = [_]u16{
     532, 532,  531,  530, 530, 529, 528, 528, 527, 526, 526, 525, 524, 524,
 };
 
+const blake2b_iv = [8]u64{
+    0x6a09e667f3bcc908,
+    0xbb67ae8584caa73b,
+    0x3c6ef372fe94f82b,
+    0xa54ff53a5f1d36f1,
+    0x510e527fade682d1,
+    0x9b05688c2b3e6c1f,
+    0x1f83d9abfb41bd6b,
+    0x5be0cd19137e2179,
+};
+
+const blake2b_sigma = [10][16]u8{
+    [_]u8{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 },
+    [_]u8{ 14, 10, 4, 8, 9, 15, 13, 6, 1, 12, 0, 2, 11, 7, 5, 3 },
+    [_]u8{ 11, 8, 12, 0, 5, 2, 15, 13, 10, 14, 3, 6, 7, 1, 9, 4 },
+    [_]u8{ 7, 9, 3, 1, 13, 12, 11, 14, 2, 6, 5, 10, 4, 0, 15, 8 },
+    [_]u8{ 9, 0, 5, 7, 2, 4, 10, 15, 14, 1, 11, 12, 6, 8, 3, 13 },
+    [_]u8{ 2, 12, 6, 10, 0, 11, 8, 3, 4, 13, 7, 5, 15, 14, 1, 9 },
+    [_]u8{ 12, 5, 1, 15, 14, 13, 4, 10, 0, 7, 6, 3, 9, 2, 8, 11 },
+    [_]u8{ 13, 11, 7, 14, 12, 1, 3, 9, 5, 0, 15, 4, 8, 6, 2, 10 },
+    [_]u8{ 6, 15, 14, 9, 11, 3, 0, 8, 12, 2, 13, 7, 1, 4, 10, 5 },
+    [_]u8{ 10, 2, 8, 4, 7, 6, 1, 5, 15, 11, 9, 14, 3, 12, 13, 0 },
+};
+
+fn blake2bMix(v: *[16]u64, m: *const [16]u64, s: [16]u8, a: usize, b: usize, c: usize, d: usize, x: usize, y: usize) void {
+    v[a] = v[a] +% v[b] +% m[s[x]];
+    v[d] = std.math.rotr(u64, v[d] ^ v[a], 32);
+    v[c] = v[c] +% v[d];
+    v[b] = std.math.rotr(u64, v[b] ^ v[c], 24);
+    v[a] = v[a] +% v[b] +% m[s[y]];
+    v[d] = std.math.rotr(u64, v[d] ^ v[a], 16);
+    v[c] = v[c] +% v[d];
+    v[b] = std.math.rotr(u64, v[b] ^ v[c], 63);
+}
+
+fn blake2bCompress(h: *[8]u64, m: *const [16]u64, t0: u64, t1: u64, final: bool, rounds: u32) void {
+    var v: [16]u64 = undefined;
+    for (0..8) |i| {
+        v[i] = h[i];
+        v[i + 8] = blake2b_iv[i];
+    }
+
+    v[12] ^= t0;
+    v[13] ^= t1;
+    if (final) v[14] = ~v[14];
+
+    var i: u32 = 0;
+    while (i < rounds) : (i += 1) {
+        const s = blake2b_sigma[i % blake2b_sigma.len];
+        blake2bMix(&v, m, s, 0, 4, 8, 12, 0, 1);
+        blake2bMix(&v, m, s, 1, 5, 9, 13, 2, 3);
+        blake2bMix(&v, m, s, 2, 6, 10, 14, 4, 5);
+        blake2bMix(&v, m, s, 3, 7, 11, 15, 6, 7);
+        blake2bMix(&v, m, s, 0, 5, 10, 15, 8, 9);
+        blake2bMix(&v, m, s, 1, 6, 11, 12, 10, 11);
+        blake2bMix(&v, m, s, 2, 7, 8, 13, 12, 13);
+        blake2bMix(&v, m, s, 3, 4, 9, 14, 14, 15);
+    }
+
+    for (0..8) |j| {
+        h[j] ^= v[j] ^ v[j + 8];
+    }
+}
+
 pub fn Handlers(comptime fork: Spec) type {
     return struct {
         pub fn unimplemented(
@@ -214,6 +278,42 @@ pub fn Handlers(comptime fork: Spec) type {
             @memset(return_buffer[0..31], 0);
             return_buffer[31] = 1;
             return .{ .return_size = 32, .remaining_gas = remaining_gas };
+        }
+
+        pub fn blake2f(
+            gas: i32,
+            calldata: []const u8,
+            return_buffer: []u8,
+        ) Result {
+            if (calldata.len != 213) return invalid_input;
+
+            const rounds = std.mem.readInt(u32, calldata[0..4], .big);
+            const cost = if (rounds > std.math.maxInt(i32)) std.math.maxInt(i32) else @as(i32, @intCast(rounds));
+            if (gas < cost) return out_of_gas;
+
+            const final_flag = calldata[212];
+            if (final_flag != 0 and final_flag != 1) return invalid_input;
+
+            var h: [8]u64 = undefined;
+            for (0..8) |i| {
+                const start = 4 + i * 8;
+                h[i] = std.mem.readInt(u64, @ptrCast(calldata[start..][0..8].ptr), .little);
+            }
+
+            var m: [16]u64 = undefined;
+            for (0..16) |i| {
+                const start = 68 + i * 8;
+                m[i] = std.mem.readInt(u64, @ptrCast(calldata[start..][0..8].ptr), .little);
+            }
+
+            const t0 = std.mem.readInt(u64, @ptrCast(calldata[196..][0..8].ptr), .little);
+            const t1 = std.mem.readInt(u64, @ptrCast(calldata[204..][0..8].ptr), .little);
+            blake2bCompress(&h, &m, t0, t1, final_flag == 1, rounds);
+
+            for (0..8) |i| {
+                std.mem.writeInt(u64, @ptrCast(return_buffer[i * 8 ..][0..8].ptr), h[i], .little);
+            }
+            return .{ .return_size = 64, .remaining_gas = gas - cost };
         }
 
         pub fn bls12G1add(
@@ -386,7 +486,7 @@ pub fn Handlers(comptime fork: Spec) type {
                 .ecadd = unimplemented,
                 .ecmul = unimplemented,
                 .ecpairing = unimplemented,
-                .blake2f = unimplemented,
+                .blake2f = blake2f,
                 .point_eval = unimplemented,
                 .bls12_g1add = bls12G1add,
                 .bls12_g1msm = bls12G1msm,
