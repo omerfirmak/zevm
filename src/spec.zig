@@ -78,6 +78,16 @@ pub const Spec = struct {
     // P256VERIFY precompile (EIP-7951)
     p256verify_gas: i32,
 
+    // EIP-2537 BLS12-381 precompiles
+    bls12_g1add_gas: i32,
+    bls12_g1mul_gas: i32,
+    bls12_g2add_gas: i32,
+    bls12_g2mul_gas: i32,
+    bls12_pairing_base_gas: i32,
+    bls12_pairing_per_pair_gas: i32,
+    bls12_map_fp_to_g1_gas: i32,
+    bls12_map_fp2_to_g2_gas: i32,
+
     // EIP-4844
     gas_per_blob: i32,
 
@@ -131,6 +141,14 @@ pub const Osaka = Spec{
     .ripemd160_per_word_gas = 120,
     .ecrecover_gas = 3000,
     .p256verify_gas = 6900,
+    .bls12_g1add_gas = 375,
+    .bls12_g1mul_gas = 12_000,
+    .bls12_g2add_gas = 600,
+    .bls12_g2mul_gas = 22_500,
+    .bls12_pairing_base_gas = 37_700,
+    .bls12_pairing_per_pair_gas = 32_600,
+    .bls12_map_fp_to_g1_gas = 5_500,
+    .bls12_map_fp2_to_g2_gas = 23_800,
     .gas_per_blob = 1 << 17,
     .per_empty_account_cost = 25000,
     .per_auth_base_cost = 12500,

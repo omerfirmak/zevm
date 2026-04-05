@@ -39,6 +39,7 @@ pub const Errors = error{
     InsufficientMaxFeePerBlobGas,
     EmptyAuthorizationList,
     CreateSetCodeTx,
+    InvalidPrecompileInput,
 };
 
 pub const Context = struct {

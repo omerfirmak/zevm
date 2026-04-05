@@ -40,6 +40,10 @@
             .url = "git+https://github.com/jsign/zig-eth-secp256k1.git#cf93d6597dacbd444b4b55728111c063f0efa962",
             .hash = "zig_eth_secp256k1-0.1.0-_U97sBjqDACdmkjL_I_1dncMBvOZ0iSxbcMg4pIcVM4P",
         },
+        .blst = .{
+            .url = "git+https://github.com/supranational/blst.git#f62244ef50ad1a603decdb8f215e982d2a467bb6",
+            .hash = "blst-0.3.16-fvxk1Tc8MACrli26Tmxn_6ZDnnySVI_owoCn2ZcH9uOX",
+        },
     },
     .paths = .{
         "build.zig",
