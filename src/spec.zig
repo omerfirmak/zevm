@@ -88,9 +88,10 @@ pub const Spec = struct {
     bls12_map_fp_to_g1_gas: i32,
     bls12_map_fp2_to_g2_gas: i32,
 
-    // EIP-4844
+    // EIP-4844 / EIP-7594
     gas_per_blob: i32,
     point_evaluation_gas: i32,
+    max_blobs_per_tx: u64,
 
     // EIP-7883 / 7823 modexp pricing helpers
     modexp_minimum_cost: i32,
@@ -167,6 +168,7 @@ pub const Osaka = Spec{
     .modexp_small_cost = 16,
     .modexp_large_multiplier = 2,
     .gas_per_blob = 1 << 17,
+    .max_blobs_per_tx = 6,
     .per_empty_account_cost = 25000,
     .per_auth_base_cost = 12500,
     .point_evaluation_gas = 50000,

@@ -259,6 +259,8 @@ pub const EVM = struct {
             const hashes = msg.blob_versioned_hashes;
             if (msg.target == null) return Errors.CreateBlobTx;
             if (hashes.len == 0) return Errors.ZeroBlobs;
+            if (hashes.len > fork.max_blobs_per_tx)
+                return Errors.TooManyBlobs;
             if (hashes.len > self.context.max_blobs_per_block)
                 return Errors.TooManyBlobs;
             for (hashes) |hash| {
