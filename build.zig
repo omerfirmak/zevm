@@ -45,6 +45,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
         }),
+        .use_llvm = true,
     });
     unit_tests.linkLibCpp();
     unit_tests.root_module.addIncludePath(b.path("mcl/include"));
@@ -65,6 +66,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
         }),
+        .use_llvm = true,
     });
     example.linkLibCpp();
     example.root_module.addIncludePath(b.path("mcl/include"));
@@ -84,6 +86,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
         }),
+        .use_llvm = true,
     });
     state_tests.linkLibCpp();
     state_tests.root_module.addIncludePath(b.path("mcl/include"));
