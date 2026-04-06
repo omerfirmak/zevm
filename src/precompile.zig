@@ -439,10 +439,12 @@ pub fn Handlers(comptime fork: Spec) type {
             modexpReduce(&base, base.toConst(), modulus.toConst(), &quotient, &remainder, &div_buffer);
             modexpReduce(&result, result.toConst(), modulus.toConst(), &quotient, &remainder, &div_buffer);
 
-            const exponent_is_zero = std.mem.allEqual(u8, exp_buf[0..exp_len], 0);
-            if (!exponent_is_zero) {
-                for (exp_buf[0..exp_len]) |byte| {
-                    var mask: u8 = 0x80;
+            const exp_bytes = exp_buf[0..exp_len];
+            var exp_start: usize = 0;
+            while (exp_start < exp_bytes.len and exp_bytes[exp_start] == 0) : (exp_start += 1) {}
+            if (exp_start < exp_bytes.len) {
+                var mask: u8 = @as(u8, 1) << @intCast(std.math.log2_int(u8, exp_bytes[exp_start]));
+                for (exp_bytes[exp_start..]) |byte| {
                     while (mask != 0) : (mask >>= 1) {
                         modexpMulMod(
                             &result,
@@ -467,6 +469,7 @@ pub fn Handlers(comptime fork: Spec) type {
                             );
                         }
                     }
+                    mask = 0x80;
                 }
             }
 
