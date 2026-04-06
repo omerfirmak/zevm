@@ -739,8 +739,8 @@ pub fn Ops(comptime spec: Spec) type {
                     };
 
                     const value_is_positive = value > 0;
-                    // Value transfer is forbidden in static context
-                    if (frame.is_static and value_is_positive) return evm.Errors.WriteProtection;
+                    // Only CALL is forbidden to transfer value in static context; CALLCODE/DELEGATECALL do not actually move ETH
+                    if (frame.is_static and value_is_positive and variant == .CALL) return evm.Errors.WriteProtection;
 
                     const positive_value_cost = if ((variant == .CALL or variant == .CALLCODE) and value_is_positive)
                         spec.call_value_gas
