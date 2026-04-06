@@ -7,6 +7,11 @@ pub fn build(b: *std.Build) void {
     const secp256k1_dep = b.dependency("zig_eth_secp256k1", .{ .target = target, .optimize = optimize });
     const secp256k1_mod = secp256k1_dep.module("zig-eth-secp256k1");
     const secp256k1_lib = secp256k1_dep.artifact("secp256k1");
+
+    const ckzg4844_dep = b.dependency("ckzg_4844", .{ .target = target, .optimize = optimize });
+    const ckzg4844_mod = ckzg4844_dep.module("ckzg");
+    const ckzg4844_lib = ckzg4844_dep.artifact("ckzg");
+
     const blst_dep = b.dependency("blst", .{ .target = target, .optimize = optimize });
     const blst_mod = b.createModule(.{
         .root_source_file = blst_dep.path("bindings/zig/blst.zig"),
@@ -18,19 +23,6 @@ pub fn build(b: *std.Build) void {
         .linkage = .static,
         .root_module = blst_mod,
     });
-    switch (target.result.cpu.arch) {
-        .aarch64, .x86_64 => {
-            blst_lib.addCSourceFile(.{
-                .file = blst_dep.path("src/server.c"),
-                .flags = &.{ "-O2", "-ffreestanding", "-D__BLST_PORTABLE__" },
-            });
-            blst_lib.addAssemblyFile(blst_dep.path("build/assembly.S"));
-        },
-        else => blst_lib.addCSourceFile(.{
-            .file = blst_dep.path("src/server.c"),
-            .flags = &.{ "-O2", "-ffreestanding", "-D__BLST_PORTABLE__", "-D__BLST_NO_ASM__" },
-        }),
-    }
 
     const zevm_mod = b.addModule("zevm", .{
         .root_source_file = b.path("src/root.zig"),
@@ -41,6 +33,8 @@ pub fn build(b: *std.Build) void {
     zevm_mod.linkLibrary(secp256k1_lib);
     zevm_mod.addImport("blst", blst_mod);
     zevm_mod.linkLibrary(blst_lib);
+    zevm_mod.addImport("ckzg", ckzg4844_mod);
+    zevm_mod.linkLibrary(ckzg4844_lib);
 
     const test_step = b.step("test", "Run unit tests");
     const unit_tests = b.addTest(.{
@@ -54,6 +48,8 @@ pub fn build(b: *std.Build) void {
     unit_tests.root_module.linkLibrary(secp256k1_lib);
     unit_tests.root_module.addImport("blst", blst_mod);
     unit_tests.root_module.linkLibrary(blst_lib);
+    unit_tests.root_module.addImport("ckzg", ckzg4844_mod);
+    unit_tests.root_module.linkLibrary(ckzg4844_lib);
     test_step.dependOn(&b.addRunArtifact(unit_tests).step);
 
     const example_step = b.step("example", "Run the example program");
@@ -69,6 +65,8 @@ pub fn build(b: *std.Build) void {
     example.root_module.linkLibrary(secp256k1_lib);
     example.root_module.addImport("blst", blst_mod);
     example.root_module.linkLibrary(blst_lib);
+    example.root_module.addImport("ckzg", ckzg4844_mod);
+    example.root_module.linkLibrary(ckzg4844_lib);
     example_step.dependOn(&b.addRunArtifact(example).step);
 
     const state_test_step = b.step("state-tests", "Run EVM state tests");
@@ -83,6 +81,8 @@ pub fn build(b: *std.Build) void {
     state_tests.root_module.linkLibrary(secp256k1_lib);
     state_tests.root_module.addImport("blst", blst_mod);
     state_tests.root_module.linkLibrary(blst_lib);
+    state_tests.root_module.addImport("ckzg", ckzg4844_mod);
+    state_tests.root_module.linkLibrary(ckzg4844_lib);
     state_tests.stack_size = 64 * 1024 * 1024;
     const run_state_tests = b.addRunArtifact(state_tests);
     run_state_tests.setCwd(b.path("."));

@@ -1,0 +1,3 @@
+[submodule "c-kzg-4844"]
+	path = c-kzg-4844
+	url = https://github.com/omerfirmak/c-kzg-4844.git

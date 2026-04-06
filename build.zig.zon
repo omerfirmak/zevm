@@ -44,6 +44,9 @@
             .url = "git+https://github.com/supranational/blst.git#f62244ef50ad1a603decdb8f215e982d2a467bb6",
             .hash = "blst-0.3.16-fvxk1Tc8MACrli26Tmxn_6ZDnnySVI_owoCn2ZcH9uOX",
         },
+        .ckzg_4844 = .{
+            .path = "./c-kzg-4844",
+        },
     },
     .paths = .{
         "build.zig",

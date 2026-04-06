@@ -3,6 +3,7 @@ const evm = @import("evm.zig");
 const mem = @import("memory.zig");
 const secp256k1 = @import("zig-eth-secp256k1");
 const bls12 = @import("crypto/blst.zig");
+const kzg = @import("ckzg");
 const Ripemd160 = @import("crypto/ripemd160.zig").Ripemd160;
 const Spec = @import("spec.zig").Spec;
 const BigInt = std.math.big.int;
@@ -651,6 +652,52 @@ pub fn Handlers(comptime fork: Spec) type {
             return .{ .return_size = return_size, .remaining_gas = gas - fork.bls12_map_fp2_to_g2_gas };
         }
 
+        var kzg_setup: kzg.Settings = .{};
+
+        fn getKzgSetup() *kzg.Settings {
+            if (kzg_setup.loaded) return &kzg_setup;
+            kzg_setup = kzg.Settings.loadTrustedSetupFile("c-kzg-4844/src/trusted_setup.txt", 0) catch unreachable;
+            return &kzg_setup;
+        }
+
+        pub fn point_eval(
+            gas: i32,
+            calldata: []const u8,
+            return_buffer: []u8,
+        ) Result {
+            if (gas < fork.point_evaluation_gas) return out_of_gas;
+            if (calldata.len != 192) return invalid_input;
+
+            const versioned_hash = calldata[0..32];
+            const z = calldata[32..64];
+            const y = calldata[64..96];
+            const commitment = calldata[96..144];
+            const proof = calldata[144..192];
+
+            if (versioned_hash[0] != 1) return invalid_input;
+
+            var commitment_hash: [32]u8 = undefined;
+            std.crypto.hash.sha2.Sha256.hash(commitment, &commitment_hash, .{});
+            commitment_hash[0] = 1;
+
+            if (!std.mem.eql(u8, versioned_hash, &commitment_hash)) return invalid_input;
+
+            const c_commitment: *const kzg.KzgCommitment = @ptrCast(commitment.ptr);
+            const c_proof: *const kzg.KzgProof = @ptrCast(proof.ptr);
+            const c_z: *const kzg.Bytes32 = @ptrCast(z[0..32]);
+            const c_y: *const kzg.Bytes32 = @ptrCast(y[0..32]);
+
+            const setup = getKzgSetup();
+            const valid = setup.verifyKzgProof(c_commitment, c_z, c_y, c_proof) catch return invalid_input;
+            if (!valid) return invalid_input;
+
+            const field_elements_per_blob = 4096;
+            const bls_modulus = 52435875175126190479447740508185965837690552500527637822603658699938581184513;
+            std.mem.writeInt(u256, return_buffer[0..32], field_elements_per_blob, .big);
+            std.mem.writeInt(u256, return_buffer[32..64], bls_modulus, .big);
+            return .{ .return_size = 64, .remaining_gas = gas - fork.point_evaluation_gas };
+        }
+
         pub fn table() [257]?Handler {
             return std.enums.directEnumArrayDefault(Precompiles, ?Handler, @as(?Handler, null), 257, .{
                 .ecrecover = ecrecover,
@@ -662,7 +709,7 @@ pub fn Handlers(comptime fork: Spec) type {
                 .ecmul = unimplemented,
                 .ecpairing = unimplemented,
                 .blake2f = blake2f,
-                .point_eval = unimplemented,
+                .point_eval = point_eval,
                 .bls12_g1add = bls12G1add,
                 .bls12_g1msm = bls12G1msm,
                 .bls12_g2add = bls12G2add,

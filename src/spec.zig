@@ -90,6 +90,7 @@ pub const Spec = struct {
 
     // EIP-4844
     gas_per_blob: i32,
+    point_evaluation_gas: i32,
 
     // EIP-7883 / 7823 modexp pricing helpers
     modexp_minimum_cost: i32,
@@ -162,6 +163,7 @@ pub const Osaka = Spec{
     .gas_per_blob = 1 << 17,
     .per_empty_account_cost = 25000,
     .per_auth_base_cost = 12500,
+    .point_evaluation_gas = 50000,
     .gas_table = std.enums.directEnumArrayDefault(Opcode, u32, 0, 256, .{
         .STOP = 0,
         .ADD = 3,
