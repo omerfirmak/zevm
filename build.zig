@@ -29,6 +29,8 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    zevm_mod.addIncludePath(b.path("mcl/include"));
+    zevm_mod.addObjectFile(b.path("mcl/lib/libmcl.a"));
     zevm_mod.addImport("zig-eth-secp256k1", secp256k1_mod);
     zevm_mod.linkLibrary(secp256k1_lib);
     zevm_mod.addImport("blst", blst_mod);
@@ -44,6 +46,9 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
+    unit_tests.linkLibCpp();
+    unit_tests.root_module.addIncludePath(b.path("mcl/include"));
+    unit_tests.root_module.addObjectFile(b.path("mcl/lib/libmcl.a"));
     unit_tests.root_module.addImport("zig-eth-secp256k1", secp256k1_mod);
     unit_tests.root_module.linkLibrary(secp256k1_lib);
     unit_tests.root_module.addImport("blst", blst_mod);
@@ -61,6 +66,9 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
+    example.linkLibCpp();
+    example.root_module.addIncludePath(b.path("mcl/include"));
+    example.root_module.addObjectFile(b.path("mcl/lib/libmcl.a"));
     example.root_module.addImport("zig-eth-secp256k1", secp256k1_mod);
     example.root_module.linkLibrary(secp256k1_lib);
     example.root_module.addImport("blst", blst_mod);
@@ -77,6 +85,9 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
+    state_tests.linkLibCpp();
+    state_tests.root_module.addIncludePath(b.path("mcl/include"));
+    state_tests.root_module.addObjectFile(b.path("mcl/lib/libmcl.a"));
     state_tests.root_module.addImport("zig-eth-secp256k1", secp256k1_mod);
     state_tests.root_module.linkLibrary(secp256k1_lib);
     state_tests.root_module.addImport("blst", blst_mod);

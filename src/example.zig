@@ -5,6 +5,7 @@ const ops = @import("ops.zig");
 const spec = @import("spec.zig");
 
 pub fn main() !void {
+    @import("precompile.zig").init();
     var gpa_state = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa_state.deinit();
     const allocator = gpa_state.allocator();

@@ -162,6 +162,7 @@ test "state tests" {
     var gpa = std.heap.GeneralPurposeAllocator(.{ .thread_safe = true }){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
+    @import("precompile.zig").init();
 
     if (std.posix.getenv("STATE_TEST")) |path| {
         try runStateTestFile(allocator, std.fs.cwd(), path, supported_forks[0..]);

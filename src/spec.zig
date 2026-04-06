@@ -102,6 +102,12 @@ pub const Spec = struct {
     per_empty_account_cost: i32, // intrinsic cost per authorization tuple
     per_auth_base_cost: i32, // refund amount when authority account is non-empty
 
+    // EC precompiles
+    ecadd_gas: i32,
+    ecmul_gas: i32,
+    ecpairing_gas: i32,
+    ecpairing_per_pair_gas: i32,
+
     pub fn constantGas(self: *const Self, comptime op: Opcode) i32 {
         return @intCast(self.gas_table[@intFromEnum(op)]);
     }
@@ -164,6 +170,10 @@ pub const Osaka = Spec{
     .per_empty_account_cost = 25000,
     .per_auth_base_cost = 12500,
     .point_evaluation_gas = 50000,
+    .ecadd_gas = 150,
+    .ecmul_gas = 6000,
+    .ecpairing_gas = 45000,
+    .ecpairing_per_pair_gas = 34000,
     .gas_table = std.enums.directEnumArrayDefault(Opcode, u32, 0, 256, .{
         .STOP = 0,
         .ADD = 3,

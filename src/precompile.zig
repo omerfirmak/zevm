@@ -4,6 +4,9 @@ const mem = @import("memory.zig");
 const secp256k1 = @import("zig-eth-secp256k1");
 const bls12 = @import("crypto/blst.zig");
 const kzg = @import("ckzg");
+const mcl = @cImport({
+    @cInclude("mcl/bn_c256.h");
+});
 const Ripemd160 = @import("crypto/ripemd160.zig").Ripemd160;
 const Spec = @import("spec.zig").Spec;
 const BigInt = std.math.big.int;
@@ -46,6 +49,13 @@ pub const Precompiles = enum(u9) {
     bls12_map_fp2_to_g2 = 0x11,
     p256verify = 0x100,
 };
+
+var kzg_setup: kzg.Settings = .{};
+
+pub fn init() void {
+    kzg_setup = kzg.Settings.loadTrustedSetupFile("c-kzg-4844/src/trusted_setup.txt", 0) catch unreachable;
+    if (mcl.mclBn_init(mcl.mclBn_CurveFp254BNb, mcl.MCLBN_COMPILED_TIME_VAR) != 0) unreachable;
+}
 
 const bls12_g1_discounts = [_]u16{
     0,   1000, 949, 848, 797, 764, 750, 738, 728, 719, 712, 705, 698, 692, 687, 682, 677, 673, 669, 665, 661, 658, 654,
@@ -189,14 +199,6 @@ fn blake2bCompress(h: *[8]u64, m: *const [16]u64, t0: u64, t1: u64, final: bool,
 
 pub fn Handlers(comptime fork: Spec) type {
     return struct {
-        pub fn unimplemented(
-            gas: i32,
-            _: []const u8,
-            _: []u8,
-        ) Result {
-            return .{ .remaining_gas = gas };
-        }
-
         pub fn identity(
             gas: i32,
             calldata: []const u8,
@@ -652,14 +654,6 @@ pub fn Handlers(comptime fork: Spec) type {
             return .{ .return_size = return_size, .remaining_gas = gas - fork.bls12_map_fp2_to_g2_gas };
         }
 
-        var kzg_setup: kzg.Settings = .{};
-
-        fn getKzgSetup() *kzg.Settings {
-            if (kzg_setup.loaded) return &kzg_setup;
-            kzg_setup = kzg.Settings.loadTrustedSetupFile("c-kzg-4844/src/trusted_setup.txt", 0) catch unreachable;
-            return &kzg_setup;
-        }
-
         pub fn point_eval(
             gas: i32,
             calldata: []const u8,
@@ -687,8 +681,7 @@ pub fn Handlers(comptime fork: Spec) type {
             const c_z: *const kzg.Bytes32 = @ptrCast(z[0..32]);
             const c_y: *const kzg.Bytes32 = @ptrCast(y[0..32]);
 
-            const setup = getKzgSetup();
-            const valid = setup.verifyKzgProof(c_commitment, c_z, c_y, c_proof) catch return invalid_input;
+            const valid = kzg_setup.verifyKzgProof(c_commitment, c_z, c_y, c_proof) catch return invalid_input;
             if (!valid) return invalid_input;
 
             const field_elements_per_blob = 4096;
@@ -698,6 +691,210 @@ pub fn Handlers(comptime fork: Spec) type {
             return .{ .return_size = 64, .remaining_gas = gas - fork.point_evaluation_gas };
         }
 
+        fn isZeroPointG1(bytes: []const u8) bool {
+            if (bytes.len < 64) return false;
+            for (bytes[0..64]) |b| {
+                if (b != 0) return false;
+            }
+            return true;
+        }
+
+        fn isZeroPointG2(bytes: []const u8) bool {
+            if (bytes.len < 128) return false;
+            for (bytes[0..128]) |b| {
+                if (b != 0) return false;
+            }
+            return true;
+        }
+
+        fn reverseBytes32(dst: *[32]u8, src: *const [32]u8) void {
+            for (0..32) |i| dst[i] = src[31 - i];
+        }
+
+        fn loadG1(p: *mcl.mclBnG1, bytes: []const u8) !void {
+            if (isZeroPointG1(bytes)) {
+                mcl.mclBnG1_clear(p);
+                return;
+            }
+
+            var tmp: [32]u8 = undefined;
+
+            reverseBytes32(&tmp, bytes[0..32]);
+            if (mcl.mclBnFp_deserialize(&p.x, @ptrCast(&tmp), 32) == 0)
+                return error.InvalidInput;
+
+            reverseBytes32(&tmp, bytes[32..64]);
+            if (mcl.mclBnFp_deserialize(&p.y, @ptrCast(&tmp), 32) == 0)
+                return error.InvalidInput;
+
+            mcl.mclBnFp_setInt32(&p.z, 1);
+
+            if (mcl.mclBnG1_isValid(p) == 0)
+                return error.InvalidInput;
+        }
+
+        fn loadG2(p: *mcl.mclBnG2, bytes: []const u8) !void {
+            if (isZeroPointG2(bytes)) {
+                mcl.mclBnG2_clear(p);
+                return;
+            }
+
+            var tmp: [32]u8 = undefined;
+
+            reverseBytes32(&tmp, bytes[0..32]);
+            if (mcl.mclBnFp_deserialize(&p.x.d[1], @ptrCast(&tmp), 32) == 0) // x_im
+                return error.InvalidInput;
+
+            reverseBytes32(&tmp, bytes[32..64]);
+            if (mcl.mclBnFp_deserialize(&p.x.d[0], @ptrCast(&tmp), 32) == 0) // x_re
+                return error.InvalidInput;
+
+            reverseBytes32(&tmp, bytes[64..96]);
+            if (mcl.mclBnFp_deserialize(&p.y.d[1], @ptrCast(&tmp), 32) == 0) // y_im
+                return error.InvalidInput;
+
+            reverseBytes32(&tmp, bytes[96..128]);
+            if (mcl.mclBnFp_deserialize(&p.y.d[0], @ptrCast(&tmp), 32) == 0) // y_re
+                return error.InvalidInput;
+
+            mcl.mclBnFp_setInt32(&p.z.d[0], 1);
+            mcl.mclBnFp_setInt32(&p.z.d[1], 0);
+
+            if (mcl.mclBnG2_isValid(p) == 0)
+                return error.InvalidInput;
+
+            if (mcl.mclBnG2_isValidOrder(p) == 0)
+                return error.InvalidInput;
+        }
+
+        fn serializeG1(p: *const mcl.mclBnG1, out: []u8) !void {
+            if (mcl.mclBnG1_isZero(p) != 0) {
+                @memset(out[0..64], 0);
+                return;
+            }
+            var tmp: [32]u8 = undefined;
+
+            if (mcl.mclBnFp_getLittleEndian(@ptrCast(&tmp), 32, &p.x) == 0)
+                return error.InvalidInput;
+            reverseBytes32(out[0..32], &tmp);
+
+            if (mcl.mclBnFp_getLittleEndian(@ptrCast(&tmp), 32, &p.y) == 0)
+                return error.InvalidInput;
+            reverseBytes32(out[32..64], &tmp);
+        }
+
+        pub fn ecadd(
+            gas: i32,
+            calldata: []const u8,
+            return_buffer: []u8,
+        ) Result {
+            if (gas < fork.ecadd_gas) return out_of_gas;
+
+            var padded = [_]u8{0} ** 128;
+            const len = @min(calldata.len, 128);
+            @memcpy(padded[0..len], calldata[0..len]);
+
+            var p1: mcl.mclBnG1 = undefined;
+            var p2: mcl.mclBnG1 = undefined;
+
+            loadG1(&p1, padded[0..64]) catch return invalid_input;
+            loadG1(&p2, padded[64..128]) catch return invalid_input;
+
+            var result: mcl.mclBnG1 = undefined;
+            mcl.mclBnG1_add(&result, &p1, &p2);
+            mcl.mclBnG1_normalize(&result, &result);
+
+            serializeG1(&result, return_buffer[0..64]) catch return invalid_input;
+
+            return .{
+                .return_size = 64,
+                .remaining_gas = gas - fork.ecadd_gas,
+            };
+        }
+
+        pub fn ecmul(
+            gas: i32,
+            calldata: []const u8,
+            return_buffer: []u8,
+        ) Result {
+            if (gas < fork.ecmul_gas) return out_of_gas;
+
+            var padded = [_]u8{0} ** 96;
+            const len = @min(calldata.len, 96);
+            @memcpy(padded[0..len], calldata[0..len]);
+
+            var p: mcl.mclBnG1 = undefined;
+            loadG1(&p, padded[0..64]) catch return invalid_input;
+
+            var s: mcl.mclBnFr = undefined;
+            if (mcl.mclBnFr_setBigEndianMod(&s, @ptrCast(&padded[64]), 32) != 0)
+                return invalid_input;
+
+            var result: mcl.mclBnG1 = undefined;
+            mcl.mclBnG1_mul(&result, &p, &s);
+            mcl.mclBnG1_normalize(&result, &result);
+
+            serializeG1(&result, return_buffer[0..64]) catch return invalid_input;
+
+            return .{
+                .return_size = 64,
+                .remaining_gas = gas - fork.ecmul_gas,
+            };
+        }
+
+        pub fn ecpairing(
+            gas: i32,
+            calldata: []const u8,
+            return_buffer: []u8,
+        ) Result {
+            if (calldata.len % 192 != 0) return invalid_input;
+
+            const pair_len = calldata.len / 192;
+            const cost = fork.ecpairing_gas +
+                @as(i32, @intCast(pair_len)) * fork.ecpairing_per_pair_gas;
+
+            if (gas < cost) return out_of_gas;
+
+            var acc: mcl.mclBnGT = undefined;
+            var has_acc = false;
+            var stream = calldata;
+
+            for (0..pair_len) |_| {
+                var g1: mcl.mclBnG1 = undefined;
+                var g2: mcl.mclBnG2 = undefined;
+
+                loadG1(&g1, stream[0..64]) catch return invalid_input;
+                loadG2(&g2, stream[64..192]) catch return invalid_input;
+
+                stream = stream[192..];
+
+                if (mcl.mclBnG1_isZero(&g1) != 0 or mcl.mclBnG2_isZero(&g2) != 0) continue;
+
+                var ml: mcl.mclBnGT = undefined;
+                mcl.mclBn_millerLoop(&ml, &g1, &g2);
+
+                if (has_acc) {
+                    mcl.mclBnGT_mul(&acc, &acc, &ml);
+                } else {
+                    acc = ml;
+                    has_acc = true;
+                }
+            }
+
+            @memset(return_buffer[0..31], 0);
+            if (!has_acc) {
+                return_buffer[31] = 1;
+            } else {
+                mcl.mclBn_finalExp(&acc, &acc);
+                return_buffer[31] = @intCast(mcl.mclBnGT_isOne(&acc));
+            }
+
+            return .{
+                .return_size = 32,
+                .remaining_gas = gas - cost,
+            };
+        }
+
         pub fn table() [257]?Handler {
             return std.enums.directEnumArrayDefault(Precompiles, ?Handler, @as(?Handler, null), 257, .{
                 .ecrecover = ecrecover,
@@ -705,9 +902,9 @@ pub fn Handlers(comptime fork: Spec) type {
                 .ripemd_160 = ripemd_160,
                 .identity = identity,
                 .modexp = modexp,
-                .ecadd = unimplemented,
-                .ecmul = unimplemented,
-                .ecpairing = unimplemented,
+                .ecadd = ecadd,
+                .ecmul = ecmul,
+                .ecpairing = ecpairing,
                 .blake2f = blake2f,
                 .point_eval = point_eval,
                 .bls12_g1add = bls12G1add,
