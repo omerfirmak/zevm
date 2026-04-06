@@ -54,7 +54,7 @@ var kzg_setup: kzg.Settings = .{};
 
 pub fn init() void {
     kzg_setup = kzg.Settings.loadTrustedSetupFile("c-kzg-4844/src/trusted_setup.txt", 0) catch unreachable;
-    if (mcl.mclBn_init(mcl.mclBn_CurveFp254BNb, mcl.MCLBN_COMPILED_TIME_VAR) != 0) unreachable;
+    if (mcl.mclBn_init(mcl.mclBn_CurveSNARK1, mcl.MCLBN_COMPILED_TIME_VAR) != 0) unreachable;
 }
 
 const bls12_g1_discounts = [_]u16{
