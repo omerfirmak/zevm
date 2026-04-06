@@ -245,40 +245,22 @@ pub fn Handlers(comptime fork: Spec) type {
             const remaining_gas = gas - fork.ecrecover_gas;
             const bail: Result = .{ .remaining_gas = remaining_gas };
 
+            var padded = [_]u8{0} ** 128;
+            @memcpy(padded[0..@min(calldata.len, 128)], calldata[0..@min(calldata.len, 128)]);
+
+            // v is a big-endian u256 at bytes 32..64; high 31 bytes must be zero, low byte is 27 or 28
+            for (padded[32..63]) |b| if (b != 0) return bail;
+            const v = padded[63];
+            if (v != 27 and v != 28) return bail;
+
             const curve = secp256k1.Secp256k1.init() catch unreachable;
-            var msg: secp256k1.Message = [_]u8{0} ** 32;
             var sig: secp256k1.Signature = [_]u8{0} ** 65;
+            @memcpy(sig[0..64], padded[64..128]);
+            sig[64] = v - 27;
 
-            if (calldata.len > 0) {
-                @branchHint(.likely);
-                const msg_end = @min(32, calldata.len);
-                @memcpy(msg[0..msg_end], calldata[0..msg_end]);
-            }
+            const pubkey = curve.recoverPubkey(padded[0..32].*, sig) catch return bail;
 
-            if (calldata.len > 32) {
-                @branchHint(.likely);
-                // v is a big-endian u256 at bytes 32..64; high 31 bytes must be zero, low byte must be 27 or 28
-                for (32..@min(63, calldata.len)) |i| {
-                    if (calldata[i] != 0) return bail;
-                }
-            }
-            if (calldata.len > 63) {
-                @branchHint(.likely);
-                const v = calldata[63];
-                if (v != 27 and v != 28) return bail;
-                sig[64] = v - 27;
-            } else return bail;
-
-            if (calldata.len > 64) {
-                @branchHint(.likely);
-                const rs_end = @min(128, calldata.len);
-                const rs_len = rs_end - 64;
-                @memcpy(sig[0..rs_len], calldata[64..rs_end]);
-            }
-
-            const pubkey = curve.recoverPubkey(msg, sig) catch return bail;
-
-            // Keccak256 of uncompressed pubkey (skip 0x04 prefix byte), take last 20 bytes as address
+            // Keccak256 of uncompressed pubkey (skip 0x04 prefix), take last 20 bytes as address
             var pubkey_hash: [32]u8 = undefined;
             std.crypto.hash.sha3.Keccak256.hash(pubkey[1..65], &pubkey_hash, .{});
             @memset(return_buffer[0..12], 0);
@@ -292,9 +274,7 @@ pub fn Handlers(comptime fork: Spec) type {
             calldata: []const u8,
             return_buffer: []u8,
         ) Result {
-            if (gas < fork.p256verify_gas) {
-                return .{ .return_size = 0, .remaining_gas = 0, .err = evm.Errors.OutOfGas };
-            }
+            if (gas < fork.p256verify_gas) return out_of_gas;
             const remaining_gas = gas - fork.p256verify_gas;
             const bail: Result = .{ .remaining_gas = remaining_gas };
 
@@ -620,8 +600,7 @@ pub fn Handlers(comptime fork: Spec) type {
             }
             @memset(return_buffer[0..31], 0);
             return_buffer[31] = @intFromBool(bls12.pairingFinalVerify(&product));
-            const return_size: usize = 32;
-            return .{ .return_size = return_size, .remaining_gas = gas - cost };
+            return .{ .return_size = 32, .remaining_gas = gas - cost };
         }
 
         pub fn bls12MapFpToG1(
@@ -691,28 +670,12 @@ pub fn Handlers(comptime fork: Spec) type {
             return .{ .return_size = 64, .remaining_gas = gas - fork.point_evaluation_gas };
         }
 
-        fn isZeroPointG1(bytes: []const u8) bool {
-            if (bytes.len < 64) return false;
-            for (bytes[0..64]) |b| {
-                if (b != 0) return false;
-            }
-            return true;
-        }
-
-        fn isZeroPointG2(bytes: []const u8) bool {
-            if (bytes.len < 128) return false;
-            for (bytes[0..128]) |b| {
-                if (b != 0) return false;
-            }
-            return true;
-        }
-
         fn reverseBytes32(dst: *[32]u8, src: *const [32]u8) void {
             for (0..32) |i| dst[i] = src[31 - i];
         }
 
         fn loadG1(p: *mcl.mclBnG1, bytes: []const u8) !void {
-            if (isZeroPointG1(bytes)) {
+            if (std.mem.allEqual(u8, bytes, 0)) {
                 mcl.mclBnG1_clear(p);
                 return;
             }
@@ -734,7 +697,7 @@ pub fn Handlers(comptime fork: Spec) type {
         }
 
         fn loadG2(p: *mcl.mclBnG2, bytes: []const u8) !void {
-            if (isZeroPointG2(bytes)) {
+            if (std.mem.allEqual(u8, bytes, 0)) {
                 mcl.mclBnG2_clear(p);
                 return;
             }
@@ -791,8 +754,7 @@ pub fn Handlers(comptime fork: Spec) type {
             if (gas < fork.ecadd_gas) return out_of_gas;
 
             var padded = [_]u8{0} ** 128;
-            const len = @min(calldata.len, 128);
-            @memcpy(padded[0..len], calldata[0..len]);
+            @memcpy(padded[0..@min(calldata.len, 128)], calldata[0..@min(calldata.len, 128)]);
 
             var p1: mcl.mclBnG1 = undefined;
             var p2: mcl.mclBnG1 = undefined;
@@ -805,11 +767,7 @@ pub fn Handlers(comptime fork: Spec) type {
             mcl.mclBnG1_normalize(&result, &result);
 
             serializeG1(&result, return_buffer[0..64]) catch return invalid_input;
-
-            return .{
-                .return_size = 64,
-                .remaining_gas = gas - fork.ecadd_gas,
-            };
+            return .{ .return_size = 64, .remaining_gas = gas - fork.ecadd_gas };
         }
 
         pub fn ecmul(
@@ -820,8 +778,7 @@ pub fn Handlers(comptime fork: Spec) type {
             if (gas < fork.ecmul_gas) return out_of_gas;
 
             var padded = [_]u8{0} ** 96;
-            const len = @min(calldata.len, 96);
-            @memcpy(padded[0..len], calldata[0..len]);
+            @memcpy(padded[0..@min(calldata.len, 96)], calldata[0..@min(calldata.len, 96)]);
 
             var p: mcl.mclBnG1 = undefined;
             loadG1(&p, padded[0..64]) catch return invalid_input;
@@ -835,11 +792,7 @@ pub fn Handlers(comptime fork: Spec) type {
             mcl.mclBnG1_normalize(&result, &result);
 
             serializeG1(&result, return_buffer[0..64]) catch return invalid_input;
-
-            return .{
-                .return_size = 64,
-                .remaining_gas = gas - fork.ecmul_gas,
-            };
+            return .{ .return_size = 64, .remaining_gas = gas - fork.ecmul_gas };
         }
 
         pub fn ecpairing(
@@ -889,10 +842,7 @@ pub fn Handlers(comptime fork: Spec) type {
                 return_buffer[31] = @intCast(mcl.mclBnGT_isOne(&acc));
             }
 
-            return .{
-                .return_size = 32,
-                .remaining_gas = gas - cost,
-            };
+            return .{ .return_size = 32, .remaining_gas = gas - cost };
         }
 
         pub fn table() [257]?Handler {
