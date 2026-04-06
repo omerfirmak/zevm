@@ -388,9 +388,9 @@ pub fn Handlers(comptime fork: Spec) type {
             calldata: []const u8,
             return_buffer: []u8,
         ) Result {
-            const base_len = parseModexpLength(calldata, 0) orelse return invalid_input;
-            const exp_len = parseModexpLength(calldata, 32) orelse return invalid_input;
-            const mod_len = parseModexpLength(calldata, 64) orelse return invalid_input;
+            const base_len = parseModexpLength(calldata, 0) orelse return out_of_gas;
+            const exp_len = parseModexpLength(calldata, 32) orelse return out_of_gas;
+            const mod_len = parseModexpLength(calldata, 64) orelse return out_of_gas;
 
             const base_offset = 96;
             const exp_offset = base_offset + base_len;
