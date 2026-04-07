@@ -738,12 +738,13 @@ pub fn Handlers(comptime fork: Spec) type {
                 @memset(out[0..64], 0);
                 return;
             }
-            var tmp: [32]u8 = undefined;
+            var tmp = [_]u8{0} ** 32;
 
             if (mcl.mclBnFp_getLittleEndian(@ptrCast(&tmp), 32, &p.x) == 0)
                 return error.InvalidInput;
             reverseBytes32(out[0..32], &tmp);
 
+            tmp = [_]u8{0} ** 32;
             if (mcl.mclBnFp_getLittleEndian(@ptrCast(&tmp), 32, &p.y) == 0)
                 return error.InvalidInput;
             reverseBytes32(out[32..64], &tmp);
