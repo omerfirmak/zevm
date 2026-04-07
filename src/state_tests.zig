@@ -74,10 +74,10 @@ pub const AccessListEntry = struct {
 };
 
 pub const AuthorizationTuple = struct {
-    chainId: HexInt(u64),
+    chainId: HexInt(u256),
     address: HexInt(u160),
     nonce: HexInt(u64),
-    signer: HexInt(u160),
+    signer: ?HexInt(u160) = null,
     v: ?HexInt(u64) = null,
     yParity: ?HexInt(u64) = null,
     r: ?HexBytes = null,
@@ -305,14 +305,24 @@ fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []con
     const max_blobs: u64 = if (blob_schedule) |s| s.max.value else 0;
 
     // EIP-7702: build authorization list
+    // secp256k1 n/2: s must be in [1, N/2] per EIP-2 style check in EIP-7702
+    const secp256k1_n_half: u256 = 0x7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5D576E7357A4501DDFE92F46681B20A0;
     const auth_list: ?[]evm.Authorization = if (tx.authorizationList) |al| blk: {
         const list = try allocator.alloc(evm.Authorization, al.len);
         for (al, list) |src, *dst| {
+            // Invalid if signer missing (ecrecover failed), or s out of EIP-2 range
+            const s_invalid = if (src.s) |s_bytes| s_blk: {
+                var s_val: u256 = 0;
+                for (s_bytes.value) |b| s_val = (s_val << 8) | b;
+                break :s_blk s_val == 0 or s_val > secp256k1_n_half;
+            } else false;
+            // chain_id > u64 max will never match current chain (which is u64)
+            const chain_id: u64 = if (src.chainId.value > std.math.maxInt(u64)) std.math.maxInt(u64) else @intCast(src.chainId.value);
             dst.* = .{
-                .chain_id = src.chainId.value,
+                .chain_id = chain_id,
                 .address = src.address.value,
                 .nonce = src.nonce.value,
-                .authority = src.signer.value,
+                .authority = if (src.signer == null or s_invalid) 0 else src.signer.?.value,
             };
         }
         break :blk list;

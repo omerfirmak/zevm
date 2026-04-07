@@ -719,6 +719,8 @@ pub const EVM = struct {
             if (auth.authority == 0) continue;
             // Skip if chain_id is non-zero and doesn't match current chain
             if (auth.chain_id != 0 and auth.chain_id != self.context.chainid) continue;
+            // EIP-7702 step 2: nonce in the tuple must be < 2**64-1
+            if (auth.nonce >= std.math.maxInt(u64)) continue;
             _ = self.accessAccount(auth.authority);
             const auth_account = state.accounts.read(auth.authority);
             // Skip if authority already has non-delegation code
@@ -744,7 +746,6 @@ pub const EVM = struct {
                 }
                 auth_mutable.code_hash = dg_hash;
             }
-            if (auth_account.nonce == std.math.maxInt(u64)) continue;
             auth_mutable.nonce += 1;
         }
     }
