@@ -664,7 +664,7 @@ pub const EVM = struct {
         return .{ frame.gas, new_addr };
     }
 
-    const LogNode = struct { log: Log, node: std.DoublyLinkedList.Node };
+    pub const LogNode = struct { log: Log, node: std.DoublyLinkedList.Node };
 
     pub fn pushLog(self: *Self, address: u160, topics: []const u256, data: []const u8) void {
         const ln = self.logs_allocator.create(LogNode) catch unreachable;

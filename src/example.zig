@@ -26,9 +26,13 @@ pub fn main() !void {
         .storage_hash = state_mod.empty_root_hash,
     });
 
-    // Deploy a contract: PUSH1 0x2a  PUSH1 0x00  MSTORE  PUSH1 0x20  PUSH1 0x00  RETURN
-    // This stores 42 in memory and returns 32 bytes containing it.
-    const bytecode = [_]u8{ 0x60, 0x2a, 0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00, 0xf3 };
+    // Deploy a contract:
+    const bytecode = [_]u8{
+        0x60, 0x2a, 0x60, 0x00, 0x52, // PUSH1 42, PUSH1 0, MSTORE
+        0x63, 0xde, 0xad, 0xbe, 0xef, // PUSH4 0xdeadbeef  (topic)
+        0x60, 0x20, 0x60, 0x00, 0xa1, // PUSH1 32, PUSH1 0, LOG1
+        0x60, 0x20, 0x60, 0x00, 0xf3, // PUSH1 32, PUSH1 0, RETURN
+    };
     var code_hash_bytes: [32]u8 = undefined;
     std.crypto.hash.sha3.Keccak256.hash(&bytecode, &code_hash_bytes, .{});
     const code_hash = std.mem.readInt(u256, &code_hash_bytes, .big);
@@ -89,4 +93,23 @@ pub fn main() !void {
     std.debug.print("return data ({d} bytes): 0x", .{result.len});
     for (result) |b| std.debug.print("{x:0>2}", .{b});
     std.debug.print("\ndecoded u256: {d}\n", .{value});
+
+    // Print emitted logs.
+    std.debug.print("{d} log(s) emitted:\n", .{vm.num_logs});
+    var node = logs.first;
+    var i: usize = 0;
+    while (node) |n| : (node = n.next) {
+        const ln: *evm.EVM.LogNode = @alignCast(@fieldParentPtr("node", n));
+        const log = &ln.log;
+        std.debug.print("  [{d}] address=0x{x:0>40} topics={d} data={d}B\n", .{
+            i, log.address, log.topics.len, log.data.len,
+        });
+        for (log.topics, 0..) |topic, ti| {
+            std.debug.print("        topic[{d}]: 0x{x:0>64}\n", .{ ti, topic });
+        }
+        std.debug.print("        data: 0x", .{});
+        for (log.data) |b| std.debug.print("{x:0>2}", .{b});
+        std.debug.print("\n", .{});
+        i += 1;
+    }
 }
