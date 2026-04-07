@@ -582,13 +582,15 @@ pub const EVM = struct {
         var creator_acc = state.accounts.update(creator);
         creator_acc.nonce += 1;
 
+        // Return data is always cleared when CREATE is entered, even on collision failure
+        self.return_data_size = 0;
+
         // EIP-7610: fail on collision (non-zero nonce or existing code or existing storage)
         const existing = state.accounts.read(new_addr);
         if (existing.nonce != 0 or existing.code_hash != empty_code_hash or existing.storage_hash != empty_root_hash) return .{ 0, 0 };
 
         const state_snap = state.snapshot();
         const evm_snap = self.snapshot();
-        self.return_data_size = 0;
 
         // Commit value transfer
         creator_acc = state.accounts.update(creator);
