@@ -3,6 +3,7 @@ const evm = @import("evm.zig");
 const mem = @import("memory.zig");
 const state = @import("state.zig");
 const storage = @import("storage.zig");
+const uint256 = @import("uint256.zig");
 const Opcode = @import("opcode.zig").Opcode;
 const Bytecode = @import("bytecode.zig").Bytecode;
 const Spec = @import("spec.zig").Spec;
@@ -72,32 +73,43 @@ pub fn Ops(comptime spec: Spec) type {
 
         pub fn div(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 2, 1);
-            args[0] = if (args[0] == 0) 0 else args[1] / args[0];
+            args[0] = uint256.div(args[1], args[0]);
             return next(next_ip, gas - spec.constantGas(.DIV), new_stack_head, frame);
         }
 
         pub fn sdiv(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 2, 1);
-            const a: i256 = @bitCast(args[1]);
-            const b: i256 = @bitCast(args[0]);
-            args[0] = if (b == 0)
-                0
-            else if (a == std.math.minInt(i256) and b == -1)
-                args[1] // -2^255 / -1 overflows; EVM defines result as -2^255
-            else
-                @bitCast(@divTrunc(a, b));
+            if (args[0] == 0) {
+                args[0] = 0;
+            } else {
+                const sign_a = 0 -% (args[1] >> 255);
+                const sign_b = 0 -% (args[0] >> 255);
+                const abs_a = (args[1] ^ sign_a) +% (sign_a & 1);
+                const abs_b = (args[0] ^ sign_b) +% (sign_b & 1);
+                const result_sign = sign_a ^ sign_b;
+                args[0] = (uint256.div(abs_a, abs_b) ^ result_sign) +% (result_sign & 1);
+            }
             return next(next_ip, gas - spec.constantGas(.SDIV), new_stack_head, frame);
         }
 
         pub fn mod(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 2, 1);
-            args[0] = if (args[0] == 0) 0 else @mod(args[1], args[0]);
+            args[0] = uint256.rem(args[1], args[0]);
             return next(next_ip, gas - spec.constantGas(.MOD), new_stack_head, frame);
         }
 
         pub fn smod(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 2, 1);
-            args[0] = if (args[0] == 0) 0 else @bitCast(@rem(@as(i256, @bitCast(args[1])), @as(i256, @bitCast(args[0]))));
+            if (args[0] == 0) {
+                args[0] = 0;
+            } else {
+                const sign_a = 0 -% (args[1] >> 255);
+                const sign_b = 0 -% (args[0] >> 255);
+                const abs_a = (args[1] ^ sign_a) +% (sign_a & 1);
+                const abs_b = (args[0] ^ sign_b) +% (sign_b & 1);
+                const r = uint256.rem(abs_a, abs_b);
+                args[0] = (r ^ sign_a) +% (sign_a & 1);
+            }
             return next(next_ip, gas - spec.constantGas(.SMOD), new_stack_head, frame);
         }
 
