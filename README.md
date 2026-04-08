@@ -1,6 +1,6 @@
 # zevm
 
-A work-in-progress EVM implementation in Zig, using threaded code dispatch for opcode execution.
+An alpha EVM implementation in Zig, using threaded code dispatch for opcode execution. Osaka-compliant.
 
 ## Requirements
 
@@ -12,7 +12,7 @@ A work-in-progress EVM implementation in Zig, using threaded code dispatch for o
 zig build
 ```
 
-## Running state tests
+## Running tests
 
 Fetch the fixture archive and extract it:
 
@@ -44,15 +44,16 @@ Add zevm as a dependency in your `build.zig.zon`, then import the `evm` module f
 
 The entry point for executing a transaction is `EVM.init` followed by `EVM.process`. You need to provide a `Message` (transaction parameters), a `Context` (block parameters), and a `State` (account/storage world state).
 
-See `src/example.zig` for a working end-to-end example (`zig build example` to run it).
+See `src/example.zig` for a working end-to-end example (`zig build example` to run it). The example deploys a contract that stores a value, emits a log, and returns it — demonstrating CALL execution, log collection, and return data handling.
 
 ### Key types
 
 | Type | Purpose |
 |------|---------|
-| `evm.Message` | Transaction parameters: caller, target, calldata, value, gas, access list, etc. |
+| `evm.Message` | Transaction parameters: caller, target, calldata, value, gas, access list, blob hashes, authorization list |
 | `evm.Context` | Block parameters: number, coinbase, basefee, chainid, blob gas, etc. |
 | `evm.EVM` | Executor. Call `init` then `process` to run a transaction. |
+| `evm.Log` | Emitted log entry: address, topics, data. Collected in a `std.DoublyLinkedList` passed to `EVM.init`. |
 | `state.State` | World state: accounts, contract storage, transient storage, deployed code. |
 | `spec.Osaka` | Fork specification with gas constants and opcode table. |
 
@@ -69,5 +70,4 @@ See `src/example.zig` for a working end-to-end example (`zig build example` to r
 | `src/state.zig` | `State` — accounts, contract storage, transient storage, code |
 | `src/storage.zig` | Journaled hash-map storage with snapshot/revert |
 | `src/spec.zig` | Fork specifications (currently Osaka) |
-| `src/opcode.zig` | Opcode enum |
 | `src/state_tests.zig` | Ethereum state test runner |
