@@ -83,7 +83,7 @@ pub fn main() !void {
 
     // process() returns an error only for invalid transactions (bad nonce, insufficient
     // funds, etc.). Reverts are NOT errors — check return data for revert payloads.
-    vm.process(fork, &state) catch |err| {
+    _ = vm.process(fork, &state) catch |err| {
         std.debug.print("transaction invalid: {}\n", .{err});
         return;
     };

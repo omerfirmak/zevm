@@ -23,6 +23,7 @@ pub fn build(b: *std.Build) void {
     const secp256k1_dep = b.dependency("zig_eth_secp256k1", .{ .target = target, .optimize = optimize });
     const ckzg4844_dep = b.dependency("ckzg_4844", .{ .target = target, .optimize = optimize });
     const blst_dep = b.dependency("blst", .{ .target = target, .optimize = optimize });
+    const clap_dep = b.dependency("clap", .{ .target = target, .optimize = optimize });
 
     const secp256k1_mod = secp256k1_dep.module("zig-eth-secp256k1");
     const secp256k1_lib = secp256k1_dep.artifact("secp256k1");
@@ -73,6 +74,23 @@ pub fn build(b: *std.Build) void {
     example.linkLibCpp();
     linkDeps(example.root_module, b, deps);
     example_step.dependOn(&b.addRunArtifact(example).step);
+
+    const bench_step = b.step("bench", "Run EVM benchmarks");
+    const bench = b.addExecutable(.{
+        .name = "bench",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/bench.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+        .use_llvm = true,
+    });
+    bench.linkLibCpp();
+    linkDeps(bench.root_module, b, deps);
+    bench.root_module.addImport("clap", clap_dep.module("clap"));
+    const run_bench = b.addRunArtifact(bench);
+    if (b.args) |bench_args| run_bench.addArgs(bench_args);
+    bench_step.dependOn(&run_bench.step);
 
     const state_test_step = b.step("state-tests", "Run EVM state tests");
     const state_tests = b.addTest(.{

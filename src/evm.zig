@@ -275,7 +275,7 @@ pub const EVM = struct {
         return .{ 0, 0 };
     }
 
-    pub fn process(self: *Self, comptime fork: Spec, state: *State) !void {
+    pub fn process(self: *Self, comptime fork: Spec, state: *State) !i32 {
         const msg = self.msg;
 
         if (self.effective_gas_price < self.context.basefee) {
@@ -434,6 +434,7 @@ pub const EVM = struct {
         if (tip > 0) {
             state.accounts.update(self.context.coinbase).balance += @as(u256, @intCast(gas_used)) * tip;
         }
+        return gas_used;
     }
 
     // Returns { remaining_gas, optional_error }. Not an error union because Reverted
