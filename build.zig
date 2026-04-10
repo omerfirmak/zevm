@@ -42,7 +42,7 @@ pub fn build(b: *std.Build) void {
     };
 
     const zevm_mod = b.addModule("zevm", .{
-        .root_source_file = b.path("src/root.zig"),
+        .root_source_file = b.path("evm/root.zig"),
         .target = target,
         .optimize = optimize,
     });
@@ -51,7 +51,7 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run unit tests");
     const unit_tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/root.zig"),
+            .root_source_file = b.path("evm/root.zig"),
             .target = target,
             .optimize = optimize,
         }),
@@ -65,7 +65,7 @@ pub fn build(b: *std.Build) void {
     const example = b.addExecutable(.{
         .name = "example",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/example.zig"),
+            .root_source_file = b.path("evm/example.zig"),
             .target = target,
             .optimize = optimize,
         }),
@@ -79,7 +79,7 @@ pub fn build(b: *std.Build) void {
     const bench = b.addExecutable(.{
         .name = "bench",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/bench.zig"),
+            .root_source_file = b.path("evm/bench.zig"),
             .target = target,
             .optimize = optimize,
         }),
@@ -95,7 +95,7 @@ pub fn build(b: *std.Build) void {
     const state_test_step = b.step("state-tests", "Run EVM state tests");
     const state_tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/state_tests.zig"),
+            .root_source_file = b.path("evm/state_tests.zig"),
             .target = target,
             .optimize = optimize,
         }),
