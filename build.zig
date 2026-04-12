@@ -5,6 +5,8 @@ const Deps = struct {
     secp256k1_lib: *std.Build.Step.Compile,
     blst_mod: *std.Build.Module,
     ckzg4844_mod: *std.Build.Module,
+    committed_state_mod: *std.Build.Module,
+    types_mod: *std.Build.Module,
 };
 
 fn linkDeps(mod: *std.Build.Module, bp: *std.Build, d: Deps) void {
@@ -14,6 +16,8 @@ fn linkDeps(mod: *std.Build.Module, bp: *std.Build, d: Deps) void {
     mod.linkLibrary(d.secp256k1_lib);
     mod.addImport("blst", d.blst_mod);
     mod.addImport("ckzg", d.ckzg4844_mod);
+    mod.addImport("committed_state", d.committed_state_mod);
+    mod.addImport("types", d.types_mod);
 }
 
 pub fn build(b: *std.Build) void {
@@ -34,11 +38,32 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    const types_mod = b.createModule(.{
+        .root_source_file = b.path("evm/types.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const committed_state_path = b.option(
+        std.Build.LazyPath,
+        "committed_state",
+        "Custom CommittedState implementation",
+    ) orelse b.path("evm/empty_committed_state.zig");
+
+    const committed_state_mod = b.createModule(.{
+        .root_source_file = committed_state_path,
+        .target = target,
+        .optimize = optimize,
+    });
+    committed_state_mod.addImport("types", types_mod);
+
     const deps = Deps{
         .secp256k1_mod = secp256k1_mod,
         .secp256k1_lib = secp256k1_lib,
         .blst_mod = blst_mod,
         .ckzg4844_mod = ckzg4844_mod,
+        .committed_state_mod = committed_state_mod,
+        .types_mod = types_mod,
     };
 
     const zevm_mod = b.addModule("zevm", .{
@@ -62,6 +87,26 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(unit_tests).step);
 
     const example_step = b.step("example", "Run the example program");
+    const example_committed_state_mod = b.createModule(.{
+        .root_source_file = b.path("example/committed_state.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    example_committed_state_mod.addImport("types", types_mod);
+    const example_zevm_mod = b.createModule(.{
+        .root_source_file = b.path("evm/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const example_deps = Deps{
+        .secp256k1_mod = secp256k1_mod,
+        .secp256k1_lib = secp256k1_lib,
+        .blst_mod = blst_mod,
+        .ckzg4844_mod = ckzg4844_mod,
+        .committed_state_mod = example_committed_state_mod,
+        .types_mod = types_mod,
+    };
+    linkDeps(example_zevm_mod, b, example_deps);
     const example = b.addExecutable(.{
         .name = "example",
         .root_module = b.createModule(.{
@@ -72,7 +117,8 @@ pub fn build(b: *std.Build) void {
         .use_llvm = true,
     });
     example.linkLibCpp();
-    example.root_module.addImport("zevm", zevm_mod);
+    example.root_module.addImport("zevm", example_zevm_mod);
+    example.root_module.addImport("committed_state", example_committed_state_mod);
     example_step.dependOn(&b.addRunArtifact(example).step);
 
     const bench_step = b.step("bench", "Run EVM benchmarks");

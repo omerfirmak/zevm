@@ -1,7 +1,7 @@
 const std = @import("std");
 const evm = @import("evm.zig");
 const state_mod = @import("state.zig");
-const types = @import("types.zig");
+const types = @import("types");
 const Bytecode = @import("bytecode.zig").Bytecode;
 const ops = @import("ops.zig");
 const spec = @import("spec.zig");
@@ -331,7 +331,8 @@ fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []con
 
     for (post_entries) |post_entry| {
         // Build fresh state from pre for each post entry
-        var state = try state_mod.State.init(allocator, 10_000_000);
+        const committed_state = state_mod.CommittedState{};
+        var state = try state_mod.State.init(allocator, &committed_state, 10_000_000);
         defer state.deinit(allocator);
 
         for (test_case.pre.map.keys(), test_case.pre.map.values()) |addr_str, pre_acct| {

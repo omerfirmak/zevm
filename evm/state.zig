@@ -1,8 +1,10 @@
 const std = @import("std");
+const types = @import("types");
 const storage = @import("storage.zig");
 const ops = @import("ops.zig");
 const Bytecode = @import("bytecode.zig").Bytecode;
 const Spec = @import("spec.zig").Spec;
+pub const CommittedState = @import("committed_state").CommittedState;
 
 pub const Snapshot = struct {
     accounts: usize,
@@ -13,20 +15,23 @@ pub const Snapshot = struct {
 pub const State = struct {
     const Self = @This();
 
+    committed_state: *const CommittedState,
+
     accounts: storage.AccountStorage,
     contract_state: storage.ContractStorage,
-    transient_storage: storage.ContractStorage,
+    transient_storage: storage.TransientStorage,
     code_storage: storage.CodeStorage,
 
     deployed_bytecode_allocator: std.heap.FixedBufferAllocator,
 
-    pub fn init(gpa: std.mem.Allocator, deployed_bytecode_buffer: usize) !Self {
+    pub fn init(gpa: std.mem.Allocator, committed_state: *const CommittedState, deployed_bytecode_buffer: usize) !Self {
         var code_storage = storage.CodeStorage.empty;
         try code_storage.ensureTotalCapacity(gpa, 1_000);
         return Self{
-            .accounts = try storage.AccountStorage.init(gpa, 10_000, 100_000),
-            .contract_state = try storage.ContractStorage.init(gpa, 10_000, 100_000),
-            .transient_storage = try storage.ContractStorage.init(gpa, 500_000, 500_000),
+            .committed_state = committed_state,
+            .accounts = try storage.AccountStorage.init(gpa, 10_000, 100_000, .{ .inner = committed_state }),
+            .contract_state = try storage.ContractStorage.init(gpa, 10_000, 100_000, .{ .inner = committed_state }),
+            .transient_storage = try storage.TransientStorage.init(gpa, 500_000, 500_000, {}),
             .code_storage = code_storage,
             .deployed_bytecode_allocator = std.heap.FixedBufferAllocator.init(try gpa.alloc(u8, deployed_bytecode_buffer)),
         };
@@ -52,6 +57,15 @@ pub const State = struct {
         self.accounts.revert(snapshot_ids.accounts);
         self.contract_state.revert(snapshot_ids.storage);
         self.transient_storage.revert(snapshot_ids.tstorage);
+    }
+
+    pub fn get_code(self: *Self, hash: u256, comptime fork: Spec) Bytecode {
+        if (self.code_storage.get(hash)) |b| {
+            return b;
+        }
+        const code = self.committed_state.code(hash) orelse unreachable;
+        self.deploy_code(hash, code, fork);
+        return self.code_storage.get(hash) orelse unreachable;
     }
 
     pub fn deploy_code(self: *Self, hash: u256, code: []const u8, comptime fork: Spec) void {

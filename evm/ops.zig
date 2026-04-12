@@ -2,7 +2,7 @@ const std = @import("std");
 const evm = @import("evm.zig");
 const mem = @import("memory.zig");
 const state = @import("state.zig");
-const types = @import("types.zig");
+const types = @import("types");
 const storage = @import("storage.zig");
 const uint256 = @import("uint256.zig");
 const Opcode = @import("opcode.zig").Opcode;
@@ -430,7 +430,7 @@ pub fn Ops(comptime spec: Spec) type {
 
             const code_hash = frame.state.accounts.read(target).code_hash;
             if (code_hash != types.empty_code_hash) {
-                args[0] = frame.state.code_storage.get(code_hash).?.bytes.len;
+                args[0] = frame.state.get_code(code_hash, spec).bytes.len;
             } else {
                 args[0] = 0;
             }
@@ -446,7 +446,7 @@ pub fn Ops(comptime spec: Spec) type {
             const code_hash = frame.state.accounts.read(target).code_hash;
             var slice: []const u8 = &[_]u8{};
             if (code_hash != types.empty_code_hash) {
-                const bytecode = frame.state.code_storage.get(code_hash).?;
+                const bytecode = frame.state.get_code(code_hash, spec);
                 slice = bytecode.safeSlice(args[1], @intCast(args[0]));
             }
             frame.memory.copyAndClearRemaining(@truncate(args[2]), @intCast(args[0]), slice);

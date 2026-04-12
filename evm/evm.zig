@@ -1,7 +1,7 @@
 const std = @import("std");
 const ops = @import("ops.zig");
 const spec = @import("spec.zig");
-const types = @import("types.zig");
+const types = @import("types");
 const storage = @import("storage.zig");
 const precompile = @import("precompile.zig");
 const Bytecode = @import("bytecode.zig").Bytecode;
@@ -214,11 +214,11 @@ pub const EVM = struct {
             .return_buffer = try allocator.alloc(u8, 16 * 1024 * 1024),
             .return_data_size = 0,
             .pre_state = pre_state,
-            .warm_accounts = try storage.AccountsAccessList.init(allocator, 10_000, 10_000),
-            .warm_slots = try storage.SlotsAccessList.init(allocator, 10_000, 10_000),
+            .warm_accounts = try storage.AccountsAccessList.init(allocator, 10_000, 10_000, {}),
+            .warm_slots = try storage.SlotsAccessList.init(allocator, 10_000, 10_000, {}),
             .gas_refund = 0,
             .effective_gas_price = effectiveGasPrice(msg, context.basefee),
-            .created_accounts = try storage.CreatedAccounts.init(allocator, 1_000, 2_000),
+            .created_accounts = try storage.CreatedAccounts.init(allocator, 1_000, 2_000, {}),
             .logs_allocator = logs_allocator,
             .logs = logs,
             .num_logs = 0,
@@ -323,8 +323,8 @@ pub const EVM = struct {
         // EIP-3607: reject transaction if sender has code (is a contract).
         // EIP-7702: relax this for accounts with a delegation designator — they remain EOAs.
         if (caller_account.code_hash != types.empty_code_hash) {
-            const caller_code = state.code_storage.get(caller_account.code_hash);
-            if (caller_code == null or !isDelegation(caller_code.?.bytes)) return Errors.SenderNotEOA;
+            const caller_code = state.get_code(caller_account.code_hash, fork);
+            if (!isDelegation(caller_code.bytes)) return Errors.SenderNotEOA;
         }
 
         // EIP-4844: blob transaction validation
@@ -381,7 +381,7 @@ pub const EVM = struct {
             // EIP-7702: if destination has a delegation, add delegate to accessed_addresses
             const target_code_hash = state.accounts.read(target).code_hash;
             if (target_code_hash != types.empty_code_hash) {
-                const code = state.code_storage.get(target_code_hash).?;
+                const code = state.get_code(target_code_hash, fork);
                 if (isDelegation(code.bytes)) _ = self.accessAccount(delegationAddress(code.bytes));
             }
 
@@ -479,7 +479,7 @@ pub const EVM = struct {
                 calldata,
                 return_buffer,
             );
-        } else if (resolveCode(code_addr, state)) |code| {
+        } else if (resolveCode(code_addr, state, fork)) |code| {
             var frame = self.gpa.create(Frame) catch unreachable;
             defer self.gpa.destroy(frame);
             frame.* = Frame{
@@ -526,7 +526,7 @@ pub const EVM = struct {
     pub fn delegationAccessCost(self: *Self, comptime fork: Spec, code_addr: u160, state: *State) i32 {
         const code_hash = state.accounts.read(code_addr).code_hash;
         if (code_hash == types.empty_code_hash) return 0;
-        const raw = state.code_storage.get(code_hash) orelse return 0;
+        const raw = state.get_code(code_hash, fork);
         if (!isDelegation(raw.bytes)) return 0;
         return self.accessAccountCost(fork, delegationAddress(raw.bytes));
     }
@@ -726,7 +726,7 @@ pub const EVM = struct {
             const auth_account = state.accounts.read(auth.authority);
             // Skip if authority already has non-delegation code
             if (auth_account.code_hash != types.empty_code_hash) {
-                const existing = state.code_storage.get(auth_account.code_hash).?;
+                const existing = state.get_code(auth_account.code_hash, fork);
                 if (!isDelegation(existing.bytes)) continue;
             }
             // Skip if nonce doesn't match
@@ -761,13 +761,14 @@ pub const EVM = struct {
 };
 
 // EIP-7702: resolve delegation designator one level deep. Pure lookup with no gas side effects.
-fn resolveCode(code_addr: u160, state: *State) ?Bytecode {
+fn resolveCode(code_addr: u160, state: *State, comptime fork: Spec) ?Bytecode {
     const code_hash = state.accounts.read(code_addr).code_hash;
     if (code_hash == types.empty_code_hash) return null;
-    const raw = state.code_storage.get(code_hash).?;
+    const raw = state.get_code(code_hash, fork);
     if (!isDelegation(raw.bytes)) return raw;
     const dh = state.accounts.read(delegationAddress(raw.bytes)).code_hash;
-    return state.code_storage.get(dh);
+    if (dh == types.empty_code_hash) return null;
+    return state.get_code(dh, fork);
 }
 
 // EIP-3860: 2 gas per 32-byte initcode word (ceiling division)

@@ -1,7 +1,7 @@
 const std = @import("std");
 const clap = @import("clap");
 const evm = @import("evm.zig");
-const types = @import("types.zig");
+const types = @import("types");
 const state_mod = @import("state.zig");
 const spec = @import("spec.zig");
 
@@ -83,7 +83,8 @@ fn runBenchmark(allocator: std.mem.Allocator, bench_def: BenchmarkDef, warmup: u
     const bytecode = try decodeHex(allocator, bench_def.hex_bytes);
     defer allocator.free(bytecode);
 
-    var state = try state_mod.State.init(allocator, bench_def.bytecode_buf_size);
+    const committed_state = state_mod.CommittedState{};
+    var state = try state_mod.State.init(allocator, &committed_state, bench_def.bytecode_buf_size);
     defer state.deinit(allocator);
 
     _ = state.accounts.write(BENCH_CALLER, .{
