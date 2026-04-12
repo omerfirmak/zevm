@@ -1,12 +1,13 @@
 const std = @import("std");
-const evm = @import("evm.zig");
-const state_mod = @import("state.zig");
-const ops = @import("ops.zig");
-const spec = @import("spec.zig");
-const types = @import("types.zig");
+const zevm = @import("zevm");
+const evm = zevm.evm;
+const state_mod = zevm.state;
+const types = zevm.types;
+const spec = zevm.spec;
+const precompile = zevm.precompile;
 
 pub fn main() !void {
-    @import("precompile.zig").init();
+    precompile.init();
     var gpa_state = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa_state.deinit();
     const allocator = gpa_state.allocator();
