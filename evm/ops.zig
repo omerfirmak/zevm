@@ -2,6 +2,7 @@ const std = @import("std");
 const evm = @import("evm.zig");
 const mem = @import("memory.zig");
 const state = @import("state.zig");
+const types = @import("types.zig");
 const storage = @import("storage.zig");
 const uint256 = @import("uint256.zig");
 const Opcode = @import("opcode.zig").Opcode;
@@ -418,7 +419,7 @@ pub fn Ops(comptime spec: Spec) type {
             const dynamic_cost = frame.evm.accessAccountCost(spec, target);
 
             const account = frame.state.accounts.read(target);
-            args[0] = if (state.isEmptyAccount(&account)) 0 else account.code_hash;
+            args[0] = if (account.isEmptyAccount()) 0 else account.code_hash;
             return next(next_ip, gas - spec.constantGas(.EXTCODEHASH) - dynamic_cost, new_stack_head, frame);
         }
 
@@ -428,7 +429,7 @@ pub fn Ops(comptime spec: Spec) type {
             const dynamic_cost = frame.evm.accessAccountCost(spec, target);
 
             const code_hash = frame.state.accounts.read(target).code_hash;
-            if (code_hash != state.empty_code_hash) {
+            if (code_hash != types.empty_code_hash) {
                 args[0] = frame.state.code_storage.get(code_hash).?.bytes.len;
             } else {
                 args[0] = 0;
@@ -444,7 +445,7 @@ pub fn Ops(comptime spec: Spec) type {
 
             const code_hash = frame.state.accounts.read(target).code_hash;
             var slice: []const u8 = &[_]u8{};
-            if (code_hash != state.empty_code_hash) {
+            if (code_hash != types.empty_code_hash) {
                 const bytecode = frame.state.code_storage.get(code_hash).?;
                 slice = bytecode.safeSlice(args[1], @intCast(args[0]));
             }
@@ -619,7 +620,7 @@ pub fn Ops(comptime spec: Spec) type {
             if (frame.is_static) return evm.Errors.WriteProtection;
             if (gas <= spec.call_stipend) return evm.Errors.OutOfGas;
             const new_stack_head, const args = try frame.stackPop(stack_head, 2, 0);
-            const lookup: storage.StorageLookup = .{ .address = frame.target, .slot = args[1] };
+            const lookup: types.StorageLookup = .{ .address = frame.target, .slot = args[1] };
             const is_warm = frame.evm.accessSlot(frame.target, args[1]);
             const old_value, _ = frame.state.contract_state.write(lookup, args[0]);
             // lazily record the pre-tx value on first write; subsequent writes don't update it
@@ -760,7 +761,7 @@ pub fn Ops(comptime spec: Spec) type {
                         0;
                     const stipend = if (positive_value_cost > 0) spec.call_stipend else 0;
                     const target_account = frame.state.accounts.read(call_target);
-                    const positive_value_to_new_acc_cost = if (variant == .CALL and value_is_positive and state.isEmptyAccount(&target_account))
+                    const positive_value_to_new_acc_cost = if (variant == .CALL and value_is_positive and target_account.isEmptyAccount())
                         spec.call_new_account_gas
                     else
                         0;
@@ -862,7 +863,7 @@ pub fn Ops(comptime spec: Spec) type {
             const should_transfer = transferred_value > 0 and (is_new_account or beneficiary != frame.target);
             if (should_transfer) {
                 var beneficiary_account = frame.state.accounts.update(beneficiary);
-                empty_account_cost = if (state.isEmptyAccount(beneficiary_account)) spec.selfdestruct_empty_target_gas else 0;
+                empty_account_cost = if (beneficiary_account.isEmptyAccount()) spec.selfdestruct_empty_target_gas else 0;
                 beneficiary_account.balance += transferred_value;
                 current_account.balance = 0;
             }

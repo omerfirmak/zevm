@@ -1,6 +1,7 @@
 const std = @import("std");
 const evm = @import("evm.zig");
 const state_mod = @import("state.zig");
+const types = @import("types.zig");
 const Bytecode = @import("bytecode.zig").Bytecode;
 const ops = @import("ops.zig");
 const spec = @import("spec.zig");
@@ -343,7 +344,7 @@ fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []con
                 }
             }
 
-            var code_hash: u256 = state_mod.empty_code_hash;
+            var code_hash: u256 = types.empty_code_hash;
             if (pre_acct.code.value.len > 0) {
                 var hash_bytes: [32]u8 = undefined;
                 std.crypto.hash.sha3.Keccak256.hash(pre_acct.code.value, &hash_bytes, .{});
@@ -355,7 +356,7 @@ fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []con
                 .nonce = pre_acct.nonce.value,
                 .balance = pre_acct.balance.value,
                 .code_hash = code_hash,
-                .storage_hash = if (has_storage) 1 else state_mod.empty_root_hash,
+                .storage_hash = if (has_storage) 1 else types.empty_root_hash,
             });
         }
 
@@ -427,7 +428,7 @@ fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []con
             const ca_entry = vm.created_accounts.dirties.getEntry(entry.*);
             if (ca_entry == null or ca_entry.?.value_ptr.* == .Created) {
                 const acc = state.accounts.read(entry.*);
-                if (!@import("state.zig").isEmptyAccount(&acc)) {
+                if (!acc.isEmptyAccount()) {
                     num_alive_accounts += 1;
                 }
             }

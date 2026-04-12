@@ -1,6 +1,7 @@
 const std = @import("std");
 const clap = @import("clap");
 const evm = @import("evm.zig");
+const types = @import("types.zig");
 const state_mod = @import("state.zig");
 const spec = @import("spec.zig");
 
@@ -88,8 +89,8 @@ fn runBenchmark(allocator: std.mem.Allocator, bench_def: BenchmarkDef, warmup: u
     _ = state.accounts.write(BENCH_CALLER, .{
         .nonce = 0,
         .balance = std.math.maxInt(u256),
-        .code_hash = state_mod.empty_code_hash,
-        .storage_hash = state_mod.empty_root_hash,
+        .code_hash = types.empty_code_hash,
+        .storage_hash = types.empty_root_hash,
     });
 
     var code_hash_bytes: [32]u8 = undefined;
@@ -101,7 +102,7 @@ fn runBenchmark(allocator: std.mem.Allocator, bench_def: BenchmarkDef, warmup: u
         .nonce = 1,
         .balance = 0,
         .code_hash = code_hash,
-        .storage_hash = state_mod.empty_root_hash,
+        .storage_hash = types.empty_root_hash,
     });
 
     const context = evm.Context{

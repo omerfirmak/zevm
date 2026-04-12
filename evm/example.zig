@@ -3,6 +3,7 @@ const evm = @import("evm.zig");
 const state_mod = @import("state.zig");
 const ops = @import("ops.zig");
 const spec = @import("spec.zig");
+const types = @import("types.zig");
 
 pub fn main() !void {
     @import("precompile.zig").init();
@@ -22,8 +23,8 @@ pub fn main() !void {
     _ = state.accounts.write(sender, .{
         .nonce = 0,
         .balance = 1_000_000_000_000_000_000, // 1 ETH
-        .code_hash = state_mod.empty_code_hash,
-        .storage_hash = state_mod.empty_root_hash,
+        .code_hash = types.empty_code_hash,
+        .storage_hash = types.empty_root_hash,
     });
 
     // Deploy a contract:
@@ -43,7 +44,7 @@ pub fn main() !void {
         .nonce = 1,
         .balance = 0,
         .code_hash = code_hash,
-        .storage_hash = state_mod.empty_root_hash,
+        .storage_hash = types.empty_root_hash,
     });
 
     // Describe the block.
