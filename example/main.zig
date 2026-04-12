@@ -16,37 +16,14 @@ pub fn main() !void {
     const fork = spec.Osaka;
 
     // Set up world state with enough capacity for this example.
-    var state = try state_mod.State.init(allocator, 100_000);
+    const CommittedState = @import("committed_state").CommittedState;
+    const committed_state = CommittedState{};
+    var state = try state_mod.State.init(allocator, &committed_state, 100_000);
     defer state.deinit(allocator);
 
-    // Fund the sender.
+    // Sender and contract are pre-funded/deployed by the custom CommittedState.
     const sender: u160 = 0xdeadbeef;
-    _ = state.accounts.write(sender, .{
-        .nonce = 0,
-        .balance = 1_000_000_000_000_000_000, // 1 ETH
-        .code_hash = types.empty_code_hash,
-        .storage_hash = types.empty_root_hash,
-    });
-
-    // Deploy a contract:
-    const bytecode = [_]u8{
-        0x60, 0x2a, 0x60, 0x00, 0x52, // PUSH1 42, PUSH1 0, MSTORE
-        0x63, 0xde, 0xad, 0xbe, 0xef, // PUSH4 0xdeadbeef  (topic)
-        0x60, 0x20, 0x60, 0x00, 0xa1, // PUSH1 32, PUSH1 0, LOG1
-        0x60, 0x20, 0x60, 0x00, 0xf3, // PUSH1 32, PUSH1 0, RETURN
-    };
-    var code_hash_bytes: [32]u8 = undefined;
-    std.crypto.hash.sha3.Keccak256.hash(&bytecode, &code_hash_bytes, .{});
-    const code_hash = std.mem.readInt(u256, &code_hash_bytes, .big);
-    state.deploy_code(code_hash, &bytecode, fork);
-
     const contract: u160 = 0xcafe;
-    _ = state.accounts.write(contract, .{
-        .nonce = 1,
-        .balance = 0,
-        .code_hash = code_hash,
-        .storage_hash = types.empty_root_hash,
-    });
 
     // Describe the block.
     const context = evm.Context{
