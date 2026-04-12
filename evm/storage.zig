@@ -1,20 +1,14 @@
 const std = @import("std");
-const state = @import("state.zig");
+const types = @import("types.zig");
 const Bytecode = @import("bytecode.zig").Bytecode;
 
-// Key type for the global contract state storage
-pub const StorageLookup = struct {
-    address: u256,
-    slot: u256,
-};
-
 pub fn SlotKeyedMap(comptime T: type) type {
-    return std.HashMapUnmanaged(StorageLookup, T, struct {
-        pub fn eql(_: @This(), a: StorageLookup, b: StorageLookup) bool {
+    return std.HashMapUnmanaged(types.StorageLookup, T, struct {
+        pub fn eql(_: @This(), a: types.StorageLookup, b: types.StorageLookup) bool {
             return std.meta.eql(a, b);
         }
 
-        pub fn hash(_: @This(), lookup: StorageLookup) u64 {
+        pub fn hash(_: @This(), lookup: types.StorageLookup) u64 {
             const addr_limbs: [4]u64 = @bitCast(lookup.address);
             const slot_limbs: [4]u64 = @bitCast(lookup.slot);
 
@@ -39,16 +33,16 @@ pub fn AddressKeyedMap(comptime T: type) type {
 
 pub const AccountsAccessList = JournaledStorage(u160, void, AddressKeyedMap(void), {});
 
-pub const AccountStorage = JournaledStorage(u160, state.Account, AddressKeyedMap(state.Account), .{
+pub const AccountStorage = JournaledStorage(u160, types.Account, AddressKeyedMap(types.Account), .{
     .nonce = 0,
     .balance = 0,
-    .code_hash = state.empty_code_hash,
-    .storage_hash = state.empty_root_hash,
+    .code_hash = types.empty_code_hash,
+    .storage_hash = types.empty_root_hash,
 });
 
-pub const ContractStorage = JournaledStorage(StorageLookup, u256, SlotKeyedMap(u256), 0);
+pub const ContractStorage = JournaledStorage(types.StorageLookup, u256, SlotKeyedMap(u256), 0);
 
-pub const SlotsAccessList = JournaledStorage(StorageLookup, void, SlotKeyedMap(void), {});
+pub const SlotsAccessList = JournaledStorage(types.StorageLookup, void, SlotKeyedMap(void), {});
 
 pub const Lifecycle = enum(u2) { None, Created, Selfdestructed };
 

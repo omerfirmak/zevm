@@ -1,6 +1,7 @@
 const std = @import("std");
 const ops = @import("ops.zig");
 const spec = @import("spec.zig");
+const types = @import("types.zig");
 const storage = @import("storage.zig");
 const precompile = @import("precompile.zig");
 const Bytecode = @import("bytecode.zig").Bytecode;
@@ -9,9 +10,6 @@ const State = @import("state.zig").State;
 const Spec = spec.Spec;
 
 const max_stack_size = 1024;
-const empty_code_hash = @import("state.zig").empty_code_hash;
-const empty_root_hash = @import("state.zig").empty_root_hash;
-const isEmptyAccount = @import("state.zig").isEmptyAccount;
 
 pub const Errors = error{
     OutOfGas,
@@ -324,7 +322,7 @@ pub const EVM = struct {
 
         // EIP-3607: reject transaction if sender has code (is a contract).
         // EIP-7702: relax this for accounts with a delegation designator — they remain EOAs.
-        if (caller_account.code_hash != empty_code_hash) {
+        if (caller_account.code_hash != types.empty_code_hash) {
             const caller_code = state.code_storage.get(caller_account.code_hash);
             if (caller_code == null or !isDelegation(caller_code.?.bytes)) return Errors.SenderNotEOA;
         }
@@ -382,7 +380,7 @@ pub const EVM = struct {
 
             // EIP-7702: if destination has a delegation, add delegate to accessed_addresses
             const target_code_hash = state.accounts.read(target).code_hash;
-            if (target_code_hash != empty_code_hash) {
+            if (target_code_hash != types.empty_code_hash) {
                 const code = state.code_storage.get(target_code_hash).?;
                 if (isDelegation(code.bytes)) _ = self.accessAccount(delegationAddress(code.bytes));
             }
@@ -527,7 +525,7 @@ pub const EVM = struct {
     // Must be called from CALL/CALLCODE/DELEGATECALL/STATICCALL before forwarding gas.
     pub fn delegationAccessCost(self: *Self, comptime fork: Spec, code_addr: u160, state: *State) i32 {
         const code_hash = state.accounts.read(code_addr).code_hash;
-        if (code_hash == empty_code_hash) return 0;
+        if (code_hash == types.empty_code_hash) return 0;
         const raw = state.code_storage.get(code_hash) orelse return 0;
         if (!isDelegation(raw.bytes)) return 0;
         return self.accessAccountCost(fork, delegationAddress(raw.bytes));
@@ -588,7 +586,7 @@ pub const EVM = struct {
 
         // EIP-7610: fail on collision (non-zero nonce or existing code or existing storage)
         const existing = state.accounts.read(new_addr);
-        if (existing.nonce != 0 or existing.code_hash != empty_code_hash or existing.storage_hash != empty_root_hash) return .{ 0, 0 };
+        if (existing.nonce != 0 or existing.code_hash != types.empty_code_hash or existing.storage_hash != types.empty_root_hash) return .{ 0, 0 };
 
         const state_snap = state.snapshot();
         const evm_snap = self.snapshot();
@@ -653,7 +651,7 @@ pub const EVM = struct {
         frame.gas -= deposit_gas;
 
         // Store deployed code and update account code hash
-        var code_hash: u256 = empty_code_hash;
+        var code_hash: u256 = types.empty_code_hash;
         if (deployed_len > 0) {
             var hash: [32]u8 = undefined;
             std.crypto.hash.sha3.Keccak256.hash(deployed_code, &hash, .{});
@@ -727,20 +725,20 @@ pub const EVM = struct {
             _ = self.accessAccount(auth.authority);
             const auth_account = state.accounts.read(auth.authority);
             // Skip if authority already has non-delegation code
-            if (auth_account.code_hash != empty_code_hash) {
+            if (auth_account.code_hash != types.empty_code_hash) {
                 const existing = state.code_storage.get(auth_account.code_hash).?;
                 if (!isDelegation(existing.bytes)) continue;
             }
             // Skip if nonce doesn't match
             if (auth_account.nonce != auth.nonce) continue;
             // Refund if account is non-empty (already had state)
-            if (!isEmptyAccount(&auth_account)) {
+            if (!auth_account.isEmptyAccount()) {
                 self.gas_refund += fork.per_empty_account_cost - fork.per_auth_base_cost;
             }
             var auth_mutable = state.accounts.update(auth.authority);
             if (auth.address == 0) {
                 // Reset: remove delegation, restore empty code hash
-                auth_mutable.code_hash = empty_code_hash;
+                auth_mutable.code_hash = types.empty_code_hash;
             } else {
                 const dg_hash = delegationCodeHash(auth.address);
                 if (state.code_storage.get(dg_hash) == null) {
@@ -765,7 +763,7 @@ pub const EVM = struct {
 // EIP-7702: resolve delegation designator one level deep. Pure lookup with no gas side effects.
 fn resolveCode(code_addr: u160, state: *State) ?Bytecode {
     const code_hash = state.accounts.read(code_addr).code_hash;
-    if (code_hash == empty_code_hash) return null;
+    if (code_hash == types.empty_code_hash) return null;
     const raw = state.code_storage.get(code_hash).?;
     if (!isDelegation(raw.bytes)) return raw;
     const dh = state.accounts.read(delegationAddress(raw.bytes)).code_hash;
