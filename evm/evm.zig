@@ -7,6 +7,7 @@ const precompile = @import("precompile.zig");
 const Bytecode = @import("bytecode.zig").Bytecode;
 const Memory = @import("memory.zig").Memory;
 const State = @import("state.zig").State;
+const RoundedAllocator = @import("rounded_alloc.zig").RoundedAllocator;
 const Spec = spec.Spec;
 
 const max_stack_size = 1024;
@@ -173,7 +174,7 @@ pub const Log = struct {
 pub const EVM = struct {
     const Self = @This();
 
-    gpa: std.mem.Allocator,
+    rounded_allocator: RoundedAllocator,
     msg: *const Message,
     context: *const Context,
 
@@ -199,16 +200,18 @@ pub const EVM = struct {
     created_accounts: storage.CreatedAccounts,
 
     pub fn init(
-        allocator: std.mem.Allocator,
+        gpa: std.mem.Allocator,
         logs_allocator: std.mem.Allocator,
         logs: *std.DoublyLinkedList,
         msg: *const Message,
         context: *const Context,
     ) !Self {
+        var rounded_allocator = RoundedAllocator{ .backing = gpa };
+        const allocator = rounded_allocator.allocator();
         var pre_state: storage.SlotKeyedMap(u256) = .empty;
         try pre_state.ensureTotalCapacity(allocator, 10_000);
         return Self{
-            .gpa = allocator,
+            .rounded_allocator = rounded_allocator,
             .msg = msg,
             .context = context,
             .return_buffer = try allocator.alloc(u8, 16 * 1024 * 1024),
@@ -480,8 +483,9 @@ pub const EVM = struct {
                 return_buffer,
             );
         } else if (resolveCode(code_addr, state, fork)) |code| {
-            var frame = self.gpa.create(Frame) catch unreachable;
-            defer self.gpa.destroy(frame);
+            const allocator = self.rounded_allocator.allocator();
+            var frame = allocator.create(Frame) catch unreachable;
+            defer allocator.destroy(frame);
             frame.* = Frame{
                 .evm = self,
                 .context = self.context,
@@ -497,7 +501,7 @@ pub const EVM = struct {
 
                 .gas = initial_gas,
                 .stack = undefined,
-                .memory = Memory.init(self.gpa),
+                .memory = Memory.init(allocator),
                 .depth = depth + 1,
             };
             defer frame.memory.deinit();
@@ -598,11 +602,12 @@ pub const EVM = struct {
         new_contract_acc.nonce = 1; // EIP-161
         new_contract_acc.balance += value;
 
+        const allocator = self.rounded_allocator.allocator();
         // Compile and execute initcode
-        const initcode_bytecode = Bytecode.init(self.gpa, initcode, fork) catch unreachable;
-        defer initcode_bytecode.deinit(self.gpa);
-        var frame = self.gpa.create(Frame) catch unreachable;
-        defer self.gpa.destroy(frame);
+        const initcode_bytecode = Bytecode.init(allocator, initcode, fork) catch unreachable;
+        defer initcode_bytecode.deinit(allocator);
+        var frame = allocator.create(Frame) catch unreachable;
+        defer allocator.destroy(frame);
         frame.* = Frame{
             .evm = self,
             .context = self.context,
@@ -616,7 +621,7 @@ pub const EVM = struct {
             .return_buffer = &[_]u8{}, // RETURN will write to self.return_buffer anyways
             .gas = initial_gas,
             .stack = undefined,
-            .memory = Memory.init(self.gpa),
+            .memory = Memory.init(allocator),
             .depth = depth + 1,
         };
         defer frame.memory.deinit();

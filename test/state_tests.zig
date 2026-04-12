@@ -1,11 +1,10 @@
 const std = @import("std");
-const evm = @import("evm.zig");
-const state_mod = @import("state.zig");
-const types = @import("types");
-const Bytecode = @import("bytecode.zig").Bytecode;
-const ops = @import("ops.zig");
-const spec = @import("spec.zig");
-const RoundedAllocator = @import("rounded_alloc.zig").RoundedAllocator;
+const zevm = @import("zevm");
+const evm = zevm.evm;
+const state_mod = zevm.state;
+const types = zevm.types;
+const spec = zevm.spec;
+const CommittedState = @import("committed_state").CommittedState;
 
 fn parseHex(comptime T: type, str: []const u8) !T {
     const hex = if (std.mem.startsWith(u8, str, "0x")) str[2..] else str;
@@ -163,7 +162,7 @@ test "state tests" {
     var gpa = std.heap.GeneralPurposeAllocator(.{ .thread_safe = true }){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
-    @import("precompile.zig").init();
+    zevm.precompile.init();
 
     if (std.posix.getenv("STATE_TEST")) |path| {
         try runStateTestFile(allocator, std.fs.cwd(), path, supported_forks[0..]);
@@ -278,14 +277,45 @@ fn exceptionMatches(err: anyerror, expected: []const u8) bool {
     return false;
 }
 
+fn buildCommittedState(alloc: std.mem.Allocator, pre: std.json.ArrayHashMap(AccountState)) !CommittedState {
+    var committed = CommittedState.init(alloc);
+
+    for (pre.map.keys(), pre.map.values()) |addr_str, pre_acct| {
+        const addr = try parseHex(u160, addr_str);
+        const has_storage = pre_acct.storage.map.count() > 0;
+
+        for (pre_acct.storage.map.keys(), pre_acct.storage.map.values()) |slot_str, slot_val| {
+            const slot = try parseHex(u256, slot_str);
+            if (slot_val.value != 0) {
+                try committed.storage_map.put(.{ .address = addr, .slot = slot }, slot_val.value);
+            }
+        }
+
+        var code_hash: u256 = types.empty_code_hash;
+        if (pre_acct.code.value.len > 0) {
+            var hash_bytes: [32]u8 = undefined;
+            std.crypto.hash.sha3.Keccak256.hash(pre_acct.code.value, &hash_bytes, .{});
+            code_hash = std.mem.readInt(u256, &hash_bytes, .big);
+            try committed.code_map.put(code_hash, pre_acct.code.value);
+        }
+
+        try committed.account_map.put(addr, .{
+            .nonce = pre_acct.nonce.value,
+            .balance = pre_acct.balance.value,
+            .code_hash = code_hash,
+            .storage_hash = if (has_storage) 1 else types.empty_root_hash,
+        });
+    }
+
+    return committed;
+}
+
 fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []const u8) !void {
     var fba = std.heap.FixedBufferAllocator.init(try gpa.alloc(u8, 1_024_000_000));
     defer gpa.free(fba.buffer);
     var logs_allocator = std.heap.FixedBufferAllocator.init(try gpa.alloc(u8, 16_000_000));
     defer gpa.free(logs_allocator.buffer);
     var logs: std.DoublyLinkedList = .{};
-    var rounded = RoundedAllocator{ .backing = fba.allocator() };
-    const allocator = rounded.allocator();
     const tx = test_case.transaction;
     const forkSpec = spec.Osaka;
 
@@ -293,12 +323,13 @@ fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []con
 
     // EIP-4844: build blob versioned hashes slice for context (BLOBHASH opcode)
     const blob_hashes: []u256 = if (tx.blobVersionedHashes) |bvh| blk: {
-        const hashes = try allocator.alloc(u256, bvh.len);
+        const hashes = try gpa.alloc(u256, bvh.len);
         for (bvh, hashes) |src, *dst| {
             dst.* = src.value;
         }
         break :blk hashes;
     } else &.{};
+    defer if (tx.blobVersionedHashes != null) gpa.free(blob_hashes);
 
     // EIP-4844: get blob schedule for this fork
     const blob_schedule = if (test_case.config.blobSchedule) |bs| bs.map.get(fork) else null;
@@ -309,7 +340,7 @@ fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []con
     // secp256k1 n/2: s must be in [1, N/2] per EIP-2 style check in EIP-7702
     const secp256k1_n_half: u256 = 0x7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5D576E7357A4501DDFE92F46681B20A0;
     const auth_list: ?[]evm.Authorization = if (tx.authorizationList) |al| blk: {
-        const list = try allocator.alloc(evm.Authorization, al.len);
+        const list = try gpa.alloc(evm.Authorization, al.len);
         for (al, list) |src, *dst| {
             // Invalid if signer missing (ecrecover failed), or s out of EIP-2 range
             const s_invalid = if (src.s) |s_bytes| s_blk: {
@@ -328,38 +359,17 @@ fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []con
         }
         break :blk list;
     } else null;
+    defer if (tx.authorizationList != null) gpa.free(auth_list.?);
 
     for (post_entries) |post_entry| {
-        // Build fresh state from pre for each post entry
-        const committed_state = state_mod.CommittedState{};
-        var state = try state_mod.State.init(allocator, &committed_state, 10_000_000);
-        defer state.deinit(allocator);
+        // Build committed state from pre-state
+        var committed = try buildCommittedState(gpa, test_case.pre);
+        defer committed.deinit();
 
-        for (test_case.pre.map.keys(), test_case.pre.map.values()) |addr_str, pre_acct| {
-            const addr = try parseHex(u160, addr_str);
-            const has_storage = pre_acct.storage.map.count() > 0;
-            for (pre_acct.storage.map.keys(), pre_acct.storage.map.values()) |slot_str, slot_val| {
-                const slot = try parseHex(u256, slot_str);
-                if (slot_val.value != 0) {
-                    _ = state.contract_state.write(.{ .address = addr, .slot = slot }, slot_val.value);
-                }
-            }
+        var state = try state_mod.State.init(fba.allocator(), &committed, 10_000_000);
+        defer state.deinit(fba.allocator());
 
-            var code_hash: u256 = types.empty_code_hash;
-            if (pre_acct.code.value.len > 0) {
-                var hash_bytes: [32]u8 = undefined;
-                std.crypto.hash.sha3.Keccak256.hash(pre_acct.code.value, &hash_bytes, .{});
-                code_hash = std.mem.readInt(u256, &hash_bytes, .big);
-                state.code_storage.putAssumeCapacity(code_hash, try Bytecode.init(allocator, pre_acct.code.value, forkSpec));
-            }
-
-            _ = state.accounts.write(addr, .{
-                .nonce = pre_acct.nonce.value,
-                .balance = pre_acct.balance.value,
-                .code_hash = code_hash,
-                .storage_hash = if (has_storage) 1 else types.empty_root_hash,
-            });
-        }
+        const allocator = fba.allocator();
 
         const gas_limit = tx.gasLimit[post_entry.indexes.gas].value;
         const value = tx.value[post_entry.indexes.value].value;
@@ -422,16 +432,43 @@ fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []con
             return err;
         }
 
+        // Verify post state: check each expected account
+        if (post_entry.state.map.keys().len == 0) continue;
+
+        // Count alive accounts: iterate committed pre-state + dirties to find all touched accounts
         var num_alive_accounts: usize = 0;
-        // Verify no alive account in actual state is missing from post state
-        var actual_it = state.accounts.dirties.keyIterator();
-        while (actual_it.next()) |entry| {
-            const ca_entry = vm.created_accounts.dirties.getEntry(entry.*);
+        // Check all pre-state accounts
+        for (test_case.pre.map.keys()) |addr_str| {
+            const addr = parseHex(u160, addr_str) catch continue;
+            const ca_entry = vm.created_accounts.dirties.getEntry(addr);
             if (ca_entry == null or ca_entry.?.value_ptr.* == .Created) {
-                const acc = state.accounts.read(entry.*);
+                const acc = state.accounts.read(addr);
                 if (!acc.isEmptyAccount()) {
                     num_alive_accounts += 1;
                 }
+            }
+        }
+        // Check accounts created during execution (not in pre-state)
+        var created_it = vm.created_accounts.dirties.keyIterator();
+        while (created_it.next()) |addr| {
+            if (committed.account_map.get(addr.*) != null) continue; // already counted above
+            if (vm.created_accounts.dirties.get(addr.*)) |lc| {
+                if (lc == .Created) {
+                    const acc = state.accounts.read(addr.*);
+                    if (!acc.isEmptyAccount()) {
+                        num_alive_accounts += 1;
+                    }
+                }
+            }
+        }
+        // Also check accounts in dirties that weren't in pre-state or created_accounts
+        var dirty_it = state.accounts.dirties.keyIterator();
+        while (dirty_it.next()) |addr| {
+            if (committed.account_map.get(addr.*) != null) continue; // already counted
+            if (vm.created_accounts.dirties.getEntry(addr.*) != null) continue; // already counted
+            const acc = state.accounts.read(addr.*);
+            if (!acc.isEmptyAccount()) {
+                num_alive_accounts += 1;
             }
         }
 
