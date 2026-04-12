@@ -65,14 +65,14 @@ pub fn build(b: *std.Build) void {
     const example = b.addExecutable(.{
         .name = "example",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("evm/example.zig"),
+            .root_source_file = b.path("example/main.zig"),
             .target = target,
             .optimize = optimize,
         }),
         .use_llvm = true,
     });
     example.linkLibCpp();
-    linkDeps(example.root_module, b, deps);
+    example.root_module.addImport("zevm", zevm_mod);
     example_step.dependOn(&b.addRunArtifact(example).step);
 
     const bench_step = b.step("bench", "Run EVM benchmarks");
