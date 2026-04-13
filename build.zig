@@ -21,6 +21,18 @@ fn linkDeps(mod: *std.Build.Module, bp: *std.Build, d: Deps, committed_state_mod
     mod.addImport("trusted_setup", d.trusted_setup_mod);
 }
 
+fn buildMcl(b: *std.Build, target: std.Build.ResolvedTarget) *std.Build.Step {
+    const triple = target.result.zigTriple(b.allocator) catch @panic("OOM");
+    const make = b.addSystemCommand(&.{
+        "make",           "-C",             "mcl",          "-j8",
+        "MCL_FP_BIT=256", "MCL_FR_BIT=256", "lib/libmcl.a", "CC=zig cc",
+        "CXX=zig c++",
+    });
+    make.addArg(b.fmt("CLANG_TARGET={s}", .{triple}));
+    make.addArg("MCL_MSM=0");
+    return &make.step;
+}
+
 fn createZevmModule(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
@@ -80,6 +92,9 @@ pub fn build(b: *std.Build) void {
         .trusted_setup_mod = trusted_setup_mod,
     };
 
+    // Build mcl from source via make.
+    const mcl_step = buildMcl(b, target);
+
     // Exported zevm module for 3rd-party consumers.
     // Consumers override CommittedState by passing .committed_state in dependency args.
     const committed_state_path = b.option(
@@ -120,6 +135,7 @@ pub fn build(b: *std.Build) void {
         .use_llvm = true,
     });
     unit_tests.linkLibCpp();
+    unit_tests.step.dependOn(mcl_step);
     linkDeps(unit_tests.root_module, b, deps, empty_cs_mod);
     test_step.dependOn(&b.addRunArtifact(unit_tests).step);
 
@@ -135,6 +151,7 @@ pub fn build(b: *std.Build) void {
         .use_llvm = true,
     });
     example.linkLibCpp();
+    example.step.dependOn(mcl_step);
     example.root_module.addImport("zevm", example_zevm_mod);
     example.root_module.addImport("committed_state", example_cs_mod);
     example_step.dependOn(&b.addRunArtifact(example).step);
@@ -150,6 +167,7 @@ pub fn build(b: *std.Build) void {
         .use_llvm = true,
     });
     bench.linkLibCpp();
+    bench.step.dependOn(mcl_step);
     linkDeps(bench.root_module, b, deps, empty_cs_mod);
     bench.root_module.addImport("clap", clap_dep.module("clap"));
     const run_bench = b.addRunArtifact(bench);
@@ -167,6 +185,7 @@ pub fn build(b: *std.Build) void {
         .use_llvm = true,
     });
     state_tests.linkLibCpp();
+    state_tests.step.dependOn(mcl_step);
     state_tests.root_module.addImport("zevm", test_zevm_mod);
     state_tests.root_module.addImport("committed_state", test_cs_mod);
     state_tests.stack_size = 64 * 1024 * 1024;
