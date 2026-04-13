@@ -14,19 +14,13 @@ zig build
 
 ## Running tests
 
-Fetch the fixture archive and extract it:
-
-```sh
-tar -xzf fixtures_develop.tar.gz
-```
-
 Run unit tests:
 
 ```sh
 zig build test
 ```
 
-Run the full state test suite:
+Run the full state test suite after fetching the fixture archive and extracting it:
 
 ```sh
 zig build state-tests
@@ -40,34 +34,45 @@ zig build state-tests -Dstate-test=/path/to/fixture.json
 
 ## Usage
 
-Add zevm as a dependency in your `build.zig.zon`, then import the `evm` module from `src/root.zig`.
-
 The entry point for executing a transaction is `EVM.init` followed by `EVM.process`. You need to provide a `Message` (transaction parameters), a `Context` (block parameters), and a `State` (account/storage world state).
 
-See `src/example.zig` for a working end-to-end example (`zig build example` to run it). The example deploys a contract that stores a value, emits a log, and returns it — demonstrating CALL execution, log collection, and return data handling.
+See `example/main.zig` for a working end-to-end example (`zig build example` to run it).
 
-### Key types
+## CommittedState
 
-| Type | Purpose |
-|------|---------|
-| `evm.Message` | Transaction parameters: caller, target, calldata, value, gas, access list, blob hashes, authorization list |
-| `evm.Context` | Block parameters: number, coinbase, basefee, chainid, blob gas, etc. |
-| `evm.EVM` | Executor. Call `init` then `process` to run a transaction. |
-| `evm.Log` | Emitted log entry: address, topics, data. Collected in a `std.DoublyLinkedList` passed to `EVM.init`. |
-| `state.State` | World state: accounts, contract storage, transient storage, deployed code. |
-| `spec.Osaka` | Fork specification with gas constants and opcode table. |
+The EVM reads account balances, storage slots, and contract code through a `CommittedState` interface. Consumers provide their own implementation to back these reads with a real database, in-memory map, or anything else.
 
-`Message.target = null` triggers a CREATE transaction. `Message.authorization_list` (non-null) marks the transaction as EIP-7702 type-4. `Message.max_fee_per_blob_gas` (non-null) marks it as EIP-4844 type-3.
+A `CommittedState` must be a struct exposing the same methods as the default implementation (`evm/empty_committed_state.zig`). See `example/committed_state.zig` for a working example.
 
-## Architecture
+## Using zevm as a dependency
 
-| File | Description |
-|------|-------------|
-| `src/evm.zig` | `EVM` and `Frame` — entry point for calls, stack and memory |
-| `src/ops.zig` | Opcode handlers and jump table, parameterised by `Spec` |
-| `src/bytecode.zig` | `Bytecode` — raw bytes + threaded code + jump dest analysis |
-| `src/memory.zig` | Growable EVM memory with gas metering |
-| `src/state.zig` | `State` — accounts, contract storage, transient storage, code |
-| `src/storage.zig` | Journaled hash-map storage with snapshot/revert |
-| `src/spec.zig` | Fork specifications (currently Osaka) |
-| `src/state_tests.zig` | Ethereum state test runner |
+zevm relies on git submodules (`c-kzg-4844`, `mcl`) that `zig fetch` does not clone. You have two options:
+
+1. **Git submodule** — add zevm as a submodule in your project and reference it with a local path:
+
+   ```sh
+   git submodule add https://github.com/omerfirmak/zevm.git deps/zevm
+   git submodule update --init --recursive
+   ```
+
+   Then in `build.zig.zon`:
+
+   ```zig
+   .zevm = .{ .path = "deps/zevm" },
+   ```
+
+2. **Vendor** — clone the repo with `--recursive`, copy it into your project tree, and reference it the same way.
+
+Then in your `build.zig`, pass your custom `CommittedState` source file when declaring the dependency:
+
+```zig
+const zevm_dep = b.dependency("zevm", .{
+    .target = target,
+    .optimize = optimize,
+    .committed_state = b.path("src/my_committed_state.zig"),
+});
+
+exe.root_module.addImport("zevm", zevm_dep.module("zevm"));
+```
+
+If you omit `.committed_state`, the built-in empty implementation is used (returns zeros for everything).

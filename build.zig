@@ -50,6 +50,12 @@ pub fn build(b: *std.Build) void {
     const blst_dep = b.dependency("blst", .{ .target = target, .optimize = optimize });
     const clap_dep = b.dependency("clap", .{ .target = target, .optimize = optimize });
 
+    const types_mod = b.addModule("types", .{
+        .root_source_file = b.path("evm/types.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     const deps = Deps{
         .secp256k1_mod = secp256k1_dep.module("zig-eth-secp256k1"),
         .secp256k1_lib = secp256k1_dep.artifact("secp256k1"),
@@ -59,28 +65,38 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
         }),
-        .types_mod = b.createModule(.{
-            .root_source_file = b.path("evm/types.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
+        .types_mod = types_mod,
     };
 
+    // Exported zevm module for 3rd-party consumers.
+    // Consumers override CommittedState by passing .committed_state in dependency args.
     const committed_state_path = b.option(
         std.Build.LazyPath,
         "committed_state",
         "Custom CommittedState implementation",
     ) orelse b.path("evm/empty_committed_state.zig");
 
-    const committed_state_mod = blk: {
-        const cs_mod = b.createModule(.{
-            .root_source_file = committed_state_path,
-            .target = target,
-            .optimize = optimize,
-        });
-        cs_mod.addImport("types", deps.types_mod);
-        break :blk cs_mod;
-    };
+    const cs_mod = b.addModule("committed_state", .{
+        .root_source_file = committed_state_path,
+        .target = target,
+        .optimize = optimize,
+    });
+    cs_mod.addImport("types", types_mod);
+
+    const zevm_mod = b.addModule("zevm", .{
+        .root_source_file = b.path("evm/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    linkDeps(zevm_mod, b, deps, cs_mod);
+
+    // Internal targets always use the empty committed state.
+    const empty_cs_mod = b.createModule(.{
+        .root_source_file = b.path("evm/empty_committed_state.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    empty_cs_mod.addImport("types", types_mod);
 
     const test_step = b.step("test", "Run unit tests");
     const unit_tests = b.addTest(.{
@@ -92,7 +108,7 @@ pub fn build(b: *std.Build) void {
         .use_llvm = true,
     });
     unit_tests.linkLibCpp();
-    linkDeps(unit_tests.root_module, b, deps, committed_state_mod);
+    linkDeps(unit_tests.root_module, b, deps, empty_cs_mod);
     test_step.dependOn(&b.addRunArtifact(unit_tests).step);
 
     const example_step = b.step("example", "Run the example program");
@@ -122,7 +138,7 @@ pub fn build(b: *std.Build) void {
         .use_llvm = true,
     });
     bench.linkLibCpp();
-    linkDeps(bench.root_module, b, deps, committed_state_mod);
+    linkDeps(bench.root_module, b, deps, empty_cs_mod);
     bench.root_module.addImport("clap", clap_dep.module("clap"));
     const run_bench = b.addRunArtifact(bench);
     if (b.args) |bench_args| run_bench.addArgs(bench_args);
