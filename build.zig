@@ -6,6 +6,7 @@ const Deps = struct {
     blst_mod: *std.Build.Module,
     ckzg4844_mod: *std.Build.Module,
     types_mod: *std.Build.Module,
+    trusted_setup_mod: *std.Build.Module,
 };
 
 fn linkDeps(mod: *std.Build.Module, bp: *std.Build, d: Deps, committed_state_mod: *std.Build.Module) void {
@@ -17,6 +18,7 @@ fn linkDeps(mod: *std.Build.Module, bp: *std.Build, d: Deps, committed_state_mod
     mod.addImport("ckzg", d.ckzg4844_mod);
     mod.addImport("committed_state", committed_state_mod);
     mod.addImport("types", d.types_mod);
+    mod.addImport("trusted_setup", d.trusted_setup_mod);
 }
 
 fn createZevmModule(
@@ -56,6 +58,15 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    // Embed trusted_setup.txt so precompile.init() doesn't need it at runtime.
+    const wf = b.addWriteFiles();
+    _ = wf.addCopyFile(ckzg4844_dep.path("src/trusted_setup.txt"), "trusted_setup.txt");
+    const trusted_setup_mod = b.createModule(.{
+        .root_source_file = wf.add("trusted_setup.zig",
+            \\pub const data = @embedFile("trusted_setup.txt");
+        ),
+    });
+
     const deps = Deps{
         .secp256k1_mod = secp256k1_dep.module("zig-eth-secp256k1"),
         .secp256k1_lib = secp256k1_dep.artifact("secp256k1"),
@@ -66,6 +77,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
         .types_mod = types_mod,
+        .trusted_setup_mod = trusted_setup_mod,
     };
 
     // Exported zevm module for 3rd-party consumers.

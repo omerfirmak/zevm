@@ -53,8 +53,43 @@ pub const Precompiles = enum(u9) {
 var kzg_setup: kzg.Settings = .{};
 
 pub fn init() void {
-    kzg_setup = kzg.Settings.loadTrustedSetupFile("c-kzg-4844/src/trusted_setup.txt", 0) catch unreachable;
+    const trusted_setup_txt = @import("trusted_setup").data;
+    kzg_setup = parseAndLoadTrustedSetup(trusted_setup_txt);
     if (mcl.mclBn_init(mcl.mclBn_CurveSNARK1, mcl.MCLBN_COMPILED_TIME_VAR) != 0) unreachable;
+}
+
+const num_g1_points = 4096;
+const num_g2_points = 65;
+const g1_bytes = 48;
+const g2_bytes = 96;
+
+fn parseAndLoadTrustedSetup(data: []const u8) kzg.Settings {
+    var g1_lagrange: [num_g1_points * g1_bytes]u8 = undefined;
+    var g2_monomial: [num_g2_points * g2_bytes]u8 = undefined;
+    var g1_monomial: [num_g1_points * g1_bytes]u8 = undefined;
+
+    var pos: usize = 0;
+    // Skip header lines ("4096\n65\n").
+    var newlines: usize = 0;
+    while (newlines < 2) : (pos += 1) {
+        if (data[pos] == '\n') newlines += 1;
+    }
+    pos = decodeHexLines(data, pos, &g1_lagrange, num_g1_points, g1_bytes);
+    pos = decodeHexLines(data, pos, &g2_monomial, num_g2_points, g2_bytes);
+    _ = decodeHexLines(data, pos, &g1_monomial, num_g1_points, g1_bytes);
+
+    return kzg.Settings.loadTrustedSetup(&g1_monomial, &g1_lagrange, &g2_monomial, 0) catch unreachable;
+}
+
+fn decodeHexLines(data: []const u8, start: usize, out: []u8, num_lines: usize, bytes_per_line: usize) usize {
+    const hex_per_line = bytes_per_line * 2;
+    var pos = start;
+    for (0..num_lines) |i| {
+        _ = std.fmt.hexToBytes(out[i * bytes_per_line ..][0..bytes_per_line], data[pos..][0..hex_per_line]) catch unreachable;
+        pos += hex_per_line;
+        if (pos < data.len and data[pos] == '\n') pos += 1;
+    }
+    return pos;
 }
 
 const bls12_g1_discounts = [_]u16{
