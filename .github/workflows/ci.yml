@@ -18,8 +18,6 @@ jobs:
         with:
           version: 0.15.2
 
-      - uses: ./.github/actions/build-mcl
-
       - name: Build and run example
         run: zig build example
 
@@ -33,8 +31,6 @@ jobs:
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.15.2
-
-      - uses: ./.github/actions/build-mcl
 
       - name: Download and extract state test fixtures
         run: curl -L https://github.com/ethereum/execution-spec-tests/releases/download/v5.4.0/fixtures_develop.tar.gz | tar -xz
