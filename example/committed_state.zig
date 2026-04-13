@@ -43,8 +43,8 @@ pub const CommittedState = struct {
         return 0;
     }
 
-    pub fn code(_: *const @This(), hash: u256) ?[]const u8 {
+    pub fn code(_: *const @This(), hash: u256) []const u8 {
         if (hash == code_hash) return &bytecode;
-        return null;
+        unreachable;
     }
 };

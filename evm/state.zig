@@ -63,7 +63,7 @@ pub const State = struct {
         if (self.code_storage.get(hash)) |b| {
             return b;
         }
-        const code = self.committed_state.code(hash) orelse unreachable;
+        const code = self.committed_state.code(hash);
         self.deploy_code(hash, code, fork);
         return self.code_storage.get(hash) orelse unreachable;
     }

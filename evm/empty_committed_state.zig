@@ -17,7 +17,7 @@ pub const CommittedState = struct {
         return 0;
     }
 
-    pub fn code(_: *const @This(), _: u256) ?[]const u8 {
-        return null;
+    pub fn code(_: *const @This(), _: u256) []const u8 {
+        unreachable;
     }
 };

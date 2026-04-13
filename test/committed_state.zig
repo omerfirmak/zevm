@@ -33,7 +33,7 @@ pub const CommittedState = struct {
         return self.storage_map.get(key) orelse 0;
     }
 
-    pub fn code(self: *const @This(), hash: u256) ?[]const u8 {
-        return self.code_map.get(hash);
+    pub fn code(self: *const @This(), hash: u256) []const u8 {
+        return self.code_map.get(hash) orelse unreachable;
     }
 };
