@@ -47,6 +47,10 @@
         .ckzg_4844 = .{
             .path = "./c-kzg-4844",
         },
+        .mcl = .{
+            .url = "git+https://github.com/herumi/mcl.git#877aa82ecc55dc111922492ad600e177d78dfc29",
+            .hash = "N-V-__8AAJ5LOwAk0_668msKUyA4IArprUwIQCesqghjucYS",
+        },
         .clap = .{
             .url = "https://github.com/Hejsil/zig-clap/archive/refs/tags/0.11.0.tar.gz",
             .hash = "clap-0.11.0-oBajB-HnAQDPCKYzwF7rO3qDFwRcD39Q0DALlTSz5H7e",
