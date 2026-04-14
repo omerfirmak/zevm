@@ -46,22 +46,14 @@ A `CommittedState` must be a struct exposing the same methods as the default imp
 
 ## Using zevm as a dependency
 
-zevm relies on git submodules (`c-kzg-4844`, `mcl`) that `zig fetch` does not clone. You have two options:
+Add zevm to your `build.zig.zon`:
 
-1. **Git submodule** — add zevm as a submodule in your project and reference it with a local path:
-
-   ```sh
-   git submodule add https://github.com/omerfirmak/zevm.git deps/zevm
-   git submodule update --init --recursive
-   ```
-
-   Then in `build.zig.zon`:
-
-   ```zig
-   .zevm = .{ .path = "deps/zevm" },
-   ```
-
-2. **Vendor** — clone the repo with `--recursive`, copy it into your project tree, and reference it the same way.
+```zig
+.zevm = .{
+    .url = "git+https://github.com/omerfirmak/zevm.git#<commit>",
+    .hash = "<hash>",
+},
+```
 
 Then in your `build.zig`, pass your custom `CommittedState` source file when declaring the dependency:
 
