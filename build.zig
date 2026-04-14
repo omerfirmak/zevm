@@ -7,11 +7,13 @@ const Deps = struct {
     ckzg4844_mod: *std.Build.Module,
     types_mod: *std.Build.Module,
     trusted_setup_mod: *std.Build.Module,
+    mcl_lib: *std.Build.Step.Compile,
+    mcl_include: std.Build.LazyPath,
 };
 
-fn linkDeps(mod: *std.Build.Module, bp: *std.Build, d: Deps, committed_state_mod: *std.Build.Module) void {
-    mod.addIncludePath(bp.path("mcl/include"));
-    mod.addObjectFile(bp.path("mcl/lib/libmcl.a"));
+fn linkDeps(mod: *std.Build.Module, d: Deps, committed_state_mod: *std.Build.Module) void {
+    mod.addIncludePath(d.mcl_include);
+    mod.linkLibrary(d.mcl_lib);
     mod.addImport("zig-eth-secp256k1", d.secp256k1_mod);
     mod.linkLibrary(d.secp256k1_lib);
     mod.addImport("blst", d.blst_mod);
@@ -21,16 +23,38 @@ fn linkDeps(mod: *std.Build.Module, bp: *std.Build, d: Deps, committed_state_mod
     mod.addImport("trusted_setup", d.trusted_setup_mod);
 }
 
-fn buildMcl(b: *std.Build, target: std.Build.ResolvedTarget) *std.Build.Step {
-    const triple = target.result.zigTriple(b.allocator) catch @panic("OOM");
-    const make = b.addSystemCommand(&.{
-        "make",           "-C",             "mcl",          "-j8",
-        "MCL_FP_BIT=256", "MCL_FR_BIT=256", "lib/libmcl.a", "CC=zig cc",
-        "CXX=zig c++",
+fn buildMcl(b: *std.Build, mcl_dep: *std.Build.Dependency, target: std.Build.ResolvedTarget) *std.Build.Step.Compile {
+    const lib = b.addLibrary(.{
+        .name = "mcl",
+        .linkage = .static,
+        .root_module = b.createModule(.{
+            .target = target,
+            .optimize = .ReleaseFast,
+        }),
+        .use_llvm = true,
     });
-    make.addArg(b.fmt("CLANG_TARGET={s}", .{triple}));
-    make.addArg("MCL_MSM=0");
-    return &make.step;
+
+    lib.addCSourceFiles(.{
+        .root = mcl_dep.path("."),
+        .files = &.{ "src/fp.cpp", "src/base64.ll", "src/bint64.ll" },
+        .flags = &.{
+            "-DMCL_FP_BIT=256",
+            "-DMCL_FR_BIT=256",
+            "-DMCL_USE_LLVM=1",
+            "-DMCL_BINT_ASM=1",
+            "-DMCL_BINT_ASM_X64=0",
+            "-DMCL_MSM=0",
+            "-DNDEBUG",
+            "-DMCL_DONT_USE_XBYAK",
+            "-fomit-frame-pointer",
+            "-fno-stack-protector",
+        },
+    });
+    lib.addIncludePath(mcl_dep.path("include"));
+    lib.addIncludePath(mcl_dep.path("src"));
+    lib.linkLibCpp();
+
+    return lib;
 }
 
 fn createZevmModule(
@@ -51,7 +75,7 @@ fn createZevmModule(
         .target = target,
         .optimize = optimize,
     });
-    linkDeps(zevm_mod, b, d, cs_mod);
+    linkDeps(zevm_mod, d, cs_mod);
     return .{ zevm_mod, cs_mod };
 }
 
@@ -63,6 +87,7 @@ pub fn build(b: *std.Build) void {
     const ckzg4844_dep = b.dependency("ckzg_4844", .{ .target = target, .optimize = optimize });
     const blst_dep = b.dependency("blst", .{ .target = target, .optimize = optimize });
     const clap_dep = b.dependency("clap", .{ .target = target, .optimize = optimize });
+    const mcl_dep = b.dependency("mcl", .{});
 
     const types_mod = b.addModule("types", .{
         .root_source_file = b.path("evm/types.zig"),
@@ -79,6 +104,8 @@ pub fn build(b: *std.Build) void {
         ),
     });
 
+    const mcl_lib = buildMcl(b, mcl_dep, target);
+
     const deps = Deps{
         .secp256k1_mod = secp256k1_dep.module("zig-eth-secp256k1"),
         .secp256k1_lib = secp256k1_dep.artifact("secp256k1"),
@@ -90,10 +117,9 @@ pub fn build(b: *std.Build) void {
         }),
         .types_mod = types_mod,
         .trusted_setup_mod = trusted_setup_mod,
+        .mcl_lib = mcl_lib,
+        .mcl_include = mcl_dep.path("include"),
     };
-
-    // Build mcl from source via make.
-    const mcl_step = buildMcl(b, target);
 
     // Exported zevm module for 3rd-party consumers.
     // Consumers override CommittedState by passing .committed_state in dependency args.
@@ -115,7 +141,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    linkDeps(zevm_mod, b, deps, cs_mod);
+    linkDeps(zevm_mod, deps, cs_mod);
 
     // Internal targets always use the empty committed state.
     const empty_cs_mod = b.createModule(.{
@@ -135,8 +161,7 @@ pub fn build(b: *std.Build) void {
         .use_llvm = true,
     });
     unit_tests.linkLibCpp();
-    unit_tests.step.dependOn(mcl_step);
-    linkDeps(unit_tests.root_module, b, deps, empty_cs_mod);
+    linkDeps(unit_tests.root_module, deps, empty_cs_mod);
     test_step.dependOn(&b.addRunArtifact(unit_tests).step);
 
     const example_step = b.step("example", "Run the example program");
@@ -151,7 +176,6 @@ pub fn build(b: *std.Build) void {
         .use_llvm = true,
     });
     example.linkLibCpp();
-    example.step.dependOn(mcl_step);
     example.root_module.addImport("zevm", example_zevm_mod);
     example.root_module.addImport("committed_state", example_cs_mod);
     example_step.dependOn(&b.addRunArtifact(example).step);
@@ -167,8 +191,7 @@ pub fn build(b: *std.Build) void {
         .use_llvm = true,
     });
     bench.linkLibCpp();
-    bench.step.dependOn(mcl_step);
-    linkDeps(bench.root_module, b, deps, empty_cs_mod);
+    linkDeps(bench.root_module, deps, empty_cs_mod);
     bench.root_module.addImport("clap", clap_dep.module("clap"));
     const run_bench = b.addRunArtifact(bench);
     if (b.args) |bench_args| run_bench.addArgs(bench_args);
@@ -185,7 +208,6 @@ pub fn build(b: *std.Build) void {
         .use_llvm = true,
     });
     state_tests.linkLibCpp();
-    state_tests.step.dependOn(mcl_step);
     state_tests.root_module.addImport("zevm", test_zevm_mod);
     state_tests.root_module.addImport("committed_state", test_cs_mod);
     state_tests.stack_size = 64 * 1024 * 1024;
