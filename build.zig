@@ -36,7 +36,7 @@ fn buildMcl(b: *std.Build, mcl_dep: *std.Build.Dependency, target: std.Build.Res
         .use_llvm = true,
     });
 
-    lib.addCSourceFiles(.{
+    lib.root_module.addCSourceFiles(.{
         .root = mcl_dep.path("."),
         .files = &.{ "src/fp.cpp", "src/base64.ll", "src/bint64.ll" },
         .flags = &.{
@@ -52,9 +52,9 @@ fn buildMcl(b: *std.Build, mcl_dep: *std.Build.Dependency, target: std.Build.Res
             "-fno-stack-protector",
         },
     });
-    lib.addIncludePath(mcl_dep.path("include"));
-    lib.addIncludePath(mcl_dep.path("src"));
-    lib.linkLibCpp();
+    lib.root_module.addIncludePath(mcl_dep.path("include"));
+    lib.root_module.addIncludePath(mcl_dep.path("src"));
+    lib.root_module.link_libcpp = true;
 
     return lib;
 }
@@ -165,7 +165,7 @@ pub fn build(b: *std.Build) void {
         }),
         .use_llvm = true,
     });
-    unit_tests.linkLibCpp();
+    unit_tests.root_module.link_libcpp = true;
     linkDeps(unit_tests.root_module, deps, empty_cs_mod);
     test_step.dependOn(&b.addRunArtifact(unit_tests).step);
 
@@ -191,7 +191,7 @@ pub fn build(b: *std.Build) void {
         }),
         .use_llvm = true,
     });
-    example.linkLibCpp();
+    example.root_module.link_libcpp = true;
     example.root_module.addImport("zevm", example_zevm_mod);
     example.root_module.addImport("committed_state", example_cs_mod);
     example_step.dependOn(&b.addRunArtifact(example).step);
@@ -206,7 +206,7 @@ pub fn build(b: *std.Build) void {
         }),
         .use_llvm = true,
     });
-    bench.linkLibCpp();
+    bench.root_module.link_libcpp = true;
     linkDeps(bench.root_module, deps, empty_cs_mod);
     bench.root_module.addImport("clap", clap_dep.module("clap"));
     const run_bench = b.addRunArtifact(bench);
@@ -232,7 +232,7 @@ pub fn build(b: *std.Build) void {
     trie_mod.addImport("rlp", deps.rlp_mod);
     trie_mod.addImport("types", types_mod);
 
-    state_tests.linkLibCpp();
+    state_tests.root_module.link_libcpp = true;
     state_tests.root_module.addImport("zevm", test_zevm_mod);
     state_tests.root_module.addImport("committed_state", test_cs_mod);
     state_tests.root_module.addImport("trie", trie_mod);
