@@ -37,8 +37,8 @@
     // internet connectivity.
     .dependencies = .{
         .zig_eth_secp256k1 = .{
-            .url = "git+https://github.com/jsign/zig-eth-secp256k1.git#cf93d6597dacbd444b4b55728111c063f0efa962",
-            .hash = "zig_eth_secp256k1-0.1.0-_U97sBjqDACdmkjL_I_1dncMBvOZ0iSxbcMg4pIcVM4P",
+            .url = "git+https://github.com/jsign/zig-eth-secp256k1.git#01f8df8a1633a40f958ee06640e886424a85106f",
+            .hash = "zig_eth_secp256k1-0.1.0-_U97sAbrDAAB9Q-p2ik2QqpECd08t0meJdb11Rh-HnGo",
         },
         .blst = .{
             .url = "git+https://github.com/supranational/blst.git#f62244ef50ad1a603decdb8f215e982d2a467bb6",
