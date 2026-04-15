@@ -45,8 +45,8 @@
             .hash = "blst-0.3.16-fvxk1cQ7MADXoMijmUkSjmt0wXV-piV7weQEgHI-K_ts",
         },
         .ckzg_4844 = .{
-            .url = "git+https://github.com/omerfirmak/c-kzg-4844.git#b782f6fd52f740d969989aa1d06e8e82c8e95a90",
-            .hash = "ckzg_4844-0.0.0-6yQ38-voEADslsanaYfES9ucXveA2Nb7EVIDBHLm7GH-",
+            .url = "git+https://github.com/ethereum/c-kzg-4844.git#e1c5705613ff0f4f2bababd67b721b9e989a5905",
+            .hash = "ckzg_4844-0.0.0-I7LPWFMvEQBkUTBYYmPmfogEUEIyQWrruA5E7aHe8hMY",
         },
         .mcl = .{
             .url = "git+https://github.com/herumi/mcl.git#877aa82ecc55dc111922492ad600e177d78dfc29",
