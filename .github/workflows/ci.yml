@@ -7,7 +7,7 @@ on:
   pull_request:
 
 jobs:
-  build-example:
+  test-and-build-example:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -21,16 +21,8 @@ jobs:
       - name: Build and run example
         run: zig build example
 
-  state-tests:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - uses: mlugg/setup-zig@v2
-        with:
-          version: 0.15.2
+      - name: Test
+        run: zig build test
 
       - name: Download and extract state test fixtures
         run: curl -L https://github.com/ethereum/execution-spec-tests/releases/download/v5.4.0/fixtures_develop.tar.gz | tar -xz
