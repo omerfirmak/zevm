@@ -419,7 +419,7 @@ pub fn Ops(comptime spec: Spec) type {
             const dynamic_cost = frame.evm.accessAccountCost(spec, target);
 
             const account = frame.state.accounts.read(target);
-            args[0] = if (account.isEmptyAccount()) 0 else account.code_hash;
+            args[0] = if (account.isEmptyAccount()) 0 else std.mem.readInt(u256, &account.code_hash, .big);
             return next(next_ip, gas - spec.constantGas(.EXTCODEHASH) - dynamic_cost, new_stack_head, frame);
         }
 
@@ -429,7 +429,7 @@ pub fn Ops(comptime spec: Spec) type {
             const dynamic_cost = frame.evm.accessAccountCost(spec, target);
 
             const code_hash = frame.state.accounts.read(target).code_hash;
-            if (code_hash != types.empty_code_hash) {
+            if (!std.mem.eql(u8, &code_hash, &types.empty_code_hash)) {
                 args[0] = frame.state.get_code(code_hash, spec).bytes.len;
             } else {
                 args[0] = 0;
@@ -445,7 +445,7 @@ pub fn Ops(comptime spec: Spec) type {
 
             const code_hash = frame.state.accounts.read(target).code_hash;
             var slice: []const u8 = &[_]u8{};
-            if (code_hash != types.empty_code_hash) {
+            if (!std.mem.eql(u8, &code_hash, &types.empty_code_hash)) {
                 const bytecode = frame.state.get_code(code_hash, spec);
                 slice = bytecode.safeSlice(args[1], @intCast(args[0]));
             }

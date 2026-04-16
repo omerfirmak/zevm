@@ -15,11 +15,7 @@ pub const AccountTrie = struct {
         self.inner.deinit();
     }
 
-    pub fn insert(self: *@This(), addr: u160, account: types.Account) !void {
-        var addr_bytes: [20]u8 = undefined;
-        std.mem.writeInt(u160, &addr_bytes, addr, .big);
-        var key: [32]u8 = undefined;
-        Keccak256.hash(&addr_bytes, &key, .{});
+    pub fn insert(self: *@This(), key: [32]u8, account: types.Account) !void {
         var val_buf = std.array_list.Managed(u8).init(self.inner.allocator);
         try rlp.serialize(types.Account, self.inner.allocator, account, &val_buf);
         try self.inner.update(&key, val_buf.items);

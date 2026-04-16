@@ -4,13 +4,13 @@ const types = @import("types");
 pub const CommittedState = struct {
     account_map: std.AutoHashMap(u160, types.Account),
     storage_map: std.AutoHashMap(types.StorageLookup, u256),
-    code_map: std.AutoHashMap(u256, []const u8),
+    code_map: std.AutoHashMap([32]u8, []const u8),
 
     pub fn init(alloc: std.mem.Allocator) @This() {
         return .{
             .account_map = std.AutoHashMap(u160, types.Account).init(alloc),
             .storage_map = std.AutoHashMap(types.StorageLookup, u256).init(alloc),
-            .code_map = std.AutoHashMap(u256, []const u8).init(alloc),
+            .code_map = std.AutoHashMap([32]u8, []const u8).init(alloc),
         };
     }
 
@@ -33,7 +33,7 @@ pub const CommittedState = struct {
         return self.storage_map.get(key) orelse 0;
     }
 
-    pub fn code(self: *const @This(), hash: u256) []const u8 {
+    pub fn code(self: *const @This(), hash: [32]u8) []const u8 {
         return self.code_map.get(hash) orelse unreachable;
     }
 };

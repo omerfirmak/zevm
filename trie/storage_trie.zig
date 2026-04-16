@@ -14,11 +14,7 @@ pub const StorageTrie = struct {
         self.inner.deinit();
     }
 
-    pub fn insert(self: *@This(), slot: u256, value: u256) !void {
-        var slot_bytes: [32]u8 = undefined;
-        std.mem.writeInt(u256, &slot_bytes, slot, .big);
-        var key: [32]u8 = undefined;
-        Keccak256.hash(&slot_bytes, &key, .{});
+    pub fn insert(self: *@This(), key: [32]u8, value: u256) !void {
         var val_buf = std.array_list.Managed(u8).init(self.inner.allocator);
         try rlp.serialize(u256, self.inner.allocator, value, &val_buf);
         try self.inner.update(&key, val_buf.items);

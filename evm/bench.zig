@@ -94,9 +94,8 @@ fn runBenchmark(allocator: std.mem.Allocator, bench_def: BenchmarkDef, warmup: u
         .storage_hash = types.empty_root_hash,
     });
 
-    var code_hash_bytes: [32]u8 = undefined;
-    std.crypto.hash.sha3.Keccak256.hash(bytecode, &code_hash_bytes, .{});
-    const code_hash = std.mem.readInt(u256, &code_hash_bytes, .big);
+    var code_hash: [32]u8 = undefined;
+    std.crypto.hash.sha3.Keccak256.hash(bytecode, &code_hash, .{});
     state.deploy_code(code_hash, bytecode, bench_fork);
 
     _ = state.accounts.write(BENCH_TARGET, .{
