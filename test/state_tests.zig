@@ -5,6 +5,7 @@ const state_mod = zevm.state;
 const types = zevm.types;
 const spec = zevm.spec;
 const CommittedState = @import("committed_state").CommittedState;
+const trie = @import("trie");
 
 fn parseHex(comptime T: type, str: []const u8) !T {
     const hex = if (std.mem.startsWith(u8, str, "0x")) str[2..] else str;
@@ -291,11 +292,9 @@ fn buildCommittedState(alloc: std.mem.Allocator, pre: std.json.ArrayHashMap(Acco
             }
         }
 
-        var code_hash: u256 = types.empty_code_hash;
+        var code_hash = types.empty_code_hash;
         if (pre_acct.code.value.len > 0) {
-            var hash_bytes: [32]u8 = undefined;
-            std.crypto.hash.sha3.Keccak256.hash(pre_acct.code.value, &hash_bytes, .{});
-            code_hash = std.mem.readInt(u256, &hash_bytes, .big);
+            std.crypto.hash.sha3.Keccak256.hash(pre_acct.code.value, &code_hash, .{});
             try committed.code_map.put(code_hash, pre_acct.code.value);
         }
 
@@ -303,11 +302,117 @@ fn buildCommittedState(alloc: std.mem.Allocator, pre: std.json.ArrayHashMap(Acco
             .nonce = pre_acct.nonce.value,
             .balance = pre_acct.balance.value,
             .code_hash = code_hash,
-            .storage_hash = if (has_storage) 1 else types.empty_root_hash,
+            .storage_hash = if (has_storage) [_]u8{1} ** 32 else types.empty_root_hash,
         });
     }
 
     return committed;
+}
+
+const Keccak256 = std.crypto.hash.sha3.Keccak256;
+
+fn keccak256OfU160(v: u160) [32]u8 {
+    var buf: [20]u8 = undefined;
+    std.mem.writeInt(u160, &buf, v, .big);
+    var out: [32]u8 = undefined;
+    Keccak256.hash(&buf, &out, .{});
+    return out;
+}
+
+fn keccak256OfU256(v: u256) [32]u8 {
+    var buf: [32]u8 = undefined;
+    std.mem.writeInt(u256, &buf, v, .big);
+    var out: [32]u8 = undefined;
+    Keccak256.hash(&buf, &out, .{});
+    return out;
+}
+
+/// Build the Ethereum world-state trie from `state` and return its 32-byte root hash.
+/// Uses `gpa` for intermediate collections and `fba` for trie-node allocations.
+fn computeStateRoot(
+    gpa: std.mem.Allocator,
+    fba: *std.heap.FixedBufferAllocator,
+    state: *state_mod.State,
+    committed: *const CommittedState,
+    vm: *evm.EVM,
+) ![32]u8 {
+    // Collect every address live in committed or dirty state.
+    var addresses = std.AutoHashMap(u160, void).init(gpa);
+    defer addresses.deinit();
+    var pre_it = committed.account_map.keyIterator();
+    while (pre_it.next()) |addr| {
+        if (vm.created_accounts.read(addr.*) != .Selfdestructed) {
+            try addresses.put(addr.*, {});
+        }
+    }
+    var dirty_acct_it = state.accounts.dirties.keyIterator();
+    while (dirty_acct_it.next()) |addr| {
+        if (vm.created_accounts.read(addr.*) != .Selfdestructed) {
+            try addresses.put(addr.*, {});
+        }
+    }
+
+    // Build a sorted list of live accounts: [(keccak256(addr), addr, account)].
+    const AddrEntry = struct { key: [32]u8, addr: u160, account: types.Account };
+    var acct_list: std.ArrayList(AddrEntry) = .empty;
+    defer acct_list.deinit(gpa);
+
+    var addr_it = addresses.keyIterator();
+    while (addr_it.next()) |addr_ptr| {
+        const addr = addr_ptr.*;
+        const account = state.accounts.read(addr);
+        if (account.isEmptyAccount()) continue;
+        try acct_list.append(gpa, .{ .key = keccak256OfU160(addr), .addr = addr, .account = account });
+    }
+    std.sort.pdq(AddrEntry, acct_list.items, {}, struct {
+        fn lt(_: void, a: AddrEntry, b: AddrEntry) bool {
+            return std.mem.lessThan(u8, &a.key, &b.key);
+        }
+    }.lt);
+
+    var account_trie = try trie.AccountTrie.init(fba);
+
+    for (acct_list.items) |ae| {
+        // Collect storage slots for this account (committed + dirty).
+        var slots = std.AutoHashMap(u256, void).init(gpa);
+        defer slots.deinit();
+        var cs_it = committed.storage_map.keyIterator();
+        while (cs_it.next()) |lookup| {
+            if (lookup.address == @as(u256, ae.addr)) try slots.put(lookup.slot, {});
+        }
+        var ds_it = state.contract_state.dirties.keyIterator();
+        while (ds_it.next()) |lookup| {
+            if (lookup.address == @as(u256, ae.addr)) try slots.put(lookup.slot, {});
+        }
+
+        // Build a sorted list of non-zero slots: [(keccak256(slot), slot, value)].
+        const SlotEntry = struct { key: [32]u8, slot: u256, value: u256 };
+        var slot_list: std.ArrayList(SlotEntry) = .empty;
+        defer slot_list.deinit(gpa);
+        var slot_it = slots.keyIterator();
+        while (slot_it.next()) |slot_ptr| {
+            const val = state.contract_state.read(.{ .address = @as(u256, ae.addr), .slot = slot_ptr.* });
+            if (val != 0) try slot_list.append(gpa, .{ .key = keccak256OfU256(slot_ptr.*), .slot = slot_ptr.*, .value = val });
+        }
+        std.sort.pdq(SlotEntry, slot_list.items, {}, struct {
+            fn lt(_: void, a: SlotEntry, b: SlotEntry) bool {
+                return std.mem.lessThan(u8, &a.key, &b.key);
+            }
+        }.lt);
+
+        // Insert into storage trie and reclaim FBA memory after.
+        const saved = fba.end_index;
+        var storage_trie = try trie.StorageTrie.init(fba);
+        for (slot_list.items) |se| try storage_trie.insert(se.key, se.value);
+        const storage_root = try storage_trie.rootHash();
+        fba.end_index = saved;
+
+        var account = ae.account;
+        account.storage_hash = storage_root;
+        try account_trie.insert(ae.key, account);
+    }
+
+    return account_trie.rootHash();
 }
 
 fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []const u8) !void {
@@ -432,68 +537,16 @@ fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []con
             return err;
         }
 
-        // Verify post state: check each expected account
-        if (post_entry.state.map.keys().len == 0) continue;
+        // Verify post state via the state root hash.
+        if (post_entry.hash.value.len != 32) continue;
 
-        // Count alive accounts: iterate committed pre-state + dirties to find all touched accounts
-        var num_alive_accounts: usize = 0;
-        // Check all pre-state accounts
-        for (test_case.pre.map.keys()) |addr_str| {
-            const addr = parseHex(u160, addr_str) catch continue;
-            const ca_entry = vm.created_accounts.dirties.getEntry(addr);
-            if (ca_entry == null or ca_entry.?.value_ptr.* == .Created) {
-                const acc = state.accounts.read(addr);
-                if (!acc.isEmptyAccount()) {
-                    num_alive_accounts += 1;
-                }
-            }
-        }
-        // Check accounts created during execution (not in pre-state)
-        var created_it = vm.created_accounts.dirties.keyIterator();
-        while (created_it.next()) |addr| {
-            if (committed.account_map.get(addr.*) != null) continue; // already counted above
-            if (vm.created_accounts.dirties.get(addr.*)) |lc| {
-                if (lc == .Created) {
-                    const acc = state.accounts.read(addr.*);
-                    if (!acc.isEmptyAccount()) {
-                        num_alive_accounts += 1;
-                    }
-                }
-            }
-        }
-        // Also check accounts in dirties that weren't in pre-state or created_accounts
-        var dirty_it = state.accounts.dirties.keyIterator();
-        while (dirty_it.next()) |addr| {
-            if (committed.account_map.get(addr.*) != null) continue; // already counted
-            if (vm.created_accounts.dirties.getEntry(addr.*) != null) continue; // already counted
-            const acc = state.accounts.read(addr.*);
-            if (!acc.isEmptyAccount()) {
-                num_alive_accounts += 1;
-            }
-        }
+        const trie_buf = try gpa.alloc(u8, 16 * 1024 * 1024);
+        defer gpa.free(trie_buf);
+        var trie_fba = std.heap.FixedBufferAllocator.init(trie_buf);
 
-        if (num_alive_accounts != post_entry.state.map.keys().len) {
-            return error.UnexpectedNumOfAccounts;
-        }
-
-        // Verify post state
-        for (post_entry.state.map.keys(), post_entry.state.map.values()) |addr_str, expected| {
-            const addr = try parseHex(u160, addr_str);
-            const actual = state.accounts.read(addr);
-
-            if (actual.nonce != expected.nonce.value) {
-                return error.NonceCheckFailed;
-            }
-            for (expected.storage.map.keys(), expected.storage.map.values()) |slot_str, slot_val| {
-                const slot = try parseHex(u256, slot_str);
-                const actual_slot = state.contract_state.read(.{ .address = @as(u256, addr), .slot = slot });
-                if (actual_slot != slot_val.value) {
-                    return error.StorageCheckFailed;
-                }
-            }
-            if (actual.balance != expected.balance.value) {
-                return error.BalanceCheckFailed;
-            }
+        const actual_root = try computeStateRoot(gpa, &trie_fba, &state, &committed, &vm);
+        if (!std.mem.eql(u8, &actual_root, post_entry.hash.value)) {
+            return error.StateRootHashMismatch;
         }
     }
 }

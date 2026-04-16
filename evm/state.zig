@@ -59,7 +59,7 @@ pub const State = struct {
         self.transient_storage.revert(snapshot_ids.tstorage);
     }
 
-    pub fn get_code(self: *Self, hash: u256, comptime fork: Spec) Bytecode {
+    pub fn get_code(self: *Self, hash: [32]u8, comptime fork: Spec) Bytecode {
         if (self.code_storage.get(hash)) |b| {
             return b;
         }
@@ -68,7 +68,7 @@ pub const State = struct {
         return self.code_storage.get(hash) orelse unreachable;
     }
 
-    pub fn deploy_code(self: *Self, hash: u256, code: []const u8, comptime fork: Spec) void {
+    pub fn deploy_code(self: *Self, hash: [32]u8, code: []const u8, comptime fork: Spec) void {
         const allocator = self.deployed_bytecode_allocator.allocator();
         const code_bytes = allocator.dupe(u8, code) catch unreachable;
         const bytecode = Bytecode.init(allocator, code_bytes, fork) catch unreachable;

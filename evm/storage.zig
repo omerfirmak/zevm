@@ -147,13 +147,13 @@ pub fn JournaledStorage(comptime Key: type, comptime Value: type, comptime Map: 
 }
 
 // Backing storage for the contract code
-pub const CodeStorage = std.HashMapUnmanaged(u256, Bytecode, struct {
-    pub fn eql(_: @This(), a: u256, b: u256) bool {
-        return a == b;
+pub const CodeStorage = std.HashMapUnmanaged([32]u8, Bytecode, struct {
+    pub fn eql(_: @This(), a: [32]u8, b: [32]u8) bool {
+        return std.mem.eql(u8, &a, &b);
     }
 
-    pub fn hash(_: @This(), codehash: u256) u64 {
-        const hash_limbs: [4]u64 = @bitCast(codehash);
-        return (hash_limbs[0] ^ hash_limbs[1] ^ hash_limbs[2] ^ hash_limbs[3]);
+    pub fn hash(_: @This(), codehash: [32]u8) u64 {
+        const limbs: [4]u64 = @bitCast(codehash);
+        return limbs[0] ^ limbs[1] ^ limbs[2] ^ limbs[3];
     }
 }, 80);

@@ -325,7 +325,7 @@ pub const EVM = struct {
 
         // EIP-3607: reject transaction if sender has code (is a contract).
         // EIP-7702: relax this for accounts with a delegation designator — they remain EOAs.
-        if (caller_account.code_hash != types.empty_code_hash) {
+        if (!std.mem.eql(u8, &caller_account.code_hash, &types.empty_code_hash)) {
             const caller_code = state.get_code(caller_account.code_hash, fork);
             if (!isDelegation(caller_code.bytes)) return Errors.SenderNotEOA;
         }
@@ -383,7 +383,7 @@ pub const EVM = struct {
 
             // EIP-7702: if destination has a delegation, add delegate to accessed_addresses
             const target_code_hash = state.accounts.read(target).code_hash;
-            if (target_code_hash != types.empty_code_hash) {
+            if (!std.mem.eql(u8, &target_code_hash, &types.empty_code_hash)) {
                 const code = state.get_code(target_code_hash, fork);
                 if (isDelegation(code.bytes)) _ = self.accessAccount(delegationAddress(code.bytes));
             }
@@ -529,7 +529,7 @@ pub const EVM = struct {
     // Must be called from CALL/CALLCODE/DELEGATECALL/STATICCALL before forwarding gas.
     pub fn delegationAccessCost(self: *Self, comptime fork: Spec, code_addr: u160, state: *State) i32 {
         const code_hash = state.accounts.read(code_addr).code_hash;
-        if (code_hash == types.empty_code_hash) return 0;
+        if (std.mem.eql(u8, &code_hash, &types.empty_code_hash)) return 0;
         const raw = state.get_code(code_hash, fork);
         if (!isDelegation(raw.bytes)) return 0;
         return self.accessAccountCost(fork, delegationAddress(raw.bytes));
@@ -590,7 +590,7 @@ pub const EVM = struct {
 
         // EIP-7610: fail on collision (non-zero nonce or existing code or existing storage)
         const existing = state.accounts.read(new_addr);
-        if (existing.nonce != 0 or existing.code_hash != types.empty_code_hash or existing.storage_hash != types.empty_root_hash) return .{ 0, 0 };
+        if (existing.nonce != 0 or !std.mem.eql(u8, &existing.code_hash, &types.empty_code_hash) or !std.mem.eql(u8, &existing.storage_hash, &types.empty_root_hash)) return .{ 0, 0 };
 
         const state_snap = state.snapshot();
         const evm_snap = self.snapshot();
@@ -656,11 +656,9 @@ pub const EVM = struct {
         frame.gas -= deposit_gas;
 
         // Store deployed code and update account code hash
-        var code_hash: u256 = types.empty_code_hash;
+        var code_hash: [32]u8 = types.empty_code_hash;
         if (deployed_len > 0) {
-            var hash: [32]u8 = undefined;
-            std.crypto.hash.sha3.Keccak256.hash(deployed_code, &hash, .{});
-            code_hash = std.mem.readInt(u256, &hash, .big);
+            std.crypto.hash.sha3.Keccak256.hash(deployed_code, &code_hash, .{});
             state.deploy_code(code_hash, deployed_code, fork);
         }
         state.accounts.update(new_addr).code_hash = code_hash;
@@ -730,7 +728,7 @@ pub const EVM = struct {
             _ = self.accessAccount(auth.authority);
             const auth_account = state.accounts.read(auth.authority);
             // Skip if authority already has non-delegation code
-            if (auth_account.code_hash != types.empty_code_hash) {
+            if (!std.mem.eql(u8, &auth_account.code_hash, &types.empty_code_hash)) {
                 const existing = state.get_code(auth_account.code_hash, fork);
                 if (!isDelegation(existing.bytes)) continue;
             }
@@ -768,11 +766,11 @@ pub const EVM = struct {
 // EIP-7702: resolve delegation designator one level deep. Pure lookup with no gas side effects.
 fn resolveCode(code_addr: u160, state: *State, comptime fork: Spec) ?Bytecode {
     const code_hash = state.accounts.read(code_addr).code_hash;
-    if (code_hash == types.empty_code_hash) return null;
+    if (std.mem.eql(u8, &code_hash, &types.empty_code_hash)) return null;
     const raw = state.get_code(code_hash, fork);
     if (!isDelegation(raw.bytes)) return raw;
     const dh = state.accounts.read(delegationAddress(raw.bytes)).code_hash;
-    if (dh == types.empty_code_hash) return null;
+    if (std.mem.eql(u8, &dh, &types.empty_code_hash)) return null;
     return state.get_code(dh, fork);
 }
 
@@ -885,9 +883,9 @@ fn delegationCode(address: u160) [23]u8 {
     return buf;
 }
 
-fn delegationCodeHash(address: u160) u256 {
+fn delegationCodeHash(address: u160) [32]u8 {
     const code = delegationCode(address);
     var hash: [32]u8 = undefined;
     std.crypto.hash.sha3.Keccak256.hash(&code, &hash, .{});
-    return std.mem.readInt(u256, &hash, .big);
+    return hash;
 }

@@ -9,6 +9,7 @@ const Deps = struct {
     trusted_setup_mod: *std.Build.Module,
     mcl_lib: *std.Build.Step.Compile,
     mcl_include: std.Build.LazyPath,
+    rlp_mod: *std.Build.Module,
 };
 
 fn linkDeps(mod: *std.Build.Module, d: Deps, committed_state_mod: *std.Build.Module) void {
@@ -21,6 +22,7 @@ fn linkDeps(mod: *std.Build.Module, d: Deps, committed_state_mod: *std.Build.Mod
     mod.addImport("committed_state", committed_state_mod);
     mod.addImport("types", d.types_mod);
     mod.addImport("trusted_setup", d.trusted_setup_mod);
+    mod.addImport("rlp", d.rlp_mod);
 }
 
 fn buildMcl(b: *std.Build, mcl_dep: *std.Build.Dependency, target: std.Build.ResolvedTarget) *std.Build.Step.Compile {
@@ -88,12 +90,14 @@ pub fn build(b: *std.Build) void {
     const blst_dep = b.dependency("blst", .{ .target = target, .optimize = optimize });
     const clap_dep = b.dependency("clap", .{ .target = target, .optimize = optimize });
     const mcl_dep = b.dependency("mcl", .{});
+    const rlp_dep = b.dependency("rlp", .{ .target = target, .optimize = optimize });
 
     const types_mod = b.addModule("types", .{
         .root_source_file = b.path("evm/types.zig"),
         .target = target,
         .optimize = optimize,
     });
+    types_mod.addImport("rlp", rlp_dep.module("zig-rlp"));
 
     // Embed trusted_setup.txt so precompile.init() doesn't need it at runtime.
     const wf = b.addWriteFiles();
@@ -119,6 +123,7 @@ pub fn build(b: *std.Build) void {
         .trusted_setup_mod = trusted_setup_mod,
         .mcl_lib = mcl_lib,
         .mcl_include = mcl_dep.path("include"),
+        .rlp_mod = rlp_dep.module("zig-rlp"),
     };
 
     // Exported zevm module for 3rd-party consumers.
@@ -164,6 +169,17 @@ pub fn build(b: *std.Build) void {
     linkDeps(unit_tests.root_module, deps, empty_cs_mod);
     test_step.dependOn(&b.addRunArtifact(unit_tests).step);
 
+    const trie_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("trie/trie.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+        .use_llvm = true,
+    });
+    trie_tests.root_module.addImport("rlp", deps.rlp_mod);
+    test_step.dependOn(&b.addRunArtifact(trie_tests).step);
+
     const example_step = b.step("example", "Run the example program");
     const example_zevm_mod, const example_cs_mod = createZevmModule(b, target, optimize, b.path("example/committed_state.zig"), deps);
     const example = b.addExecutable(.{
@@ -207,9 +223,18 @@ pub fn build(b: *std.Build) void {
         }),
         .use_llvm = true,
     });
+    const trie_mod = b.createModule(.{
+        .root_source_file = b.path("trie/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    trie_mod.addImport("rlp", deps.rlp_mod);
+    trie_mod.addImport("types", types_mod);
+
     state_tests.linkLibCpp();
     state_tests.root_module.addImport("zevm", test_zevm_mod);
     state_tests.root_module.addImport("committed_state", test_cs_mod);
+    state_tests.root_module.addImport("trie", trie_mod);
     state_tests.stack_size = 64 * 1024 * 1024;
     const run_state_tests = b.addRunArtifact(state_tests);
     run_state_tests.setCwd(b.path("."));
