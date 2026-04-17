@@ -41,8 +41,8 @@
             .hash = "zig_eth_secp256k1-0.1.0-_U97sAbrDAAB9Q-p2ik2QqpECd08t0meJdb11Rh-HnGo",
         },
         .blst = .{
-            .url = "git+https://github.com/supranational/blst.git#f62244ef50ad1a603decdb8f215e982d2a467bb6",
-            .hash = "blst-0.3.16-fvxk1Tc8MACrli26Tmxn_6ZDnnySVI_owoCn2ZcH9uOX",
+            .url = "git+https://github.com/supranational/blst.git#f41f71513e0e55707595672c218d4f8961b7d756",
+            .hash = "blst-0.3.16-fvxk1cQ7MADXoMijmUkSjmt0wXV-piV7weQEgHI-K_ts",
         },
         .ckzg_4844 = .{
             .url = "git+https://github.com/omerfirmak/c-kzg-4844.git#b782f6fd52f740d969989aa1d06e8e82c8e95a90",
