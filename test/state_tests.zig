@@ -537,6 +537,14 @@ fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []con
             return err;
         }
 
+        // Verify logs hash.
+        if (post_entry.logs.value.len == 32) {
+            const actual_logs_hash = try evm.computeLogsHash(gpa, &logs);
+            if (!std.mem.eql(u8, &actual_logs_hash, post_entry.logs.value)) {
+                return error.LogsHashMismatch;
+            }
+        }
+
         // Verify post state via the state root hash.
         if (post_entry.hash.value.len != 32) continue;
 

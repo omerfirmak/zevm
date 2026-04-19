@@ -3,6 +3,7 @@ const ops = @import("ops.zig");
 const spec = @import("spec.zig");
 const types = @import("types");
 const storage = @import("storage.zig");
+const rlp = @import("rlp");
 const precompile = @import("precompile.zig");
 const Bytecode = @import("bytecode.zig").Bytecode;
 const Memory = @import("memory.zig").Memory;
@@ -169,6 +170,21 @@ pub const Log = struct {
     address: u160,
     topics: []u256,
     data: []u8,
+
+    pub fn encodeToRLP(self: *const @This(), allocator: std.mem.Allocator, list: *std.array_list.Managed(u8)) !void {
+        var encoder: struct {
+            address: [20]u8,
+            topics: [][32]u8,
+            data: []const u8,
+        } = undefined;
+
+        std.mem.writeInt(u160, &encoder.address, self.address, .big);
+        encoder.topics = try allocator.alloc([32]u8, self.topics.len);
+        defer allocator.free(encoder.topics);
+        for (self.topics, encoder.topics) |src, *dst| std.mem.writeInt(u256, dst, src, .big);
+        encoder.data = self.data;
+        return rlp.serialize(@TypeOf(encoder), allocator, encoder, list);
+    }
 };
 
 pub const EVM = struct {
@@ -887,5 +903,29 @@ fn delegationCodeHash(address: u160) [32]u8 {
     const code = delegationCode(address);
     var hash: [32]u8 = undefined;
     std.crypto.hash.sha3.Keccak256.hash(&code, &hash, .{});
+    return hash;
+}
+
+pub fn computeLogsHash(allocator: std.mem.Allocator, logs: *const std.DoublyLinkedList) ![32]u8 {
+    var count: usize = 0;
+    var node = logs.first;
+    while (node) |n| : (node = n.next) count += 1;
+
+    const log_list = try allocator.alloc(Log, count);
+    defer allocator.free(log_list);
+
+    node = logs.first;
+    for (log_list) |*l| {
+        const ln: *const EVM.LogNode = @alignCast(@fieldParentPtr("node", node.?));
+        l.* = ln.log;
+        node = node.?.next;
+    }
+
+    var encoded = std.array_list.Managed(u8).init(allocator);
+    defer encoded.deinit();
+    try rlp.serialize([]Log, allocator, log_list, &encoded);
+
+    var hash: [32]u8 = undefined;
+    std.crypto.hash.sha3.Keccak256.hash(encoded.items, &hash, .{});
     return hash;
 }
