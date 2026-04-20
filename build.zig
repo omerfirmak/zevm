@@ -216,6 +216,7 @@ pub fn build(b: *std.Build) void {
     const state_test_step = b.step("state-tests", "Run EVM state tests");
     const test_zevm_mod, const test_cs_mod = createZevmModule(b, target, optimize, b.path("test/committed_state.zig"), deps);
     const state_tests = b.addTest(.{
+        .name = "zevm-state-test",
         .root_module = b.createModule(.{
             .root_source_file = b.path("test/state_tests.zig"),
             .target = target,
@@ -236,10 +237,14 @@ pub fn build(b: *std.Build) void {
     state_tests.root_module.addImport("committed_state", test_cs_mod);
     state_tests.root_module.addImport("trie", trie_mod);
     state_tests.stack_size = 64 * 1024 * 1024;
+    b.installArtifact(state_tests);
     const run_state_tests = b.addRunArtifact(state_tests);
     run_state_tests.setCwd(b.path("."));
     if (b.option([]const u8, "state-test", "Path to a specific state test JSON file")) |path| {
         run_state_tests.setEnvironmentVariable("STATE_TEST", path);
+    }
+    if (b.option(bool, "trace", "Enable tracing")) |_| {
+        run_state_tests.setEnvironmentVariable("TRACE", "TRUE");
     }
     state_test_step.dependOn(&run_state_tests.step);
 }
