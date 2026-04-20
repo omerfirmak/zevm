@@ -28,4 +28,4 @@ jobs:
         run: curl -L https://github.com/ethereum/execution-spec-tests/releases/download/v5.4.0/fixtures_develop.tar.gz | tar -xz
 
       - name: Run state tests
-        run: zig build state-tests
+        run: zig build state-tests -Doptimize=ReleaseSafe
