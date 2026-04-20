@@ -1,6 +1,5 @@
 const std = @import("std");
 const ops = @import("ops.zig");
-const spec = @import("spec.zig");
 const types = @import("types");
 const storage = @import("storage.zig");
 const rlp = @import("rlp");
@@ -9,7 +8,8 @@ const Bytecode = @import("bytecode.zig").Bytecode;
 const Memory = @import("memory.zig").Memory;
 const State = @import("state.zig").State;
 const RoundedAllocator = @import("rounded_alloc.zig").RoundedAllocator;
-const Spec = spec.Spec;
+const Config = @import("config.zig").Config;
+const Spec = @import("spec.zig").Spec;
 
 const max_stack_size = 1024;
 
@@ -292,7 +292,7 @@ pub const EVM = struct {
         return .{ 0, 0 };
     }
 
-    pub fn process(self: *Self, comptime fork: Spec, state: *State) !i32 {
+    pub fn process(self: *Self, comptime cfg: Config, state: *State) !i32 {
         const msg = self.msg;
 
         if (self.effective_gas_price < self.context.basefee) {
@@ -312,7 +312,7 @@ pub const EVM = struct {
         }
 
         // EIP-7825: transaction gas limit cap
-        if (msg.gas_limit > fork.max_tx_gas) {
+        if (msg.gas_limit > cfg.fork.max_tx_gas) {
             return Errors.GasOverflow;
         }
 
@@ -325,7 +325,7 @@ pub const EVM = struct {
         }
 
         // EIP-3860: reject CREATE transactions with oversized initcode before any state changes
-        if (is_create and msg.calldata.len > 2 * fork.max_code_size) {
+        if (is_create and msg.calldata.len > 2 * cfg.fork.max_code_size) {
             return Errors.InitcodeSizeExceeded;
         }
 
@@ -342,13 +342,13 @@ pub const EVM = struct {
         // EIP-3607: reject transaction if sender has code (is a contract).
         // EIP-7702: relax this for accounts with a delegation designator — they remain EOAs.
         if (!std.mem.eql(u8, &caller_account.code_hash, &types.empty_code_hash)) {
-            const caller_code = state.get_code(caller_account.code_hash, fork);
+            const caller_code = state.get_code(caller_account.code_hash, cfg);
             if (!isDelegation(caller_code.bytes)) return Errors.SenderNotEOA;
         }
 
         // EIP-4844: blob transaction validation
         const blob_base_fee = blobBaseFee(self.context.excess_blob_gas, self.context.blob_base_fee_update_fraction);
-        const blob_gas, const blob_upfront = try self.validateAndPriceBlobTx(fork, blob_base_fee);
+        const blob_gas, const blob_upfront = try self.validateAndPriceBlobTx(cfg.fork, blob_base_fee);
 
         // EIP-1559: upfront balance check uses maxFeePerGas (worst-case gas cost) if set
         const balance_check_price = msg.max_fee_per_gas orelse self.effective_gas_price;
@@ -366,22 +366,22 @@ pub const EVM = struct {
         // EIP-4844: deduct blob gas fee (non-refundable, uses actual base fee not max)
         caller_account.balance -= @as(u256, @intCast(blob_gas)) * blob_base_fee;
 
-        const intrinsic_gas = if (is_create) fork.tx_create_gas else fork.tx_base_gas;
-        const calldata_gas, const floor_data_cost = try calldataCost(fork, msg.calldata);
-        const floor_cost = fork.tx_base_gas + floor_data_cost; // EIP-7623
-        const access_list_gas = try accessListGas(fork, msg.access_list);
+        const intrinsic_gas = if (is_create) cfg.fork.tx_create_gas else cfg.fork.tx_base_gas;
+        const calldata_gas, const floor_data_cost = try calldataCost(cfg.fork, msg.calldata);
+        const floor_cost = cfg.fork.tx_base_gas + floor_data_cost; // EIP-7623
+        const access_list_gas = try accessListGas(cfg.fork, msg.access_list);
         // EIP-3860: 2 gas per 32-byte initcode word, charged as intrinsic for CREATE txs
         const initcode_gas = if (is_create) initcodeWordCost(msg.calldata.len) else 0;
         // EIP-7702: PER_EMPTY_ACCOUNT_COST per authorization tuple
         const auth_list_len: i32 = if (msg.authorization_list) |al| @intCast(al.len) else 0;
-        const auth_gas = std.math.mul(i32, auth_list_len, fork.per_empty_account_cost) catch return Errors.OutOfGas;
+        const auth_gas = std.math.mul(i32, auth_list_len, cfg.fork.per_empty_account_cost) catch return Errors.OutOfGas;
         const total_intrinsic = intrinsic_gas + calldata_gas + access_list_gas + initcode_gas + auth_gas;
         if (msg.gas_limit < total_intrinsic or msg.gas_limit < floor_cost) {
             return Errors.OutOfGas;
         }
         const execution_gas_limit = msg.gas_limit - total_intrinsic;
 
-        inline for (precompile.Handlers(fork).table(), 0..) |handler, addr| {
+        inline for (precompile.Handlers(cfg.fork).table(), 0..) |handler, addr| {
             if (handler) |_| {
                 _ = self.accessAccount(addr);
             }
@@ -391,7 +391,7 @@ pub const EVM = struct {
 
         // EIP-7702: process authorization list, setting delegation designators on EOAs
         if (msg.authorization_list) |auth_list|
-            self.applyAuthList(fork, auth_list, state);
+            self.applyAuthList(cfg, auth_list, state);
 
         var remaining_gas = execution_gas_limit;
         if (msg.target) |target| {
@@ -400,12 +400,12 @@ pub const EVM = struct {
             // EIP-7702: if destination has a delegation, add delegate to accessed_addresses
             const target_code_hash = state.accounts.read(target).code_hash;
             if (!std.mem.eql(u8, &target_code_hash, &types.empty_code_hash)) {
-                const code = state.get_code(target_code_hash, fork);
+                const code = state.get_code(target_code_hash, cfg);
                 if (isDelegation(code.bytes)) _ = self.accessAccount(delegationAddress(code.bytes));
             }
 
             remaining_gas, _ = self.call(
-                fork,
+                cfg,
                 state,
                 msg.caller,
                 target,
@@ -420,7 +420,7 @@ pub const EVM = struct {
             );
         } else {
             remaining_gas, _ = self.create(
-                fork,
+                cfg,
                 state,
                 msg.caller,
                 msg.calldata,
@@ -460,7 +460,7 @@ pub const EVM = struct {
     // sub-frame without actually moving ETH (the original transfer already happened).
     pub fn call(
         self: *Self,
-        comptime fork: Spec,
+        comptime cfg: Config,
         state: *State,
         caller: u160,
         target: u160,
@@ -491,14 +491,14 @@ pub const EVM = struct {
         }
 
         var remaining_gas, var err = .{ initial_gas, @as(?Errors, null) };
-        if (fork.getPrecompile(code_addr)) |precompile_handler| {
+        if (cfg.fork.getPrecompile(code_addr)) |precompile_handler| {
             remaining_gas, err = self.callPrecompile(
                 precompile_handler,
                 initial_gas,
                 calldata,
                 return_buffer,
             );
-        } else if (resolveCode(code_addr, state, fork)) |code| {
+        } else if (resolveCode(code_addr, state, cfg)) |code| {
             const allocator = self.rounded_allocator.allocator();
             var frame = allocator.create(Frame) catch unreachable;
             defer allocator.destroy(frame);
@@ -543,12 +543,12 @@ pub const EVM = struct {
     // EIP-7702: return the EIP-2929 access cost for following a delegation on code_addr, also
     // marking the delegate as warm. Returns 0 if code_addr has no delegation designator.
     // Must be called from CALL/CALLCODE/DELEGATECALL/STATICCALL before forwarding gas.
-    pub fn delegationAccessCost(self: *Self, comptime fork: Spec, code_addr: u160, state: *State) i32 {
+    pub fn delegationAccessCost(self: *Self, comptime cfg: Config, code_addr: u160, state: *State) i32 {
         const code_hash = state.accounts.read(code_addr).code_hash;
         if (std.mem.eql(u8, &code_hash, &types.empty_code_hash)) return 0;
-        const raw = state.get_code(code_hash, fork);
+        const raw = state.get_code(code_hash, cfg);
         if (!isDelegation(raw.bytes)) return 0;
-        return self.accessAccountCost(fork, delegationAddress(raw.bytes));
+        return self.accessAccountCost(cfg.fork, delegationAddress(raw.bytes));
     }
 
     pub fn callPrecompile(
@@ -571,7 +571,7 @@ pub const EVM = struct {
     // Failures are never propagated — the caller pushes 0 instead of an address.
     pub fn create(
         self: *Self,
-        comptime fork: Spec,
+        comptime cfg: Config,
         state: *State,
         creator: u160,
         initcode: []const u8,
@@ -620,7 +620,7 @@ pub const EVM = struct {
 
         const allocator = self.rounded_allocator.allocator();
         // Compile and execute initcode
-        const initcode_bytecode = Bytecode.init(allocator, initcode, fork) catch unreachable;
+        const initcode_bytecode = Bytecode.init(allocator, initcode, cfg) catch unreachable;
         defer initcode_bytecode.deinit(allocator);
         var frame = allocator.create(Frame) catch unreachable;
         defer allocator.destroy(frame);
@@ -659,9 +659,9 @@ pub const EVM = struct {
         const deployed_len = self.return_data_size;
         self.return_data_size = 0;
         const deployed_code = self.return_buffer[0..deployed_len];
-        const deposit_gas: i32 = @intCast(deployed_len * fork.code_deposit_gas);
+        const deposit_gas: i32 = @intCast(deployed_len * cfg.fork.code_deposit_gas);
 
-        if (deployed_len > fork.max_code_size or // EIP-170
+        if (deployed_len > cfg.fork.max_code_size or // EIP-170
             (deployed_len > 0 and deployed_code[0] == 0xef) or // EIP-3541: reject EOF containers (0xEF prefix) in non-EOF deployments
             frame.gas < deposit_gas) // Charge code deposit gas
         {
@@ -675,7 +675,7 @@ pub const EVM = struct {
         var code_hash: [32]u8 = types.empty_code_hash;
         if (deployed_len > 0) {
             std.crypto.hash.sha3.Keccak256.hash(deployed_code, &code_hash, .{});
-            state.deploy_code(code_hash, deployed_code, fork);
+            state.deploy_code(code_hash, deployed_code, cfg);
         }
         state.accounts.update(new_addr).code_hash = code_hash;
         // created_accounts was registered before frame.enter(); SELFDESTRUCT may have marked it false — don't overwrite.
@@ -733,7 +733,7 @@ pub const EVM = struct {
     }
 
     // EIP-7702: process authorization list, setting delegation designators on EOAs
-    pub fn applyAuthList(self: *Self, comptime fork: Spec, auth_list: []const Authorization, state: *State) void {
+    pub fn applyAuthList(self: *Self, comptime cfg: Config, auth_list: []const Authorization, state: *State) void {
         for (auth_list) |auth| {
             // Skip if authority is zero (invalid signature recovery)
             if (auth.authority == 0) continue;
@@ -745,14 +745,14 @@ pub const EVM = struct {
             const auth_account = state.accounts.read(auth.authority);
             // Skip if authority already has non-delegation code
             if (!std.mem.eql(u8, &auth_account.code_hash, &types.empty_code_hash)) {
-                const existing = state.get_code(auth_account.code_hash, fork);
+                const existing = state.get_code(auth_account.code_hash, cfg);
                 if (!isDelegation(existing.bytes)) continue;
             }
             // Skip if nonce doesn't match
             if (auth_account.nonce != auth.nonce) continue;
             // Refund if account is non-empty (already had state)
             if (!auth_account.isEmptyAccount()) {
-                self.gas_refund += fork.per_empty_account_cost - fork.per_auth_base_cost;
+                self.gas_refund += cfg.fork.per_empty_account_cost - cfg.fork.per_auth_base_cost;
             }
             var auth_mutable = state.accounts.update(auth.authority);
             if (auth.address == 0) {
@@ -762,7 +762,7 @@ pub const EVM = struct {
                 const dg_hash = delegationCodeHash(auth.address);
                 if (state.code_storage.get(dg_hash) == null) {
                     const dg_code = delegationCode(auth.address);
-                    state.deploy_code(dg_hash, &dg_code, fork);
+                    state.deploy_code(dg_hash, &dg_code, cfg);
                 }
                 auth_mutable.code_hash = dg_hash;
             }
@@ -780,14 +780,14 @@ pub const EVM = struct {
 };
 
 // EIP-7702: resolve delegation designator one level deep. Pure lookup with no gas side effects.
-fn resolveCode(code_addr: u160, state: *State, comptime fork: Spec) ?Bytecode {
+fn resolveCode(code_addr: u160, state: *State, comptime cfg: Config) ?Bytecode {
     const code_hash = state.accounts.read(code_addr).code_hash;
     if (std.mem.eql(u8, &code_hash, &types.empty_code_hash)) return null;
-    const raw = state.get_code(code_hash, fork);
+    const raw = state.get_code(code_hash, cfg);
     if (!isDelegation(raw.bytes)) return raw;
     const dh = state.accounts.read(delegationAddress(raw.bytes)).code_hash;
     if (std.mem.eql(u8, &dh, &types.empty_code_hash)) return null;
-    return state.get_code(dh, fork);
+    return state.get_code(dh, cfg);
 }
 
 // EIP-3860: 2 gas per 32-byte initcode word (ceiling division)
