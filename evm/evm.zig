@@ -82,9 +82,13 @@ pub const Frame = struct {
     stack: [max_stack_size]u256 align(@sizeOf(u256)),
     memory: Memory,
 
-    pub fn enter(self: *Self) !void {
-        const entry_op: ops.Fn = @ptrCast(self.code.threaded_code[0]);
-        return entry_op(self.code.threaded_code[1..].ptr, self.gas, 0, self);
+    pub fn enter(self: *Self, comptime cfg: Config) !void {
+        return ops.Ops(cfg).entry(
+            self.code.threaded_code[0..].ptr,
+            self.gas,
+            0,
+            self,
+        );
     }
 
     pub fn safeSliceCalldata(self: *Self, index: u256, size: u64) []const u8 {
@@ -522,7 +526,7 @@ pub const EVM = struct {
             };
             defer frame.memory.deinit();
 
-            frame.enter() catch |frameErr| {
+            frame.enter(cfg) catch |frameErr| {
                 err = frameErr;
             };
             remaining_gas = frame.gas;
@@ -645,7 +649,7 @@ pub const EVM = struct {
         // Register before execution so SELFDESTRUCT in initcode can mark it destroyed.
         // Use write() (journaled) so the caller's revert can undo this entry if needed.
         _ = self.created_accounts.write(new_addr, .Created);
-        frame.enter() catch |err| {
+        frame.enter(cfg) catch |err| {
             if (err != Errors.Reverted) {
                 frame.gas = 0;
                 self.return_data_size = 0;

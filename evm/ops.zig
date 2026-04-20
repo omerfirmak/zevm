@@ -34,6 +34,10 @@ pub fn Ops(comptime cfg: Config) type {
                 @branchHint(.unlikely);
                 return evm.Errors.OutOfGas;
             }
+            if (cfg.tracing_enabled) {
+                tracing_hook(next_ip, gas, stack_head, frame);
+            }
+
             // It is safe to unwrap unconditionally here, jumpdest analysis should protect against a
             // null function pointer here.
             const next_op: Fn = @ptrCast(next_ip[0].?);
@@ -903,6 +907,10 @@ pub fn Ops(comptime cfg: Config) type {
             }.log;
         }
 
+        pub fn entry(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+            return next(next_ip, gas, stack_head, frame);
+        }
+
         // Constructs a jump table for the given spec
         pub fn table() [256]Fn {
             var t = std.enums.directEnumArrayDefault(Opcode, Fn, invalid, 256, .{
@@ -1004,6 +1012,25 @@ pub fn Ops(comptime cfg: Config) type {
             return t;
         }
     };
+}
+
+fn tracing_hook(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) void {
+    const log = struct {
+        depth: usize,
+        pc: u64,
+        gas: i32,
+        op: u8,
+        stack: []u256,
+    };
+    const bytecode = frame.code.bytes;
+    const pc = frame.code.programCounter(next_ip);
+    std.debug.print("{f}\n", .{std.json.fmt(log{
+        .depth = frame.depth,
+        .pc = pc,
+        .gas = gas,
+        .op = if (pc < bytecode.len) bytecode[pc] else @intFromEnum(Opcode.STOP),
+        .stack = frame.stack[0..stack_head],
+    }, .{})});
 }
 
 /// Reads `bytes` as the leading bytes of a big-endian value of `total_size` bytes (1–32),

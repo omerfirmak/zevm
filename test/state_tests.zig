@@ -166,7 +166,11 @@ test "state tests" {
     zevm.precompile.init();
 
     if (std.posix.getenv("STATE_TEST")) |path| {
-        try runStateTestFile(allocator, std.fs.cwd(), path, supported_forks[0..]);
+        if (std.posix.getenv("TRACE")) |_| {
+            try runStateTestFile(allocator, std.fs.cwd(), path, supported_forks[0..], true);
+        } else {
+            try runStateTestFile(allocator, std.fs.cwd(), path, supported_forks[0..], false);
+        }
         return;
     }
 
@@ -202,12 +206,12 @@ test "state tests" {
 }
 
 fn fileWorker(allocator: std.mem.Allocator, dir: std.fs.Dir, path: []const u8, forks: []const []const u8, any_failed: *std.atomic.Value(bool)) void {
-    runStateTestFile(allocator, dir, path, forks) catch {
+    runStateTestFile(allocator, dir, path, forks, false) catch {
         any_failed.store(true, .release);
     };
 }
 
-fn runStateTestFile(allocator: std.mem.Allocator, dir: std.fs.Dir, path: []const u8, forks: []const []const u8) !void {
+fn runStateTestFile(allocator: std.mem.Allocator, dir: std.fs.Dir, path: []const u8, forks: []const []const u8, comptime trace: bool) !void {
     const file = try dir.openFile(path, .{});
     defer file.close();
 
@@ -227,7 +231,7 @@ fn runStateTestFile(allocator: std.mem.Allocator, dir: std.fs.Dir, path: []const
         for (forks) |fork| {
             _ = test_case.post.map.get(fork) orelse continue;
 
-            const test_err = runStateTest(allocator, &test_case, fork);
+            const test_err = runStateTest(allocator, &test_case, fork, trace);
             print_mutex.lock();
             test_err catch |err| {
                 std.debug.print("{s}: FAIL: {}\n", .{ name, err });
@@ -415,7 +419,7 @@ fn computeStateRoot(
     return account_trie.rootHash();
 }
 
-fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []const u8) !void {
+fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []const u8, comptime trace: bool) !void {
     var fba = std.heap.FixedBufferAllocator.init(try gpa.alloc(u8, 1_024_000_000));
     defer gpa.free(fba.buffer);
     var logs_allocator = std.heap.FixedBufferAllocator.init(try gpa.alloc(u8, 16_000_000));
@@ -529,7 +533,7 @@ fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []con
 
         const tx_err: ?anyerror = if (vm.process(.{
             .fork = forkSpec,
-            .tracing_enabled = false,
+            .tracing_enabled = trace,
         }, &state)) |_| null else |err| err;
 
         if (post_entry.expectException) |expected| {
@@ -558,6 +562,9 @@ fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []con
         const actual_root = try computeStateRoot(gpa, &trie_fba, &state, &committed, &vm);
         if (!std.mem.eql(u8, &actual_root, post_entry.hash.value)) {
             return error.StateRootHashMismatch;
+        }
+        if (trace) {
+            std.debug.print("{{\"stateRoot\":\"0x{s}\"}}\n", .{std.fmt.bytesToHex(actual_root, .lower)});
         }
     }
 }
