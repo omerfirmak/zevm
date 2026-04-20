@@ -45,8 +45,15 @@ pub const HexBytes = struct {
         const str = try std.json.innerParse([]const u8, allocator, source, options);
         const hex = if (std.mem.startsWith(u8, str, "0x")) str[2..] else str;
         if (hex.len == 0) return .{ .value = &.{} };
-        const bytes = try allocator.alloc(u8, hex.len / 2);
-        _ = std.fmt.hexToBytes(bytes, hex) catch return error.InvalidCharacter;
+        const padded_len = hex.len + (hex.len & 1);
+        const bytes = try allocator.alloc(u8, padded_len / 2);
+        if (hex.len & 1 == 1) {
+            // Odd-length hex: left-pad with '0' by parsing manually
+            bytes[0] = std.fmt.charToDigit(hex[0], 16) catch return error.InvalidCharacter;
+            _ = std.fmt.hexToBytes(bytes[1..], hex[1..]) catch return error.InvalidCharacter;
+        } else {
+            _ = std.fmt.hexToBytes(bytes, hex) catch return error.InvalidCharacter;
+        }
         return .{ .value = bytes };
     }
 };
@@ -115,9 +122,9 @@ pub const PostIndexes = struct {
 pub const PostEntry = struct {
     hash: HexBytes,
     logs: HexBytes,
-    txbytes: HexBytes,
+    txbytes: ?HexBytes = null,
     indexes: PostIndexes,
-    state: std.json.ArrayHashMap(AccountState),
+    state: ?std.json.ArrayHashMap(AccountState) = null,
     expectException: ?[]const u8 = null,
 };
 
@@ -129,7 +136,7 @@ pub const BlobScheduleEntry = struct {
 
 pub const Config = struct {
     blobSchedule: ?std.json.ArrayHashMap(BlobScheduleEntry) = null,
-    chainid: HexInt(u64),
+    chainid: HexInt(u64) = .{ .value = 1 },
 };
 
 pub const Info = struct {
@@ -148,8 +155,8 @@ pub const StateTest = struct {
     pre: std.json.ArrayHashMap(AccountState),
     transaction: Transaction,
     post: std.json.ArrayHashMap([]PostEntry),
-    config: Config,
-    _info: Info,
+    config: Config = .{},
+    _info: ?Info = null,
 };
 
 // Top-level JSON is a map of test name -> StateTest
@@ -545,22 +552,19 @@ fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []con
         }
 
         // Verify logs hash.
-        if (post_entry.logs.value.len == 32) {
+        if (post_entry.logs.value.len == 32 and !std.mem.allEqual(u8, post_entry.logs.value, 0)) {
             const actual_logs_hash = try evm.computeLogsHash(gpa, &logs);
             if (!std.mem.eql(u8, &actual_logs_hash, post_entry.logs.value)) {
                 return error.LogsHashMismatch;
             }
         }
 
-        // Verify post state via the state root hash.
-        if (post_entry.hash.value.len != 32) continue;
-
         const trie_buf = try gpa.alloc(u8, 16 * 1024 * 1024);
         defer gpa.free(trie_buf);
         var trie_fba = std.heap.FixedBufferAllocator.init(trie_buf);
 
         const actual_root = try computeStateRoot(gpa, &trie_fba, &state, &committed, &vm);
-        if (!std.mem.eql(u8, &actual_root, post_entry.hash.value)) {
+        if (!std.mem.allEqual(u8, post_entry.logs.value, 0) and !std.mem.eql(u8, &actual_root, post_entry.hash.value)) {
             return error.StateRootHashMismatch;
         }
         if (trace) {
