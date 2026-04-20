@@ -527,7 +527,10 @@ fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []con
             &context,
         );
 
-        const tx_err: ?anyerror = if (vm.process(forkSpec, &state)) |_| null else |err| err;
+        const tx_err: ?anyerror = if (vm.process(.{
+            .fork = forkSpec,
+            .tracing_enabled = false,
+        }, &state)) |_| null else |err| err;
 
         if (post_entry.expectException) |expected| {
             const actual = tx_err orelse return error.ExpectedExceptionButSucceeded;
