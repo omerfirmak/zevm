@@ -170,7 +170,6 @@ test "state tests" {
     var gpa = std.heap.GeneralPurposeAllocator(.{ .thread_safe = true }){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
-    zevm.precompile.init();
 
     if (std.posix.getenv("STATE_TEST")) |path| {
         if (std.posix.getenv("TRACE")) |_| {

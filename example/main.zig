@@ -7,7 +7,6 @@ const spec = zevm.spec;
 const precompile = zevm.precompile;
 
 pub fn main() !void {
-    precompile.init();
     var gpa_state = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa_state.deinit();
     const allocator = gpa_state.allocator();
