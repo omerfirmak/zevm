@@ -59,11 +59,11 @@ pub const State = struct {
         self.transient_storage.revert(snapshot_ids.tstorage);
     }
 
-    pub fn get_code(self: *Self, hash: [32]u8, comptime cfg: Config) Bytecode {
+    pub fn get_code(self: *Self, hash: [32]u8, comptime cfg: Config) !Bytecode {
         if (self.code_storage.get(hash)) |b| {
             return b;
         }
-        const code = self.committed_state.code(hash);
+        const code = try self.committed_state.code(hash);
         self.deploy_code(hash, code, cfg);
         return self.code_storage.get(hash) orelse unreachable;
     }

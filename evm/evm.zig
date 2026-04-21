@@ -40,7 +40,7 @@ pub const Errors = error{
     EmptyAuthorizationList,
     CreateSetCodeTx,
     InvalidPrecompileInput,
-};
+} || @import("committed_state").Errors;
 
 pub const Context = struct {
     chainid: u64,
@@ -336,7 +336,7 @@ pub const EVM = struct {
         }
 
         _ = self.accessAccount(msg.caller);
-        var caller_account = state.accounts.update(msg.caller);
+        var caller_account = try state.accounts.update(msg.caller);
         if (caller_account.nonce < msg.nonce) {
             return Errors.NonceTooLow;
         } else if (caller_account.nonce > msg.nonce) {
@@ -348,7 +348,7 @@ pub const EVM = struct {
         // EIP-3607: reject transaction if sender has code (is a contract).
         // EIP-7702: relax this for accounts with a delegation designator — they remain EOAs.
         if (!std.mem.eql(u8, &caller_account.code_hash, &types.empty_code_hash)) {
-            const caller_code = state.get_code(caller_account.code_hash, cfg);
+            const caller_code = try state.get_code(caller_account.code_hash, cfg);
             if (!isDelegation(caller_code.bytes)) return Errors.SenderNotEOA;
         }
 
@@ -397,20 +397,20 @@ pub const EVM = struct {
 
         // EIP-7702: process authorization list, setting delegation designators on EOAs
         if (msg.authorization_list) |auth_list|
-            self.applyAuthList(cfg, auth_list, state);
+            try self.applyAuthList(cfg, auth_list, state);
 
         var remaining_gas = execution_gas_limit;
         if (msg.target) |target| {
             _ = self.accessAccount(target);
 
             // EIP-7702: if destination has a delegation, add delegate to accessed_addresses
-            const target_code_hash = state.accounts.read(target).code_hash;
+            const target_code_hash = (try state.accounts.read(target)).code_hash;
             if (!std.mem.eql(u8, &target_code_hash, &types.empty_code_hash)) {
-                const code = state.get_code(target_code_hash, cfg);
+                const code = try state.get_code(target_code_hash, cfg);
                 if (isDelegation(code.bytes)) _ = self.accessAccount(delegationAddress(code.bytes));
             }
 
-            remaining_gas, _ = self.call(
+            remaining_gas, _ = try self.call(
                 cfg,
                 state,
                 msg.caller,
@@ -425,7 +425,7 @@ pub const EVM = struct {
                 false,
             );
         } else {
-            remaining_gas, _ = self.create(
+            remaining_gas, _ = try self.create(
                 cfg,
                 state,
                 msg.caller,
@@ -449,13 +449,13 @@ pub const EVM = struct {
             remaining_gas = msg.gas_limit - floor_cost;
         }
 
-        state.accounts.update(msg.caller).balance += @as(u256, @intCast(remaining_gas)) * self.effective_gas_price;
+        (try state.accounts.update(msg.caller)).balance += @as(u256, @intCast(remaining_gas)) * self.effective_gas_price;
 
         // EIP-1559: coinbase receives only the tip; the base fee is burned
         const tip = self.effective_gas_price - self.context.basefee;
         const gas_used = msg.gas_limit - remaining_gas;
         if (tip > 0) {
-            state.accounts.update(self.context.coinbase).balance += @as(u256, @intCast(gas_used)) * tip;
+            (try state.accounts.update(self.context.coinbase)).balance += @as(u256, @intCast(gas_used)) * tip;
         }
         return gas_used;
     }
@@ -478,7 +478,7 @@ pub const EVM = struct {
         return_buffer: []u8,
         skip_value_transfer: bool,
         is_static: bool,
-    ) struct { i32, ?Errors } {
+    ) !struct { i32, ?Errors } {
         if (depth >= 1024) return .{ initial_gas, Errors.CallDepthExceeded };
 
         const state_snap = state.snapshot();
@@ -486,13 +486,13 @@ pub const EVM = struct {
 
         self.return_data_size = 0;
         if (!skip_value_transfer) {
-            var caller_account = state.accounts.update(caller);
+            var caller_account = try state.accounts.update(caller);
             if (caller_account.balance < value) {
                 return .{ initial_gas, Errors.NotEnoughFunds };
             }
             caller_account.balance -= value;
             if (value > 0) {
-                state.accounts.update(target).balance += value;
+                (try state.accounts.update(target)).balance += value;
             }
         }
 
@@ -504,7 +504,7 @@ pub const EVM = struct {
                 calldata,
                 return_buffer,
             );
-        } else if (resolveCode(code_addr, state, cfg)) |code| {
+        } else if (try resolveCode(code_addr, state, cfg)) |code| {
             const allocator = self.rounded_allocator.allocator();
             var frame = allocator.create(Frame) catch unreachable;
             defer allocator.destroy(frame);
@@ -549,10 +549,10 @@ pub const EVM = struct {
     // EIP-7702: return the EIP-2929 access cost for following a delegation on code_addr, also
     // marking the delegate as warm. Returns 0 if code_addr has no delegation designator.
     // Must be called from CALL/CALLCODE/DELEGATECALL/STATICCALL before forwarding gas.
-    pub fn delegationAccessCost(self: *Self, comptime cfg: Config, code_addr: u160, state: *State) i32 {
-        const code_hash = state.accounts.read(code_addr).code_hash;
+    pub fn delegationAccessCost(self: *Self, comptime cfg: Config, code_addr: u160, state: *State) !i32 {
+        const code_hash = (try state.accounts.read(code_addr)).code_hash;
         if (std.mem.eql(u8, &code_hash, &types.empty_code_hash)) return 0;
-        const raw = state.get_code(code_hash, cfg);
+        const raw = try state.get_code(code_hash, cfg);
         if (!isDelegation(raw.bytes)) return 0;
         return self.accessAccountCost(cfg.fork, delegationAddress(raw.bytes));
     }
@@ -585,11 +585,11 @@ pub const EVM = struct {
         initial_gas: i32,
         depth: usize,
         salt: ?u256,
-    ) struct { i32, u160 } {
+    ) !struct { i32, u160 } {
         // Depth/nonce/balance failures are "never started" — return all forwarded gas to caller.
         if (depth >= 1024) return .{ initial_gas, 0 };
 
-        const creator_account = state.accounts.read(creator);
+        const creator_account = try state.accounts.read(creator);
         const nonce = creator_account.nonce;
         // Nonce must not overflow (u64 range enforced at tx entry; sub-calls inherit that invariant)
         if (nonce >= std.math.maxInt(u64)) return .{ initial_gas, 0 };
@@ -604,23 +604,23 @@ pub const EVM = struct {
         _ = self.accessAccount(new_addr);
 
         // Increase creator nonce before the snapshot
-        var creator_acc = state.accounts.update(creator);
+        var creator_acc = try state.accounts.update(creator);
         creator_acc.nonce += 1;
 
         // Return data is always cleared when CREATE is entered, even on collision failure
         self.return_data_size = 0;
 
         // EIP-7610: fail on collision (non-zero nonce or existing code or existing storage)
-        const existing = state.accounts.read(new_addr);
+        const existing = try state.accounts.read(new_addr);
         if (existing.nonce != 0 or !std.mem.eql(u8, &existing.code_hash, &types.empty_code_hash) or !std.mem.eql(u8, &existing.storage_hash, &types.empty_root_hash)) return .{ 0, 0 };
 
         const state_snap = state.snapshot();
         const evm_snap = self.snapshot();
 
         // Commit value transfer
-        creator_acc = state.accounts.update(creator);
+        creator_acc = try state.accounts.update(creator);
         creator_acc.balance -= value;
-        const new_contract_acc = state.accounts.update(new_addr);
+        const new_contract_acc = try state.accounts.update(new_addr);
         new_contract_acc.nonce = 1; // EIP-161
         new_contract_acc.balance += value;
 
@@ -650,7 +650,7 @@ pub const EVM = struct {
 
         // Register before execution so SELFDESTRUCT in initcode can mark it destroyed.
         // Use write() (journaled) so the caller's revert can undo this entry if needed.
-        _ = self.created_accounts.write(new_addr, .Created);
+        _ = try self.created_accounts.write(new_addr, .Created);
         frame.enter(cfg) catch |err| {
             if (err != Errors.Reverted) {
                 frame.gas = 0;
@@ -683,7 +683,7 @@ pub const EVM = struct {
             std.crypto.hash.sha3.Keccak256.hash(deployed_code, &code_hash, .{});
             state.deploy_code(code_hash, deployed_code, cfg);
         }
-        state.accounts.update(new_addr).code_hash = code_hash;
+        (try state.accounts.update(new_addr)).code_hash = code_hash;
         // created_accounts was registered before frame.enter(); SELFDESTRUCT may have marked it false — don't overwrite.
         return .{ frame.gas, new_addr };
     }
@@ -713,7 +713,7 @@ pub const EVM = struct {
     }
 
     pub fn accessAccount(self: *Self, addr: u160) bool {
-        return !self.warm_accounts.writeNoClobber(addr, {});
+        return !(self.warm_accounts.writeNoClobber(addr, {}) catch unreachable);
     }
 
     pub fn accessAccountCost(self: *Self, comptime fork: Spec, addr: u160) i32 {
@@ -721,7 +721,7 @@ pub const EVM = struct {
     }
 
     pub fn accessSlot(self: *Self, addr: u160, slot: u256) bool {
-        return !self.warm_slots.writeNoClobber(.{ .address = addr, .slot = slot }, {});
+        return !(self.warm_slots.writeNoClobber(.{ .address = addr, .slot = slot }, {}) catch unreachable);
     }
 
     pub fn accessSlotCost(self: *Self, comptime fork: Spec, addr: u160, slot: u256) i32 {
@@ -739,7 +739,7 @@ pub const EVM = struct {
     }
 
     // EIP-7702: process authorization list, setting delegation designators on EOAs
-    pub fn applyAuthList(self: *Self, comptime cfg: Config, auth_list: []const Authorization, state: *State) void {
+    pub fn applyAuthList(self: *Self, comptime cfg: Config, auth_list: []const Authorization, state: *State) !void {
         for (auth_list) |auth| {
             // Skip if authority is zero (invalid signature recovery)
             if (auth.authority == 0) continue;
@@ -748,10 +748,10 @@ pub const EVM = struct {
             // EIP-7702 step 2: nonce in the tuple must be < 2**64-1
             if (auth.nonce >= std.math.maxInt(u64)) continue;
             _ = self.accessAccount(auth.authority);
-            const auth_account = state.accounts.read(auth.authority);
+            const auth_account = try state.accounts.read(auth.authority);
             // Skip if authority already has non-delegation code
             if (!std.mem.eql(u8, &auth_account.code_hash, &types.empty_code_hash)) {
-                const existing = state.get_code(auth_account.code_hash, cfg);
+                const existing = try state.get_code(auth_account.code_hash, cfg);
                 if (!isDelegation(existing.bytes)) continue;
             }
             // Skip if nonce doesn't match
@@ -760,7 +760,7 @@ pub const EVM = struct {
             if (!auth_account.isEmptyAccount()) {
                 self.gas_refund += cfg.fork.per_empty_account_cost - cfg.fork.per_auth_base_cost;
             }
-            var auth_mutable = state.accounts.update(auth.authority);
+            var auth_mutable = try state.accounts.update(auth.authority);
             if (auth.address == 0) {
                 // Reset: remove delegation, restore empty code hash
                 auth_mutable.code_hash = types.empty_code_hash;
@@ -778,7 +778,7 @@ pub const EVM = struct {
 
     pub fn markForDestruction(self: *Self, addr: u160) bool {
         if (self.created_accounts.dirties.getEntry(addr)) |_| {
-            _ = self.created_accounts.write(addr, .Selfdestructed);
+            _ = try self.created_accounts.write(addr, .Selfdestructed);
             return true;
         }
         return false;
@@ -786,14 +786,14 @@ pub const EVM = struct {
 };
 
 // EIP-7702: resolve delegation designator one level deep. Pure lookup with no gas side effects.
-fn resolveCode(code_addr: u160, state: *State, comptime cfg: Config) ?Bytecode {
-    const code_hash = state.accounts.read(code_addr).code_hash;
+fn resolveCode(code_addr: u160, state: *State, comptime cfg: Config) !?Bytecode {
+    const code_hash = (try state.accounts.read(code_addr)).code_hash;
     if (std.mem.eql(u8, &code_hash, &types.empty_code_hash)) return null;
-    const raw = state.get_code(code_hash, cfg);
+    const raw = try state.get_code(code_hash, cfg);
     if (!isDelegation(raw.bytes)) return raw;
-    const dh = state.accounts.read(delegationAddress(raw.bytes)).code_hash;
+    const dh = (try state.accounts.read(delegationAddress(raw.bytes))).code_hash;
     if (std.mem.eql(u8, &dh, &types.empty_code_hash)) return null;
-    return state.get_code(dh, cfg);
+    return try state.get_code(dh, cfg);
 }
 
 // EIP-3860: 2 gas per 32-byte initcode word (ceiling division)

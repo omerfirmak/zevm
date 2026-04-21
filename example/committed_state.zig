@@ -1,6 +1,10 @@
 const std = @import("std");
 const types = @import("types");
 
+pub const Errors = error{
+    NotFound,
+};
+
 // Example committed state that pre-funds a sender and deploys a contract.
 pub const CommittedState = struct {
     const sender: u160 = 0xdeadbeef;
@@ -14,7 +18,7 @@ pub const CommittedState = struct {
     };
     const code_hash: [32]u8 = [_]u8{ 0x13, 0x37 } ++ [_]u8{0x00} ** 30;
 
-    pub fn account(_: *const @This(), addr: u160) types.Account {
+    pub fn account(_: *const @This(), addr: u160) !types.Account {
         if (addr == sender) {
             return .{
                 .nonce = 0,
@@ -39,12 +43,12 @@ pub const CommittedState = struct {
         };
     }
 
-    pub fn storage(_: *const @This(), _: types.StorageLookup) u256 {
+    pub fn storage(_: *const @This(), _: types.StorageLookup) !u256 {
         return 0;
     }
 
-    pub fn code(_: *const @This(), hash: [32]u8) []const u8 {
+    pub fn code(_: *const @This(), hash: [32]u8) ![]const u8 {
         if (std.mem.eql(u8, &hash, &code_hash)) return &bytecode;
-        unreachable;
+        return Errors.NotFound;
     }
 };

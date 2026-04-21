@@ -86,7 +86,7 @@ fn runBenchmark(allocator: std.mem.Allocator, bench_def: BenchmarkDef, warmup: u
     var state = try state_mod.State.init(allocator, &committed_state, bench_def.bytecode_buf_size);
     defer state.deinit(allocator);
 
-    _ = state.accounts.write(BENCH_CALLER, .{
+    _ = try state.accounts.write(BENCH_CALLER, .{
         .nonce = 0,
         .balance = std.math.maxInt(u256),
         .code_hash = types.empty_code_hash,
@@ -97,7 +97,7 @@ fn runBenchmark(allocator: std.mem.Allocator, bench_def: BenchmarkDef, warmup: u
     std.crypto.hash.sha3.Keccak256.hash(bytecode, &code_hash, .{});
     state.deploy_code(code_hash, bytecode, bench_fork);
 
-    _ = state.accounts.write(BENCH_TARGET, .{
+    _ = try state.accounts.write(BENCH_TARGET, .{
         .nonce = 1,
         .balance = 0,
         .code_hash = code_hash,

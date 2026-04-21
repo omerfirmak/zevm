@@ -352,13 +352,13 @@ fn computeStateRoot(
     defer addresses.deinit();
     var pre_it = committed.account_map.keyIterator();
     while (pre_it.next()) |addr| {
-        if (vm.created_accounts.read(addr.*) != .Selfdestructed) {
+        if (try vm.created_accounts.read(addr.*) != .Selfdestructed) {
             try addresses.put(addr.*, {});
         }
     }
     var dirty_acct_it = state.accounts.dirties.keyIterator();
     while (dirty_acct_it.next()) |addr| {
-        if (vm.created_accounts.read(addr.*) != .Selfdestructed) {
+        if (try vm.created_accounts.read(addr.*) != .Selfdestructed) {
             try addresses.put(addr.*, {});
         }
     }
@@ -371,7 +371,7 @@ fn computeStateRoot(
     var addr_it = addresses.keyIterator();
     while (addr_it.next()) |addr_ptr| {
         const addr = addr_ptr.*;
-        const account = state.accounts.read(addr);
+        const account = try state.accounts.read(addr);
         if (account.isEmptyAccount()) continue;
         try acct_list.append(gpa, .{ .key = keccak256OfU160(addr), .addr = addr, .account = account });
     }
@@ -402,7 +402,7 @@ fn computeStateRoot(
         defer slot_list.deinit(gpa);
         var slot_it = slots.keyIterator();
         while (slot_it.next()) |slot_ptr| {
-            const val = state.contract_state.read(.{ .address = @as(u256, ae.addr), .slot = slot_ptr.* });
+            const val = try state.contract_state.read(.{ .address = @as(u256, ae.addr), .slot = slot_ptr.* });
             if (val != 0) try slot_list.append(gpa, .{ .key = keccak256OfU256(slot_ptr.*), .slot = slot_ptr.*, .value = val });
         }
         std.sort.pdq(SlotEntry, slot_list.items, {}, struct {

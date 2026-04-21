@@ -347,7 +347,7 @@ pub fn Ops(comptime cfg: Config) type {
         }
 
         pub fn selfbalance(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
-            const acc = frame.state.accounts.read(frame.target);
+            const acc = try frame.state.accounts.read(frame.target);
             const new_stack_head = try frame.stackPush(stack_head, acc.balance);
             return next(next_ip, gas - fork.constantGas(.SELFBALANCE), new_stack_head, frame);
         }
@@ -356,7 +356,7 @@ pub fn Ops(comptime cfg: Config) type {
             const new_stack_head, const args = try frame.stackPop(stack_head, 1, 1);
             const target: u160 = @truncate(args[0]);
             const dynamic_cost = frame.evm.accessAccountCost(fork, target);
-            args[0] = frame.state.accounts.read(target).balance;
+            args[0] = (try frame.state.accounts.read(target)).balance;
             return next(next_ip, gas - fork.constantGas(.BALANCE) - dynamic_cost, new_stack_head, frame);
         }
 
@@ -424,7 +424,7 @@ pub fn Ops(comptime cfg: Config) type {
             const target: u160 = @truncate(args[0]);
             const dynamic_cost = frame.evm.accessAccountCost(fork, target);
 
-            const account = frame.state.accounts.read(target);
+            const account = try frame.state.accounts.read(target);
             args[0] = if (account.isEmptyAccount()) 0 else std.mem.readInt(u256, &account.code_hash, .big);
             return next(next_ip, gas - fork.constantGas(.EXTCODEHASH) - dynamic_cost, new_stack_head, frame);
         }
@@ -434,9 +434,9 @@ pub fn Ops(comptime cfg: Config) type {
             const target: u160 = @truncate(args[0]);
             const dynamic_cost = frame.evm.accessAccountCost(fork, target);
 
-            const code_hash = frame.state.accounts.read(target).code_hash;
+            const code_hash = (try frame.state.accounts.read(target)).code_hash;
             if (!std.mem.eql(u8, &code_hash, &types.empty_code_hash)) {
-                args[0] = frame.state.get_code(code_hash, cfg).bytes.len;
+                args[0] = (try frame.state.get_code(code_hash, cfg)).bytes.len;
             } else {
                 args[0] = 0;
             }
@@ -449,10 +449,10 @@ pub fn Ops(comptime cfg: Config) type {
             const target: u160 = @truncate(args[3]);
             const dynamic_gas = mem.toWordSize(args[0]) * 3 + frame.evm.accessAccountCost(fork, target);
 
-            const code_hash = frame.state.accounts.read(target).code_hash;
+            const code_hash = (try frame.state.accounts.read(target)).code_hash;
             var slice: []const u8 = &[_]u8{};
             if (!std.mem.eql(u8, &code_hash, &types.empty_code_hash)) {
-                const bytecode = frame.state.get_code(code_hash, cfg);
+                const bytecode = try frame.state.get_code(code_hash, cfg);
                 slice = bytecode.safeSlice(args[1], @intCast(args[0]));
             }
             frame.memory.copyAndClearRemaining(@truncate(args[2]), @intCast(args[0]), slice);
@@ -578,7 +578,7 @@ pub fn Ops(comptime cfg: Config) type {
         pub fn sload(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 1, 1);
             const dynamic_gas = frame.evm.accessSlotCost(fork, frame.target, args[0]);
-            args[0] = frame.state.contract_state.read(.{ .address = frame.target, .slot = args[0] });
+            args[0] = try frame.state.contract_state.read(.{ .address = frame.target, .slot = args[0] });
             return next(next_ip, gas - fork.constantGas(.SLOAD) - dynamic_gas, new_stack_head, frame);
         }
 
@@ -634,7 +634,7 @@ pub fn Ops(comptime cfg: Config) type {
             const new_stack_head, const args = try frame.stackPop(stack_head, 2, 0);
             const lookup: types.StorageLookup = .{ .address = frame.target, .slot = args[1] };
             const is_warm = frame.evm.accessSlot(frame.target, args[1]);
-            const old_value, _ = frame.state.contract_state.write(lookup, args[0]);
+            const old_value, _ = try frame.state.contract_state.write(lookup, args[0]);
             // lazily record the pre-tx value on first write; subsequent writes don't update it
             const original_value_entry = frame.evm.pre_state.getOrPutAssumeCapacity(lookup);
             if (!original_value_entry.found_existing) {
@@ -648,14 +648,14 @@ pub fn Ops(comptime cfg: Config) type {
 
         pub fn tload(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 1, 1);
-            args[0] = frame.state.transient_storage.read(.{ .address = frame.target, .slot = args[0] });
+            args[0] = try frame.state.transient_storage.read(.{ .address = frame.target, .slot = args[0] });
             return next(next_ip, gas - fork.constantGas(.TLOAD), new_stack_head, frame);
         }
 
         pub fn tstore(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             if (frame.is_static) return evm.Errors.WriteProtection;
             const new_stack_head, const args = try frame.stackPop(stack_head, 2, 0);
-            _ = frame.state.transient_storage.write(.{ .address = frame.target, .slot = args[1] }, args[0]);
+            _ = try frame.state.transient_storage.write(.{ .address = frame.target, .slot = args[1] }, args[0]);
             return next(next_ip, gas - fork.constantGas(.TSTORE), new_stack_head, frame);
         }
 
@@ -709,7 +709,7 @@ pub fn Ops(comptime cfg: Config) type {
                     available_gas -= max_forwardable;
 
                     const initcode = frame.memory.slice(@truncate(offset), @intCast(size));
-                    const leftover_gas, const new_addr = frame.evm.create(
+                    const leftover_gas, const new_addr = try frame.evm.create(
                         cfg,
                         frame.state,
                         frame.target,
@@ -748,7 +748,7 @@ pub fn Ops(comptime cfg: Config) type {
                     const address_access_cost = frame.evm.accessAccountCost(fork, addr);
                     // EIP-7702: if addr has a delegation designator, charge EIP-2929 access cost
                     // for following it. Charged here (from caller's gas), not from forwarded gas.
-                    const delegation_cost = frame.evm.delegationAccessCost(cfg, addr, frame.state);
+                    const delegation_cost = try frame.evm.delegationAccessCost(cfg, addr, frame.state);
 
                     const call_caller: u160 = if (variant == .DELEGATECALL) frame.caller else frame.target;
                     const call_target: u160 = switch (variant) {
@@ -772,7 +772,7 @@ pub fn Ops(comptime cfg: Config) type {
                     else
                         0;
                     const stipend = if (positive_value_cost > 0) fork.call_stipend else 0;
-                    const target_account = frame.state.accounts.read(call_target);
+                    const target_account = try frame.state.accounts.read(call_target);
                     const positive_value_to_new_acc_cost = if (variant == .CALL and value_is_positive and target_account.isEmptyAccount())
                         fork.call_new_account_gas
                     else
@@ -790,7 +790,7 @@ pub fn Ops(comptime cfg: Config) type {
                     const calldata = frame.memory.slice(@truncate(args[3]), @intCast(args[2]));
                     const return_buffer = frame.memory.slice(@truncate(args[1]), @intCast(args[0]));
 
-                    const leftover_gas, const err = frame.evm.call(
+                    const leftover_gas, const err = try frame.evm.call(
                         cfg,
                         frame.state,
                         call_caller,
@@ -869,12 +869,12 @@ pub fn Ops(comptime cfg: Config) type {
             const access_cost = if (!is_warm) fork.cold_account_access_gas else 0;
 
             var empty_account_cost: i32 = 0;
-            var current_account = frame.state.accounts.update(frame.target);
+            var current_account = try frame.state.accounts.update(frame.target);
             const transferred_value = current_account.balance;
             const is_new_account = frame.evm.markForDestruction(frame.target);
             const should_transfer = transferred_value > 0 and (is_new_account or beneficiary != frame.target);
             if (should_transfer) {
-                var beneficiary_account = frame.state.accounts.update(beneficiary);
+                var beneficiary_account = try frame.state.accounts.update(beneficiary);
                 empty_account_cost = if (beneficiary_account.isEmptyAccount()) fork.selfdestruct_empty_target_gas else 0;
                 beneficiary_account.balance += transferred_value;
                 current_account.balance = 0;
