@@ -51,11 +51,10 @@ pub const Precompiles = enum(u9) {
 };
 
 var kzg_setup: kzg.Settings = .{};
+var kzg_once = std.once(loadKzgSetup);
 
-pub fn init() void {
-    const trusted_setup_txt = @import("trusted_setup").data;
-    kzg_setup = parseAndLoadTrustedSetup(trusted_setup_txt);
-    if (mcl.mclBn_init(mcl.mclBn_CurveSNARK1, mcl.MCLBN_COMPILED_TIME_VAR) != 0) unreachable;
+fn loadKzgSetup() void {
+    kzg_setup = parseAndLoadTrustedSetup(@import("trusted_setup").data);
 }
 
 const num_g1_points = 4096;
@@ -90,6 +89,11 @@ fn decodeHexLines(data: []const u8, start: usize, out: []u8, num_lines: usize, b
         if (pos < data.len and data[pos] == '\n') pos += 1;
     }
     return pos;
+}
+
+var mcl_once = std.once(mcl_init);
+fn mcl_init() void {
+    if (mcl.mclBn_init(mcl.mclBn_CurveSNARK1, mcl.MCLBN_COMPILED_TIME_VAR) != 0) unreachable;
 }
 
 const bls12_g1_discounts = [_]u16{
@@ -698,6 +702,7 @@ pub fn Handlers(comptime fork: Spec) type {
             const c_z: *const kzg.Bytes32 = @ptrCast(z[0..32]);
             const c_y: *const kzg.Bytes32 = @ptrCast(y[0..32]);
 
+            kzg_once.call();
             const valid = kzg_setup.verifyKzgProof(c_commitment, c_z, c_y, c_proof) catch return invalid_input;
             if (!valid) return invalid_input;
 
@@ -791,6 +796,7 @@ pub fn Handlers(comptime fork: Spec) type {
             return_buffer: []u8,
         ) Result {
             if (gas < fork.ecadd_gas) return out_of_gas;
+            mcl_once.call();
 
             var padded = [_]u8{0} ** 128;
             @memcpy(padded[0..@min(calldata.len, 128)], calldata[0..@min(calldata.len, 128)]);
@@ -815,6 +821,7 @@ pub fn Handlers(comptime fork: Spec) type {
             return_buffer: []u8,
         ) Result {
             if (gas < fork.ecmul_gas) return out_of_gas;
+            mcl_once.call();
 
             var padded = [_]u8{0} ** 96;
             @memcpy(padded[0..@min(calldata.len, 96)], calldata[0..@min(calldata.len, 96)]);
@@ -840,6 +847,7 @@ pub fn Handlers(comptime fork: Spec) type {
             return_buffer: []u8,
         ) Result {
             if (calldata.len % 192 != 0) return invalid_input;
+            mcl_once.call();
 
             const pair_len = calldata.len / 192;
             const cost = fork.ecpairing_gas +
