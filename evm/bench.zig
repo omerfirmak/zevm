@@ -4,6 +4,7 @@ const evm = @import("evm.zig");
 const types = @import("types");
 const state_mod = @import("state.zig");
 const spec = @import("spec.zig");
+const Config = @import("config.zig").Config;
 
 const BenchmarkDef = struct {
     name: []const u8,
@@ -18,10 +19,10 @@ const BenchmarkDef = struct {
 
 // Fork with elevated max_tx_gas to accommodate heavy benchmarks,
 // matching revm's `tx_gas_limit_cap = Some(u64::MAX)` config.
-const bench_fork = blk: {
+const bench_fork: Config = blk: {
     var f = spec.Osaka;
     f.max_tx_gas = std.math.maxInt(i32);
-    break :blk f;
+    break :blk .{ .fork = f, .tracing_enabled = false };
 };
 
 // Use non-precompile addresses (Ethereum precompiles occupy 0x01-0x0a).
@@ -39,8 +40,6 @@ const params = clap.parseParamsComptime(
 );
 
 pub fn main() !void {
-    @import("precompile.zig").init();
-
     var gpa_state = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa_state.deinit();
     const allocator = gpa_state.allocator();
