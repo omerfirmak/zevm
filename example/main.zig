@@ -37,6 +37,7 @@ pub fn main() !void {
         .excess_blob_gas = 0,
         .max_blobs_per_block = 9,
         .blob_base_fee_update_fraction = 5_000_000,
+        .ancestors = [_]u256{0} ** 256,
     };
 
     // Describe the transaction (legacy, CALL).
