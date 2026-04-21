@@ -71,6 +71,7 @@ pub const Env = struct {
     currentNumber: HexInt(u64),
     currentTimestamp: HexInt(u64),
     currentRandom: ?HexInt(u256) = null,
+    previousHash: ?HexInt(u256) = null,
     currentDifficulty: HexInt(u256),
     currentBaseFee: ?HexInt(u256) = null,
     currentExcessBlobGas: ?HexInt(u64) = null,
@@ -504,6 +505,10 @@ fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []con
         }
 
         const to: ?u160 = if (tx.to) |t| t.value else null; // HexAddress.value is ?u160; null JSON or empty string both yield null
+        var ancestors = [_]u256{0} ** 256;
+        if (test_case.env.previousHash) |previousHash| {
+            ancestors[0] = previousHash.value;
+        }
         const context = evm.Context{
             .chainid = 1,
             .number = test_case.env.currentNumber.value,
@@ -515,6 +520,7 @@ fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []con
             .excess_blob_gas = if (test_case.env.currentExcessBlobGas) |ebg| ebg.value else 0,
             .blob_base_fee_update_fraction = blob_update_fraction,
             .max_blobs_per_block = max_blobs,
+            .ancestors = ancestors,
         };
         var vm = try evm.EVM.init(
             allocator,

@@ -487,7 +487,13 @@ pub fn Ops(comptime cfg: Config) type {
 
         pub fn blockhash(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 1, 1);
-            args[0] = 0; // todo
+            const requested = args[0];
+            const current = frame.evm.context.number;
+            if (requested > std.math.maxInt(u64) or requested >= current or current - requested > 256) {
+                args[0] = 0;
+            } else {
+                args[0] = frame.evm.context.ancestors[current - @as(u64, @truncate(requested)) - 1];
+            }
             return next(next_ip, gas - fork.constantGas(.BLOCKHASH), new_stack_head, frame);
         }
 

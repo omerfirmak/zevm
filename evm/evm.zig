@@ -57,6 +57,8 @@ pub const Context = struct {
     excess_blob_gas: u64,
     max_blobs_per_block: u64,
     blob_base_fee_update_fraction: u64,
+
+    ancestors: [256]u256,
 };
 
 pub const Frame = struct {
