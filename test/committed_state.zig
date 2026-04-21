@@ -1,6 +1,10 @@
 const std = @import("std");
 const types = @import("types");
 
+pub const Errors = error{
+    NotFound,
+};
+
 pub const CommittedState = struct {
     account_map: std.AutoHashMap(u160, types.Account),
     storage_map: std.AutoHashMap(types.StorageLookup, u256),
@@ -20,7 +24,7 @@ pub const CommittedState = struct {
         self.code_map.deinit();
     }
 
-    pub fn account(self: *const @This(), addr: u160) types.Account {
+    pub fn account(self: *const @This(), addr: u160) !types.Account {
         return self.account_map.get(addr) orelse .{
             .nonce = 0,
             .balance = 0,
@@ -29,11 +33,11 @@ pub const CommittedState = struct {
         };
     }
 
-    pub fn storage(self: *const @This(), key: types.StorageLookup) u256 {
+    pub fn storage(self: *const @This(), key: types.StorageLookup) !u256 {
         return self.storage_map.get(key) orelse 0;
     }
 
-    pub fn code(self: *const @This(), hash: [32]u8) []const u8 {
-        return self.code_map.get(hash) orelse unreachable;
+    pub fn code(self: *const @This(), hash: [32]u8) ![]const u8 {
+        return self.code_map.get(hash) orelse Errors.NotFound;
     }
 };

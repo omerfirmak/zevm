@@ -34,14 +34,14 @@ pub fn AddressKeyedMap(comptime T: type) type {
 
 pub const CommittedAccount = struct {
     inner: *const CommittedState,
-    pub fn read(self: @This(), key: u160) types.Account {
+    pub fn read(self: @This(), key: u160) !types.Account {
         return self.inner.account(key);
     }
 };
 
 pub const CommittedStorage = struct {
     inner: *const CommittedState,
-    pub fn read(self: @This(), key: types.StorageLookup) u256 {
+    pub fn read(self: @This(), key: types.StorageLookup) !u256 {
         return self.inner.storage(key);
     }
 };
@@ -88,21 +88,21 @@ pub fn JournaledStorage(comptime Key: type, comptime Value: type, comptime Map: 
             self.journal.deinit(gpa);
         }
 
-        pub fn committedOrZero(self: *Self, key: Key) Value {
+        pub fn committedOrZero(self: *Self, key: Key) !Value {
             return if (Committed == void)
                 zero_value
             else
                 self.committed.read(key);
         }
 
-        pub fn read(self: *Self, key: Key) Value {
-            return self.dirties.get(key) orelse self.committedOrZero(key);
+        pub fn read(self: *Self, key: Key) !Value {
+            return self.dirties.get(key) orelse try self.committedOrZero(key);
         }
 
         // Writes a value and journals the old value for revert. Returns { old_value, was_present }.
-        pub fn write(self: *Self, key: Key, value: Value) struct { Value, bool } {
+        pub fn write(self: *Self, key: Key, value: Value) !struct { Value, bool } {
             const entry = self.dirties.getOrPutAssumeCapacity(key);
-            const old_value = if (entry.found_existing) entry.value_ptr.* else self.committedOrZero(key);
+            const old_value = if (entry.found_existing) entry.value_ptr.* else try self.committedOrZero(key);
             self.journal.appendAssumeCapacity(.{ .key = key, .old_value = old_value });
             entry.value_ptr.* = value;
             return .{ old_value, entry.found_existing };
@@ -110,19 +110,19 @@ pub fn JournaledStorage(comptime Key: type, comptime Value: type, comptime Map: 
 
         // Writes only if the key is not already present. Returns true if the key was new.
         // Used for access list tracking (EIP-2929): first access marks warm, subsequent calls no-op.
-        pub fn writeNoClobber(self: *Self, key: Key, value: Value) bool {
+        pub fn writeNoClobber(self: *Self, key: Key, value: Value) !bool {
             if (Committed != void) @compileError("writeNoClobber not supported with committed state");
             const entry = self.dirties.getOrPutAssumeCapacity(key);
             if (entry.found_existing) return false;
-            self.journal.appendAssumeCapacity(.{ .key = key, .old_value = self.committedOrZero(key) });
+            self.journal.appendAssumeCapacity(.{ .key = key, .old_value = try self.committedOrZero(key) });
             entry.value_ptr.* = value;
             return true;
         }
 
         // Returns a mutable pointer for in-place modification, journaling the pre-update value.
-        pub fn update(self: *Self, key: Key) *Value {
+        pub fn update(self: *Self, key: Key) !*Value {
             const entry = self.dirties.getOrPutAssumeCapacity(key);
-            if (!entry.found_existing) entry.value_ptr.* = self.committedOrZero(key);
+            if (!entry.found_existing) entry.value_ptr.* = try self.committedOrZero(key);
             self.journal.appendAssumeCapacity(.{ .key = key, .old_value = entry.value_ptr.* });
             return entry.value_ptr;
         }
