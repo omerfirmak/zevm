@@ -111,16 +111,19 @@ pub const Trie = struct {
         self.fba.end_index = self.fba_initial_index;
     }
 
-    pub fn update(self: *Self, key: []const u8, value: []const u8) !void {
-        std.debug.assert(value.len != 0);
+    pub fn update(self: *Self, keys: []const [32]u8, values: [][]const u8) !void {
+        std.debug.assert(keys.len != 0);
+        std.debug.assert(keys.len == values.len);
 
         var key_buf: [64]u8 = undefined;
-        const key_nibbles = writeHexKey(key, &key_buf);
+        const key_nibbles = writeHexKey(&keys[0], &key_buf);
         var path_buf: [64]u8 = undefined;
-        try self.insert(self.root, key_nibbles, value, .{
+        var remaining_keys: []const [32]u8 = keys[1..];
+        var remaining_values = values[1..];
+        try self.insert(self.root, key_nibbles, .{
             .buf = &path_buf,
             .len = 0,
-        });
+        }, values[0], &key_buf, &remaining_keys, &remaining_values);
     }
 
     pub fn rootHash(self: *Self) ![32]u8 {
@@ -129,10 +132,22 @@ pub const Trie = struct {
         return self.root.hashed.data;
     }
 
-    fn insert(self: *Self, node: *Node, key: []const u8, value: []const u8, path: Path) !void {
+    fn insert(
+        self: *Self,
+        node: *Node,
+        key: []const u8,
+        path: Path,
+        value: []const u8,
+
+        // rest of the updates
+        key_buf: *[64]u8,
+        keys: *[]const [32]u8,
+        values: *[][]const u8,
+    ) anyerror!void {
         switch (node.*) {
             .empty => {
                 node.* = Node.Leaf.init(key, value);
+                if (keys.*.len > 0) _ = writeHexKey(&keys.*[0], key_buf);
             },
             .branch => |*branch| {
                 const idx = key[0];
@@ -153,8 +168,9 @@ pub const Trie = struct {
 
                 if (branch.children[idx] == null) {
                     branch.children[idx] = try self.createLeaf(key[1..], value);
+                    if (keys.*.len > 0) _ = writeHexKey(&keys.*[0], key_buf);
                 } else {
-                    try self.insert(branch.children[idx].?, key[1..], value, path.append(key[0]));
+                    try self.insert(branch.children[idx].?, key[1..], path.append(key[0]), value, key_buf, keys, values);
                 }
             },
             .ext => |*ext| {
@@ -163,47 +179,42 @@ pub const Trie = struct {
 
                 if (diff_idx == ext.key_len) {
                     // Full match — recurse into child.
-                    try self.insert(
-                        ext.child,
-                        key[diff_idx..],
-                        value,
-                        path.appendSlice(key[0..diff_idx]),
-                    );
-                    return;
-                }
-
-                // Keys diverge at diff_idx. Save the original subtree,
-                // hashing it immediately since no more keys will enter it.
-                var n: *Node = undefined;
-                if (diff_idx < ext.key_len - 1) {
-                    // Break before the last byte: wrap in intermediate extension.
-                    n = try self.allocator.create(Node);
-                    n.* = Node.Extension.init(ext.key[diff_idx + 1 .. ext.key_len], ext.child);
-                    try self.hash(n, path.appendSlice(ext.key[0 .. diff_idx + 1]));
+                    try self.insert(ext.child, key[diff_idx..], path.appendSlice(key[0..diff_idx]), value, key_buf, keys, values);
                 } else {
-                    // Break at the last byte: reuse child directly.
-                    n = ext.child;
-                    try self.hash(n, path.appendSlice(ext.key[0..ext.key_len]));
-                }
+                    // Keys diverge at diff_idx. Save the original subtree,
+                    // hashing it immediately since no more keys will enter it.
+                    var n: *Node = undefined;
+                    if (diff_idx < ext.key_len - 1) {
+                        // Break before the last byte: wrap in intermediate extension.
+                        n = try self.allocator.create(Node);
+                        n.* = Node.Extension.init(ext.key[diff_idx + 1 .. ext.key_len], ext.child);
+                        try self.hash(n, path.appendSlice(ext.key[0 .. diff_idx + 1]));
+                    } else {
+                        // Break at the last byte: reuse child directly.
+                        n = ext.child;
+                        try self.hash(n, path.appendSlice(ext.key[0..ext.key_len]));
+                    }
 
-                // Create the branch that represents the divergence point.
-                var p: *Node.Branch = undefined;
-                if (diff_idx == 0) {
-                    // Convert this node to a branch.
-                    node.* = Node.Branch.init();
-                    p = &node.branch;
-                } else {
-                    // Keep as ext with truncated key; insert branch child.
-                    ext.child = try self.allocator.create(Node);
-                    ext.child.* = Node.Branch.init();
-                    p = &ext.child.branch;
-                    ext.key_len = @intCast(diff_idx);
-                }
+                    // Create the branch that represents the divergence point.
+                    var p: *Node.Branch = undefined;
+                    if (diff_idx == 0) {
+                        // Convert this node to a branch.
+                        node.* = Node.Branch.init();
+                        p = &node.branch;
+                    } else {
+                        // Keep as ext with truncated key; insert branch child.
+                        ext.child = try self.allocator.create(Node);
+                        ext.child.* = Node.Branch.init();
+                        p = &ext.child.branch;
+                        ext.key_len = @intCast(diff_idx);
+                    }
 
-                const o = try self.createLeaf(key[diff_idx + 1 ..], value);
-                const new_idx = key[diff_idx];
-                p.children[orig_idx] = n;
-                p.children[new_idx] = o;
+                    const o = try self.createLeaf(key[diff_idx + 1 ..], value);
+                    const new_idx = key[diff_idx];
+                    p.children[orig_idx] = n;
+                    p.children[new_idx] = o;
+                    if (keys.*.len > 0) _ = writeHexKey(&keys.*[0], key_buf);
+                }
             },
             .leaf => |leaf| {
                 const diff_idx = getDiffIndex(leaf.key[0..leaf.key_len], key);
@@ -230,9 +241,36 @@ pub const Trie = struct {
                 // Insert the new value.
                 const new_idx = key[diff_idx];
                 p.children[new_idx] = try self.createLeaf(key[diff_idx + 1 ..], value);
+                if (keys.*.len > 0) _ = writeHexKey(&keys.*[0], key_buf);
             },
             .hashed => unreachable,
         }
+
+        return self.tailInsert(node, key, path, value, key_buf, keys, values);
+    }
+
+    inline fn tailInsert(
+        self: *Self,
+        node: *Node,
+        _: []const u8,
+        path: Path,
+        _: []const u8,
+        key_buf: *[64]u8,
+        keys: *[]const [32]u8,
+        values: *[][]const u8,
+    ) anyerror!void {
+        if (keys.*.len == 0) return;
+
+        const next_key = key_buf[0 .. keys.*[0].len * 2];
+        if (!std.mem.startsWith(u8, next_key, path.slice())) return;
+
+        const next_value = values.*[0];
+        keys.* = keys.*[1..];
+        values.* = values.*[1..];
+
+        return @call(.always_tail, Trie.insert, .{
+            self, node, next_key[path.len..], path, next_value, key_buf, keys, values,
+        });
     }
 
     fn createLeaf(self: *Self, key: []const u8, value: []const u8) !*Node {
@@ -366,22 +404,24 @@ test "this-file" {
 }
 
 fn verifyCase(cases: []const struct { k: []const u8, v: []const u8 }, expected_hex: *const [64]u8) !void {
-    const buf = try std.testing.allocator.alloc(u8, 1024 * 1024);
+    const buf = try std.testing.allocator.alloc(u8, 4 * 1024 * 1024);
     defer std.testing.allocator.free(buf);
     var fba = std.heap.FixedBufferAllocator.init(buf);
-    var trie = try Trie.init(&fba);
-    defer trie.deinit();
 
-    for (cases) |c| {
-        var key_buf: [32]u8 = undefined;
-        const key = std.fmt.hexToBytes(&key_buf, c.k) catch unreachable;
-        try trie.update(key, c.v);
+    var keys: [16][32]u8 = std.mem.zeroes([16][32]u8);
+    var vals: [16][]const u8 = undefined;
+    for (cases, 0..) |c, i| {
+        _ = std.fmt.hexToBytes(keys[i][0 .. c.k.len / 2], c.k) catch unreachable;
+        vals[i] = c.v;
     }
+
+    var trie = try Trie.init(&fba);
+    try trie.update(keys[0..cases.len], vals[0..cases.len]);
+    const root = try trie.rootHash();
+    trie.deinit();
 
     var expected: [32]u8 = undefined;
     _ = std.fmt.hexToBytes(&expected, expected_hex) catch unreachable;
-
-    const root = try trie.rootHash();
     try std.testing.expectEqualSlices(u8, &expected, &root);
 }
 
@@ -401,7 +441,7 @@ test "three leaves in branch" {
         .{ .k = "00", .v = "v_______________________0___0" },
         .{ .k = "70", .v = "v_______________________0___1" },
         .{ .k = "f0", .v = "v_______________________0___2" },
-    }, "9e3a01bd8d43efb8e9d4b5506648150b8e3ed1caea596f84ee28e01a72635470");
+    }, "e28f9a2712908cae0bc9d3399ef4244af6ce6fd3ed29ed158412b990aa925082");
 }
 
 test "nested extensions and branches" {
@@ -409,7 +449,7 @@ test "nested extensions and branches" {
         .{ .k = "10cc", .v = "v_______________________1___0" },
         .{ .k = "e1fc", .v = "v_______________________1___1" },
         .{ .k = "eefc", .v = "v_______________________1___2" },
-    }, "d789567559fd76fe5b7d9cc42f3750f942502ac1c7f2a466e2f690ec4b6c2a7c");
+    }, "40d58dabb3a3ec6d9f2f62606990f5563cb38d0c4c20507257d3f6c49367f201");
 }
 
 test "shared prefix with branch" {
@@ -417,7 +457,7 @@ test "shared prefix with branch" {
         .{ .k = "baac", .v = "v_______________________2___0" },
         .{ .k = "bbac", .v = "v_______________________2___1" },
         .{ .k = "dacc", .v = "v_______________________2___2" },
-    }, "9bcfc5b220a27328deb9dc6ee2e3d46c9ebc9c69e78acda1fa2c7040602c63ca");
+    }, "059e6351589f8306c3e97cd313168cbb867f857236f18e266a5064bc666f7524");
 }
 
 test "ext split at different depths" {
@@ -425,7 +465,7 @@ test "ext split at different depths" {
         .{ .k = "1456711c", .v = "v_______________________4___0" },
         .{ .k = "1456733c", .v = "v_______________________4___1" },
         .{ .k = "30cccccc", .v = "v_______________________4___2" },
-    }, "3780ce111f98d15751dfde1eb21080efc7d3914b429e5c84c64db637c55405b3");
+    }, "aa6f90becd41c8edec13e99af14bcdd64cd28da3ac1edb5ad9bcd36e4da1c8e5");
 }
 
 test "branch diverge at first nibble" {
@@ -433,7 +473,7 @@ test "branch diverge at first nibble" {
         .{ .k = "123d", .v = "x___________________________0" },
         .{ .k = "123e", .v = "x___________________________1" },
         .{ .k = "2aaa", .v = "x___________________________2" },
-    }, "f869b40e0c55eace1918332ef91563616fbf0755e2b946119679f7ef8e44b514");
+    }, "1b7001da4abae619fa081532f1f3183b803c29ecc8e7305d735dfa435fffd6e2");
 }
 
 test "four keys with shared and divergent prefixes" {
@@ -442,7 +482,7 @@ test "four keys with shared and divergent prefixes" {
         .{ .k = "1234da", .v = "x___________________________1" },
         .{ .k = "1234ea", .v = "x___________________________2" },
         .{ .k = "1234fa", .v = "x___________________________3" },
-    }, "65bb3aafea8121111d693ffe34881c14d27b128fd113fa120961f251fe28428d");
+    }, "c93963b6dab2d3a5f6052070687df38c2aa08df758c716f4c65e9095a6a475ab");
 }
 
 test "branch with short values" {
@@ -451,7 +491,7 @@ test "branch with short values" {
         .{ .k = "80", .v = "b" },
         .{ .k = "ee", .v = "c" },
         .{ .k = "ff", .v = "d" },
-    }, "bd5a3584d271d459bd4eb95247b2fc88656b3671b60c1125ffe7bc0b689470d0");
+    }, "c2fca715cf800ab60024a4e44a861b9d729868d67501e8a91d6cad5ea9d03751");
 }
 
 test "ext to branch with growing values" {
@@ -463,7 +503,7 @@ test "ext to branch with growing values" {
         .{ .k = "a4", .v = "e" },
         .{ .k = "a5", .v = "f" },
         .{ .k = "a6", .v = "g" },
-    }, "bee629dd27a40772b2e1a67ec6db270d26acdf8d3b674dfae27866ad6ae1f48b");
+    }, "ad7e9543077be1e3283020c5c364727c4da3630887ac47fd12ba4a424a4ae5b8");
 }
 
 test "branch short then long values" {
@@ -472,7 +512,7 @@ test "branch short then long values" {
         .{ .k = "b002", .v = "v2" },
         .{ .k = "c003", .v = "v___________________________3" },
         .{ .k = "d004", .v = "v___________________________4" },
-    }, "36e60ecb86b9626165e1c6543c42ecbe4d83bca58e8e1124746961511fce362a");
+    }, "7d7ebfde2618ce55941dc997373a3b8af10d2bd2a47f06ac4d8aaaaaec7c9bed");
 }
 
 test "ext to branch short then long values" {
@@ -481,7 +521,7 @@ test "ext to branch short then long values" {
         .{ .k = "8004", .v = "v2" },
         .{ .k = "8008", .v = "v___________________________3" },
         .{ .k = "800d", .v = "v___________________________4" },
-    }, "1cad1fdaab1a6fa95d7b780fd680030e423eb76669971368ba04797a8d9cdfc9");
+    }, "4c1c5549c4f5389e28c6a559adebdab319860964b256eaed37b89619bb703b58");
 }
 
 test "31-byte children at embedding threshold" {
@@ -489,5 +529,5 @@ test "31-byte children at embedding threshold" {
         .{ .k = "000001", .v = "ZZZZZZZZZ" },
         .{ .k = "000002", .v = "Y" },
         .{ .k = "000003", .v = "XXXXXXXXXXXXXXXXXXXXXXXXXXXX" },
-    }, "962c0fffdeef7612a4f7bff1950d67e3e81c878e48b9ae45b3b374253b050bd8");
+    }, "d7070f9ad912463b433a562a2328694fdd4cb75d4f5ed452fe0d9fc600d38f2a");
 }
