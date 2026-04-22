@@ -399,10 +399,6 @@ fn hexToCompact(hex: []u8) []u8 {
     return hex[0..bin_len];
 }
 
-test "this-file" {
-    std.testing.refAllDeclsRecursive(@This());
-}
-
 fn verifyCase(cases: []const struct { k: []const u8, v: []const u8 }, expected_hex: *const [64]u8) !void {
     const buf = try std.testing.allocator.alloc(u8, 4 * 1024 * 1024);
     defer std.testing.allocator.free(buf);

@@ -163,28 +163,28 @@ pub const StateTest = struct {
 // Top-level JSON is a map of test name -> StateTest
 pub const StateTestFile = std.json.ArrayHashMap(StateTest);
 
-var print_mutex: std.Thread.Mutex = .{};
-
 test "state tests" {
     const supported_forks = [_][]const u8{"Osaka"};
 
-    var gpa = std.heap.GeneralPurposeAllocator(.{ .thread_safe = true }){};
+    var gpa = std.heap.DebugAllocator(.{ .thread_safe = true }){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
+    const io = std.testing.io;
 
-    if (std.posix.getenv("STATE_TEST")) |path| {
-        if (std.posix.getenv("TRACE")) |_| {
-            try runStateTestFile(allocator, std.fs.cwd(), path, supported_forks[0..], true);
+    if (std.c.getenv("STATE_TEST")) |cpath| {
+        const path = std.mem.span(cpath);
+        if (std.c.getenv("TRACE")) |_| {
+            try runStateTestFile(io, allocator, std.Io.Dir.cwd(), path, supported_forks[0..], true);
         } else {
-            try runStateTestFile(allocator, std.fs.cwd(), path, supported_forks[0..], false);
+            try runStateTestFile(io, allocator, std.Io.Dir.cwd(), path, supported_forks[0..], false);
         }
         return;
     }
 
-    var dir = try std.fs.cwd().openDir("fixtures/state_tests", .{ .iterate = true });
-    defer dir.close();
+    var dir = try std.Io.Dir.cwd().openDir(io, "fixtures/state_tests", .{ .iterate = true });
+    defer dir.close(io);
 
-    var paths = std.ArrayListUnmanaged([]u8){};
+    var paths: std.ArrayListUnmanaged([]u8) = .empty;
     defer {
         for (paths.items) |p| allocator.free(p);
         paths.deinit(allocator);
@@ -192,7 +192,7 @@ test "state tests" {
     {
         var walker = try dir.walk(allocator);
         defer walker.deinit();
-        while (try walker.next()) |entry| {
+        while (try walker.next(io)) |entry| {
             if (entry.kind != .file) continue;
             if (!std.mem.endsWith(u8, entry.path, ".json")) continue;
             try paths.append(allocator, try allocator.dupe(u8, entry.path));
@@ -200,29 +200,28 @@ test "state tests" {
     }
 
     var any_failed = std.atomic.Value(bool).init(false);
-    var pool: std.Thread.Pool = undefined;
-    try pool.init(.{ .allocator = allocator });
-    defer pool.deinit();
-    var wg = std.Thread.WaitGroup{};
+    var pool: std.Io.Group = .init;
     for (paths.items) |path| {
-        pool.spawnWg(&wg, fileWorker, .{ allocator, dir, path, supported_forks[0..], &any_failed });
+        pool.async(io, fileWorker, .{ io, allocator, dir, path, supported_forks[0..], &any_failed });
     }
-    pool.waitAndWork(&wg);
+    try pool.await(io);
 
     if (any_failed.load(.acquire)) return error.StateTestFailed;
 }
 
-fn fileWorker(allocator: std.mem.Allocator, dir: std.fs.Dir, path: []const u8, forks: []const []const u8, any_failed: *std.atomic.Value(bool)) void {
-    runStateTestFile(allocator, dir, path, forks, false) catch {
+fn fileWorker(io: std.Io, allocator: std.mem.Allocator, dir: std.Io.Dir, path: []const u8, forks: []const []const u8, any_failed: *std.atomic.Value(bool)) void {
+    runStateTestFile(io, allocator, dir, path, forks, false) catch {
         any_failed.store(true, .release);
     };
 }
 
-fn runStateTestFile(allocator: std.mem.Allocator, dir: std.fs.Dir, path: []const u8, forks: []const []const u8, comptime trace: bool) !void {
-    const file = try dir.openFile(path, .{});
-    defer file.close();
+fn runStateTestFile(io: std.Io, allocator: std.mem.Allocator, dir: std.Io.Dir, path: []const u8, forks: []const []const u8, comptime trace: bool) !void {
+    const file = try dir.openFile(io, path, .{});
+    defer file.close(io);
 
-    const contents = try file.readToEndAlloc(allocator, 128 * 1024 * 1024);
+    var buf: [1024]u8 = undefined;
+    var reader = file.reader(io, &buf);
+    const contents = try reader.interface.allocRemaining(allocator, .unlimited);
     defer allocator.free(contents);
 
     const parsed = std.json.parseFromSlice(StateTestFile, allocator, contents, .{
@@ -239,12 +238,10 @@ fn runStateTestFile(allocator: std.mem.Allocator, dir: std.fs.Dir, path: []const
             _ = test_case.post.map.get(fork) orelse continue;
 
             const test_err = runStateTest(allocator, &test_case, fork, trace);
-            print_mutex.lock();
             test_err catch |err| {
                 std.debug.print("{s}: FAIL: {}\n", .{ name, err });
                 any_failed = true;
             };
-            print_mutex.unlock();
         }
     }
     if (any_failed) return error.StateTestFailed;
@@ -442,11 +439,6 @@ fn computeStateRoot(
 }
 
 fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []const u8, comptime trace: bool) !void {
-    var fba = std.heap.FixedBufferAllocator.init(try gpa.alloc(u8, 1_024_000_000));
-    defer gpa.free(fba.buffer);
-    var logs_allocator = std.heap.FixedBufferAllocator.init(try gpa.alloc(u8, 16_000_000));
-    defer gpa.free(logs_allocator.buffer);
-    var logs: std.DoublyLinkedList = .{};
     const tx = test_case.transaction;
     const forkSpec = spec.Osaka;
 
@@ -493,14 +485,19 @@ fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []con
     defer if (tx.authorizationList != null) gpa.free(auth_list.?);
 
     for (post_entries) |post_entry| {
+        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        defer arena.deinit();
+        var logs_allocator = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        defer logs_allocator.deinit();
+        var logs: std.DoublyLinkedList = .{};
+
         // Build committed state from pre-state
         var committed = try buildCommittedState(gpa, test_case.pre);
         defer committed.deinit();
 
-        var state = try state_mod.State.init(fba.allocator(), &committed, 10_000_000);
-        defer state.deinit(fba.allocator());
-
-        const allocator = fba.allocator();
+        const arena_allocator = arena.allocator();
+        var state = try state_mod.State.init(arena_allocator, &committed, 10_000_000);
+        defer state.deinit(arena_allocator);
 
         const gas_limit = tx.gasLimit[post_entry.indexes.gas].value;
         const value = tx.value[post_entry.indexes.value].value;
@@ -511,11 +508,17 @@ fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []con
             if (post_entry.indexes.data < als.len) als[post_entry.indexes.data] else &.{}
         else
             &.{};
-        const access_list = try allocator.alloc(evm.AccessListEntry, raw_al.len);
+        const access_list = try gpa.alloc(evm.AccessListEntry, raw_al.len);
+        var al_count: usize = 0;
+        defer {
+            for (access_list[0..al_count]) |entry| gpa.free(entry.storage_keys);
+            gpa.free(access_list);
+        }
         for (raw_al, access_list) |src, *dst| {
-            const keys = try allocator.alloc(u256, src.storageKeys.len);
+            const keys = try gpa.alloc(u256, src.storageKeys.len);
             for (src.storageKeys, keys) |k, *out| out.* = k.value;
             dst.* = .{ .address = src.address.value, .storage_keys = keys };
+            al_count += 1;
         }
 
         const to: ?u160 = if (tx.to) |t| t.value else null; // HexAddress.value is ?u160; null JSON or empty string both yield null
@@ -537,7 +540,7 @@ fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []con
             .ancestors = ancestors,
         };
         var vm = try evm.EVM.init(
-            allocator,
+            arena_allocator,
             logs_allocator.allocator(),
             &logs,
             &.{
