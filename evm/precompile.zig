@@ -50,9 +50,28 @@ pub const Precompiles = enum(u9) {
     p256verify = 0x100,
 };
 
-var kzg_setup: kzg.Settings = .{};
-var kzg_once = std.once(loadKzgSetup);
+fn SpinLockOnce(comptime f: fn () void) type {
+    const NotInitialized: usize = 0;
+    const InProgress: usize = 1;
+    const Done: usize = 2;
 
+    return struct {
+        cur_state: std.atomic.Value(usize) = .init(NotInitialized),
+
+        pub fn call(self: *@This()) void {
+            if (self.cur_state.load(.acquire) == Done) return;
+            if (self.cur_state.cmpxchgStrong(NotInitialized, InProgress, .acq_rel, .acquire) == null) {
+                f();
+                self.cur_state.store(Done, .release);
+                return;
+            }
+            while (self.cur_state.load(.acquire) != Done) std.atomic.spinLoopHint();
+        }
+    };
+}
+
+var kzg_setup: kzg.Settings = .{};
+var kzg_once: SpinLockOnce(loadKzgSetup) = .{};
 fn loadKzgSetup() void {
     kzg_setup = parseAndLoadTrustedSetup(@import("trusted_setup").data);
 }
@@ -91,7 +110,7 @@ fn decodeHexLines(data: []const u8, start: usize, out: []u8, num_lines: usize, b
     return pos;
 }
 
-var mcl_once = std.once(mcl_init);
+var mcl_once: SpinLockOnce(mcl_init) = .{};
 fn mcl_init() void {
     if (mcl.mclBn_init(mcl.mclBn_CurveSNARK1, mcl.MCLBN_COMPILED_TIME_VAR) != 0) unreachable;
 }
