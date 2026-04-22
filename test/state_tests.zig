@@ -381,9 +381,8 @@ fn computeStateRoot(
         }
     }.lt);
 
-    var account_trie = try trie.AccountTrie.init(fba);
-
-    for (acct_list.items) |ae| {
+    // First pass: compute storage root for each account and store it back.
+    for (acct_list.items) |*ae| {
         // Collect storage slots for this account (committed + dirty).
         var slots = std.AutoHashMap(u256, void).init(gpa);
         defer slots.deinit();
@@ -414,14 +413,30 @@ fn computeStateRoot(
         // Insert into storage trie and reclaim FBA memory after.
         const saved = fba.end_index;
         var storage_trie = try trie.StorageTrie.init(fba);
-        for (slot_list.items) |se| try storage_trie.insert(se.key, se.value);
-        const storage_root = try storage_trie.rootHash();
+        if (slot_list.items.len > 0) {
+            const storage_keys = try fba.allocator().alloc([32]u8, slot_list.items.len);
+            const storage_vals = try fba.allocator().alloc(u256, slot_list.items.len);
+            for (slot_list.items, storage_keys, storage_vals) |se, *k, *v| {
+                k.* = se.key;
+                v.* = se.value;
+            }
+            try storage_trie.insert(storage_keys, storage_vals);
+        }
+        ae.account.storage_hash = try storage_trie.rootHash();
         fba.end_index = saved;
-
-        var account = ae.account;
-        account.storage_hash = storage_root;
-        try account_trie.insert(ae.key, account);
     }
+
+    // Second pass: batch-insert all accounts into the account trie.
+    const acct_keys = try gpa.alloc([32]u8, acct_list.items.len);
+    defer gpa.free(acct_keys);
+    const accounts = try gpa.alloc(types.Account, acct_list.items.len);
+    defer gpa.free(accounts);
+    for (acct_list.items, acct_keys, accounts) |ae, *k, *a| {
+        k.* = ae.key;
+        a.* = ae.account;
+    }
+    var account_trie = try trie.AccountTrie.init(fba);
+    try account_trie.insert(acct_keys, accounts);
 
     return account_trie.rootHash();
 }

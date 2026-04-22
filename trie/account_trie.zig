@@ -2,7 +2,6 @@ const std = @import("std");
 const rlp = @import("rlp");
 const types = @import("types");
 const Trie = @import("trie.zig").Trie;
-const Keccak256 = std.crypto.hash.sha3.Keccak256;
 
 pub const AccountTrie = struct {
     inner: Trie,
@@ -15,10 +14,14 @@ pub const AccountTrie = struct {
         self.inner.deinit();
     }
 
-    pub fn insert(self: *@This(), key: [32]u8, account: types.Account) !void {
-        var val_buf = std.array_list.Managed(u8).init(self.inner.allocator);
-        try rlp.serialize(types.Account, self.inner.allocator, account, &val_buf);
-        try self.inner.update(&key, val_buf.items);
+    pub fn insert(self: *@This(), keys: []const [32]u8, accounts: []const types.Account) !void {
+        const val_slices = try self.inner.allocator.alloc([]const u8, accounts.len);
+        for (accounts, val_slices) |account, *s| {
+            var buf = std.array_list.Managed(u8).init(self.inner.allocator);
+            try rlp.serialize(types.Account, self.inner.allocator, account, &buf);
+            s.* = buf.items;
+        }
+        try self.inner.update(keys, val_slices);
     }
 
     pub fn rootHash(self: *@This()) ![32]u8 {
