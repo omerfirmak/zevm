@@ -146,14 +146,16 @@ pub const Trie = struct {
     ) anyerror!void {
         switch (node.*) {
             .empty => {
-                node.* = Node.Leaf.init(key, value);
+                if (value.len != 0) node.* = Node.Leaf.init(key, value);
                 if (keys.*.len > 0) _ = writeHexKey(&keys.*[0], key_buf);
             },
             .branch => |*branch| {
                 const idx = key[0];
 
                 // Hash the nearest non-hashed elder sibling.
-                if (idx > 0) {
+                // Skipped for deletions: the branch may collapse, requiring the
+                // sibling's key — which is lost once hashed.
+                if (value.len != 0 and idx > 0) {
                     var i: usize = idx - 1;
                     while (true) : (i -= 1) {
                         if (branch.children[i]) |child| {
@@ -167,10 +169,14 @@ pub const Trie = struct {
                 }
 
                 if (branch.children[idx] == null) {
-                    branch.children[idx] = try self.createLeaf(key[1..], value);
+                    if (value.len != 0) branch.children[idx] = try self.createLeaf(key[1..], value);
                     if (keys.*.len > 0) _ = writeHexKey(&keys.*[0], key_buf);
                 } else {
                     try self.insert(branch.children[idx].?, key[1..], path.append(key[0]), value, key_buf, keys, values);
+                    if (branch.children[idx].?.* == .empty) {
+                        branch.children[idx] = null;
+                        collapseBranch(node, branch);
+                    }
                 }
             },
             .ext => |*ext| {
@@ -180,6 +186,10 @@ pub const Trie = struct {
                 if (diff_idx == ext.key_len) {
                     // Full match — recurse into child.
                     try self.insert(ext.child, key[diff_idx..], path.appendSlice(key[0..diff_idx]), value, key_buf, keys, values);
+                    if (ext.child.* == .empty) node.* = .empty;
+                } else if (value.len == 0) {
+                    // Key not present — deletion is a no-op.
+                    if (keys.*.len > 0) _ = writeHexKey(&keys.*[0], key_buf);
                 } else {
                     // Keys diverge at diff_idx. Save the original subtree,
                     // hashing it immediately since no more keys will enter it.
@@ -220,8 +230,12 @@ pub const Trie = struct {
                 const diff_idx = getDiffIndex(leaf.key[0..leaf.key_len], key);
 
                 if (diff_idx == leaf.key_len) {
-                    node.leaf.val = value;
-                } else {
+                    if (value.len == 0) {
+                        node.* = .empty;
+                    } else {
+                        node.leaf.val = value;
+                    }
+                } else if (value.len != 0) {
                     var p: *Node.Branch = undefined;
                     if (diff_idx == 0) {
                         // Convert this leaf into a branch.
@@ -280,6 +294,47 @@ pub const Trie = struct {
         const n = try self.allocator.create(Node);
         n.* = Node.Leaf.init(key, value);
         return n;
+    }
+
+    // Collapse a branch that has dropped to 0 or 1 live children after a deletion.
+    fn collapseBranch(node: *Node, branch: *Node.Branch) void {
+        var count: usize = 0;
+        var remaining_nibble: u8 = 0;
+        var remaining_child: *Node = undefined;
+        for (branch.children, 0..) |child_opt, i| {
+            if (child_opt) |child| {
+                count += 1;
+                remaining_nibble = @intCast(i);
+                remaining_child = child;
+            }
+        }
+
+        if (count == 0) {
+            node.* = .empty;
+            return;
+        }
+
+        if (count > 1) return;
+
+        switch (remaining_child.*) {
+            .leaf => |leaf| {
+                var new_key: [65]u8 = undefined;
+                new_key[0] = remaining_nibble;
+                @memcpy(new_key[1..][0..leaf.key_len], leaf.key[0..leaf.key_len]);
+                node.* = Node.Leaf.init(new_key[0 .. leaf.key_len + 1], leaf.val);
+            },
+            .ext => |ext| {
+                var new_key: [65]u8 = undefined;
+                new_key[0] = remaining_nibble;
+                @memcpy(new_key[1..][0..ext.key_len], ext.key[0..ext.key_len]);
+                node.* = Node.Extension.init(new_key[0 .. ext.key_len + 1], ext.child);
+            },
+            .branch => {
+                const new_key: [1]u8 = .{remaining_nibble};
+                node.* = Node.Extension.init(&new_key, remaining_child);
+            },
+            .hashed, .empty => unreachable,
+        }
     }
 
     // Wrapper for child node values in RLP encoding. Hashed children (32 bytes)
@@ -558,4 +613,88 @@ test "31-byte children at embedding threshold" {
         .{ .k = "000002", .v = "Y" },
         .{ .k = "000003", .v = "XXXXXXXXXXXXXXXXXXXXXXXXXXXX" },
     }, "d7070f9ad912463b433a562a2328694fdd4cb75d4f5ed452fe0d9fc600d38f2a");
+}
+
+fn makeKey(hex: []const u8, out: *[32]u8) void {
+    out.* = std.mem.zeroes([32]u8);
+    _ = std.fmt.hexToBytes(out[0 .. hex.len / 2], hex) catch unreachable;
+}
+
+test "delete sole leaf produces empty root" {
+    // Insert key then delete it in the same sorted batch → empty trie.
+    const buf = try std.testing.allocator.alloc(u8, 4 * 1024 * 1024);
+    defer std.testing.allocator.free(buf);
+    var fba = std.heap.FixedBufferAllocator.init(buf);
+
+    var keys: [2][32]u8 = undefined;
+    makeKey("ab", &keys[0]);
+    makeKey("ab", &keys[1]); // same key, delete
+    var vals = [_][]const u8{ "hello", "" };
+
+    var trie = try Trie.init(&fba);
+    try trie.update(&keys, &vals);
+    const root = try trie.rootHash();
+    trie.deinit();
+
+    try std.testing.expectEqualSlices(u8, &empty_root_hash, &root);
+}
+
+test "delete then insert different key in same batch" {
+    // [a0="val", a0="", b0="keep"] — a0 is inserted then deleted; only b0 survives.
+    // The result must match a fresh trie containing only b0.
+    const buf = try std.testing.allocator.alloc(u8, 4 * 1024 * 1024);
+    defer std.testing.allocator.free(buf);
+
+    var keys3: [3][32]u8 = undefined;
+    makeKey("a0", &keys3[0]);
+    makeKey("a0", &keys3[1]);
+    makeKey("b0", &keys3[2]);
+    var vals3 = [_][]const u8{ "value_a", "", "value_b" };
+
+    var fba = std.heap.FixedBufferAllocator.init(buf);
+    var trie = try Trie.init(&fba);
+    try trie.update(&keys3, &vals3);
+    const got = try trie.rootHash();
+    trie.deinit();
+
+    // Expected: fresh trie with only b0.
+    fba.reset();
+    var keys1: [1][32]u8 = undefined;
+    makeKey("b0", &keys1[0]);
+    var vals1 = [_][]const u8{"value_b"};
+    var trie2 = try Trie.init(&fba);
+    try trie2.update(&keys1, &vals1);
+    const expected = try trie2.rootHash();
+    trie2.deinit();
+
+    try std.testing.expectEqualSlices(u8, &expected, &got);
+}
+
+test "delete non-existent key is no-op" {
+    // Passing an empty value for a key that was never inserted must not change the root.
+    const buf = try std.testing.allocator.alloc(u8, 4 * 1024 * 1024);
+    defer std.testing.allocator.free(buf);
+    var fba = std.heap.FixedBufferAllocator.init(buf);
+
+    // Build reference trie with one real key.
+    var k: [1][32]u8 = undefined;
+    makeKey("b0", &k[0]);
+    var v = [_][]const u8{"value_b"};
+    var ref = try Trie.init(&fba);
+    try ref.update(&k, &v);
+    const expected = try ref.rootHash();
+    ref.deinit();
+
+    // Batch that also "deletes" a non-existent key a0 (comes before b0 in sort order).
+    fba.reset();
+    var keys2: [2][32]u8 = undefined;
+    makeKey("a0", &keys2[0]); // delete of non-existent key
+    makeKey("b0", &keys2[1]);
+    var vals2 = [_][]const u8{ "", "value_b" };
+    var trie = try Trie.init(&fba);
+    try trie.update(&keys2, &vals2);
+    const got = try trie.rootHash();
+    trie.deinit();
+
+    try std.testing.expectEqualSlices(u8, &expected, &got);
 }
