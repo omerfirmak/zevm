@@ -39,28 +39,28 @@ const params = clap.parseParamsComptime(
     \\
 );
 
-pub fn main() !void {
-    var gpa_state = std.heap.GeneralPurposeAllocator(.{}){};
+pub fn main(init: std.process.Init) !void {
+    var gpa_state = std.heap.DebugAllocator(.{}){};
     defer _ = gpa_state.deinit();
     const allocator = gpa_state.allocator();
 
     var diag = clap.Diagnostic{};
-    var res = clap.parse(clap.Help, &params, clap.parsers.default, .{
+    var res = clap.parse(clap.Help, &params, clap.parsers.default, init.minimal.args, .{
         .diagnostic = &diag,
         .allocator = allocator,
     }) catch |err| {
-        try diag.reportToFile(std.fs.File.stderr(), err);
+        try diag.reportToFile(init.io, std.Io.File.stderr(), err);
         return err;
     };
     defer res.deinit();
 
     if (res.args.help != 0)
-        return clap.helpToFile(std.fs.File.stderr(), clap.Help, &params, .{});
+        return clap.helpToFile(init.io, std.Io.File.stderr(), clap.Help, &params, .{});
 
     const warmup = res.args.warmup orelse 10;
     const iters = res.args.iters orelse 100;
 
-    const hex_bytes = try std.fs.cwd().readFileAlloc(allocator, res.args.bytecode.?, 10 * 1024 * 1024);
+    const hex_bytes = try std.Io.Dir.cwd().readFileAlloc(init.io, res.args.bytecode.?, allocator, .unlimited);
     defer allocator.free(hex_bytes);
 
     const calldata: []u8 = if (res.args.calldata) |cd_hex|
@@ -75,10 +75,10 @@ pub fn main() !void {
         .calldata = calldata,
         .gas_limit = if (res.args.@"gas-limit") |gl| @intCast(gl) else 1_000_000_000,
     };
-    return runBenchmark(allocator, bench_def, warmup, iters);
+    return runBenchmark(init.io, allocator, bench_def, warmup, iters);
 }
 
-fn runBenchmark(allocator: std.mem.Allocator, bench_def: BenchmarkDef, warmup: usize, iters: usize) !void {
+fn runBenchmark(io: std.Io, allocator: std.mem.Allocator, bench_def: BenchmarkDef, warmup: usize, iters: usize) !void {
     const bytecode = try decodeHex(allocator, bench_def.hex_bytes);
     defer allocator.free(bytecode);
 
@@ -141,7 +141,7 @@ fn runBenchmark(allocator: std.mem.Allocator, bench_def: BenchmarkDef, warmup: u
     // Benchmark — vm.process
     var times = try allocator.alloc(u64, iters);
     defer allocator.free(times);
-    var timer = try std.time.Timer.start();
+    var start = std.Io.Timestamp.now(io, .real);
     var gas_used: i32 = 0;
 
     for (0..iters + warmup) |i| {
@@ -149,13 +149,13 @@ fn runBenchmark(allocator: std.mem.Allocator, bench_def: BenchmarkDef, warmup: u
         var logs: std.DoublyLinkedList = .{};
 
         var vm = try evm.EVM.init(vm_arena.allocator(), vm_arena.allocator(), &logs, &msg, &context);
-        timer.reset();
+        start = .zero;
         gas_used = vm.process(bench_fork, &state) catch |err| {
             std.debug.print("error at iter {d}: {}\n", .{ i, err });
             return;
         };
         if (i >= warmup) {
-            times[i - warmup] = timer.read();
+            times[i - warmup] = @intCast(std.Io.Timestamp.now(io, .real).durationTo(start).toMicroseconds());
         }
         std.mem.doNotOptimizeAway(&vm);
 
@@ -186,7 +186,7 @@ fn nsToMs(ns: u64) f64 {
 }
 
 fn decodeHex(allocator: std.mem.Allocator, hex: []const u8) ![]u8 {
-    const src = std.mem.trimRight(u8, hex, "\n\r");
+    const src = std.mem.trimEnd(u8, hex, "\n\r");
     const len = src.len / 2;
     const out = try allocator.alloc(u8, len);
     for (0..len) |i| {
