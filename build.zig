@@ -73,7 +73,7 @@ fn createZevmModule(
     });
     cs_mod.addImport("types", d.types_mod);
     const zevm_mod = b.createModule(.{
-        .root_source_file = b.path("evm/root.zig"),
+        .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
     });
@@ -93,7 +93,7 @@ pub fn build(b: *std.Build) void {
     const rlp_dep = b.dependency("rlp", .{ .target = target, .optimize = optimize });
 
     const types_mod = b.addModule("types", .{
-        .root_source_file = b.path("evm/types.zig"),
+        .root_source_file = b.path("src/types/root.zig"),
         .target = target,
         .optimize = optimize,
     });
@@ -132,7 +132,7 @@ pub fn build(b: *std.Build) void {
         std.Build.LazyPath,
         "committed_state",
         "Custom CommittedState implementation",
-    ) orelse b.path("evm/empty_committed_state.zig");
+    ) orelse b.path("src/evm/empty_committed_state.zig");
 
     const cs_mod = b.addModule("committed_state", .{
         .root_source_file = committed_state_path,
@@ -142,7 +142,7 @@ pub fn build(b: *std.Build) void {
     cs_mod.addImport("types", types_mod);
 
     const zevm_mod = b.addModule("zevm", .{
-        .root_source_file = b.path("evm/root.zig"),
+        .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
     });
@@ -150,16 +150,17 @@ pub fn build(b: *std.Build) void {
 
     // Internal targets always use the empty committed state.
     const empty_cs_mod = b.createModule(.{
-        .root_source_file = b.path("evm/empty_committed_state.zig"),
+        .root_source_file = b.path("src/evm/empty_committed_state.zig"),
         .target = target,
         .optimize = optimize,
     });
     empty_cs_mod.addImport("types", types_mod);
 
     const test_step = b.step("test", "Run unit tests");
+
     const unit_tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("evm/root.zig"),
+            .root_source_file = b.path("src/unit_tests.zig"),
             .target = target,
             .optimize = optimize,
         }),
@@ -168,17 +169,6 @@ pub fn build(b: *std.Build) void {
     unit_tests.root_module.link_libcpp = true;
     linkDeps(unit_tests.root_module, deps, empty_cs_mod);
     test_step.dependOn(&b.addRunArtifact(unit_tests).step);
-
-    const trie_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("trie/trie.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
-        .use_llvm = true,
-    });
-    trie_tests.root_module.addImport("rlp", deps.rlp_mod);
-    test_step.dependOn(&b.addRunArtifact(trie_tests).step);
 
     const example_step = b.step("example", "Run the example program");
     const example_zevm_mod, const example_cs_mod = createZevmModule(b, target, optimize, b.path("example/committed_state.zig"), deps);
@@ -200,7 +190,7 @@ pub fn build(b: *std.Build) void {
     const bench = b.addExecutable(.{
         .name = "bench",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("evm/bench.zig"),
+            .root_source_file = b.path("src/evm/bench.zig"),
             .target = target,
             .optimize = optimize,
         }),
@@ -224,18 +214,9 @@ pub fn build(b: *std.Build) void {
         }),
         .use_llvm = true,
     });
-    const trie_mod = b.createModule(.{
-        .root_source_file = b.path("trie/root.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    trie_mod.addImport("rlp", deps.rlp_mod);
-    trie_mod.addImport("types", types_mod);
-
     state_tests.root_module.link_libcpp = true;
     state_tests.root_module.addImport("zevm", test_zevm_mod);
     state_tests.root_module.addImport("committed_state", test_cs_mod);
-    state_tests.root_module.addImport("trie", trie_mod);
     state_tests.stack_size = 64 * 1024 * 1024;
     b.installArtifact(state_tests);
     const run_state_tests = b.addRunArtifact(state_tests);

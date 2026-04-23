@@ -1,10 +1,5 @@
 const std = @import("std");
 const zevm = @import("zevm");
-const evm = zevm.evm;
-const state_mod = zevm.state;
-const types = zevm.types;
-const spec = zevm.spec;
-const precompile = zevm.precompile;
 
 pub fn main() !void {
     var gpa_state = std.heap.DebugAllocator(.{}){};
@@ -12,12 +7,12 @@ pub fn main() !void {
     const allocator = gpa_state.allocator();
 
     // Choose a fork and build the jump table for it.
-    const fork = spec.Osaka;
+    const fork = zevm.spec.Osaka;
 
     // Set up world state with enough capacity for this example.
     const CommittedState = @import("committed_state").CommittedState;
     const committed_state = CommittedState{};
-    var state = try state_mod.State.init(allocator, &committed_state, 100_000);
+    var state = try zevm.state.State.init(allocator, &committed_state, 100_000);
     defer state.deinit(allocator);
 
     // Sender and contract are pre-funded/deployed by the custom CommittedState.
@@ -25,7 +20,7 @@ pub fn main() !void {
     const contract: u160 = 0xcafe;
 
     // Describe the block.
-    const context = evm.Context{
+    const context = zevm.evm.Context{
         .chainid = 1,
         .number = 1,
         .coinbase = 0,
@@ -41,7 +36,7 @@ pub fn main() !void {
 
     // Describe the transaction (legacy, CALL).
     var calldata = [_]u8{};
-    const msg = evm.Message{
+    const msg = zevm.evm.Message{
         .caller = sender,
         .nonce = 0,
         .target = contract,
@@ -58,7 +53,7 @@ pub fn main() !void {
     const vm_alloc = vm_arena.allocator();
 
     var logs: std.DoublyLinkedList = .{};
-    var vm = try evm.EVM.init(vm_alloc, vm_alloc, &logs, &msg, &context);
+    var vm = try zevm.evm.EVM.init(vm_alloc, vm_alloc, &logs, &msg, &context);
 
     // process() returns an error only for invalid transactions (bad nonce, insufficient
     // funds, etc.). Reverts are NOT errors — check return data for revert payloads.
@@ -81,7 +76,7 @@ pub fn main() !void {
     var node = logs.first;
     var i: usize = 0;
     while (node) |n| : (node = n.next) {
-        const ln: *evm.EVM.LogNode = @alignCast(@fieldParentPtr("node", n));
+        const ln: *zevm.evm.EVM.LogNode = @alignCast(@fieldParentPtr("node", n));
         const log = &ln.log;
         std.debug.print("  [{d}] address=0x{x:0>40} topics={d} data={d}B\n", .{
             i, log.address, log.topics.len, log.data.len,

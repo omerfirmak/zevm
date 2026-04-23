@@ -5,7 +5,6 @@ const state_mod = zevm.state;
 const types = zevm.types;
 const spec = zevm.spec;
 const CommittedState = @import("committed_state").CommittedState;
-const trie = @import("trie");
 
 fn parseHex(comptime T: type, str: []const u8) !T {
     const hex = if (std.mem.startsWith(u8, str, "0x")) str[2..] else str;
@@ -409,7 +408,7 @@ fn computeStateRoot(
 
         // Insert into storage trie and reclaim FBA memory after.
         const saved = fba.end_index;
-        var storage_trie = try trie.StorageTrie.init(fba);
+        var storage_trie = try zevm.StorageTrie.init(fba);
         if (slot_list.items.len > 0) {
             const storage_keys = try fba.allocator().alloc([32]u8, slot_list.items.len);
             const storage_vals = try fba.allocator().alloc(u256, slot_list.items.len);
@@ -432,7 +431,7 @@ fn computeStateRoot(
         k.* = ae.key;
         a.* = ae.account;
     }
-    var account_trie = try trie.AccountTrie.init(fba);
+    var account_trie = try zevm.AccountTrie.init(fba);
     try account_trie.insert(acct_keys, accounts);
 
     return account_trie.rootHash();
