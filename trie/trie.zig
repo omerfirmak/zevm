@@ -218,29 +218,32 @@ pub const Trie = struct {
             },
             .leaf => |leaf| {
                 const diff_idx = getDiffIndex(leaf.key[0..leaf.key_len], key);
-                std.debug.assert(diff_idx < leaf.key_len);
 
-                var p: *Node.Branch = undefined;
-                if (diff_idx == 0) {
-                    // Convert this leaf into a branch.
-                    node.* = Node.Branch.init();
-                    p = &node.branch;
+                if (diff_idx == leaf.key_len) {
+                    node.leaf.val = value;
                 } else {
-                    // Convert this leaf into an ext + branch.
-                    const child = try self.allocator.create(Node);
-                    child.* = Node.Branch.init();
-                    node.* = Node.Extension.init(leaf.key[0..diff_idx], child);
-                    p = &child.branch;
+                    var p: *Node.Branch = undefined;
+                    if (diff_idx == 0) {
+                        // Convert this leaf into a branch.
+                        node.* = Node.Branch.init();
+                        p = &node.branch;
+                    } else {
+                        // Convert this leaf into an ext + branch.
+                        const child = try self.allocator.create(Node);
+                        child.* = Node.Branch.init();
+                        node.* = Node.Extension.init(leaf.key[0..diff_idx], child);
+                        p = &child.branch;
+                    }
+
+                    // Move original value into a new child leaf and hash it immediately.
+                    const orig_idx = leaf.key[diff_idx];
+                    p.children[orig_idx] = try self.createLeaf(leaf.key[diff_idx + 1 .. leaf.key_len], leaf.val);
+                    try self.hash(p.children[orig_idx].?, path.appendSlice(leaf.key[0 .. diff_idx + 1]));
+
+                    // Insert the new value.
+                    const new_idx = key[diff_idx];
+                    p.children[new_idx] = try self.createLeaf(key[diff_idx + 1 ..], value);
                 }
-
-                // Move original value into a new child leaf and hash it immediately.
-                const orig_idx = leaf.key[diff_idx];
-                p.children[orig_idx] = try self.createLeaf(leaf.key[diff_idx + 1 .. leaf.key_len], leaf.val);
-                try self.hash(p.children[orig_idx].?, path.appendSlice(leaf.key[0 .. diff_idx + 1]));
-
-                // Insert the new value.
-                const new_idx = key[diff_idx];
-                p.children[new_idx] = try self.createLeaf(key[diff_idx + 1 ..], value);
                 if (keys.*.len > 0) _ = writeHexKey(&keys.*[0], key_buf);
             },
             .hashed => unreachable,
@@ -518,6 +521,35 @@ test "ext to branch short then long values" {
         .{ .k = "8008", .v = "v___________________________3" },
         .{ .k = "800d", .v = "v___________________________4" },
     }, "4c1c5549c4f5389e28c6a559adebdab319860964b256eaed37b89619bb703b58");
+}
+
+test "in-place leaf update" {
+    // Insert a key, then update it with a different value.
+    // The root hash must match inserting only the final value from scratch.
+    const buf = try std.testing.allocator.alloc(u8, 4 * 1024 * 1024);
+    defer std.testing.allocator.free(buf);
+
+    var keys: [2][32]u8 = std.mem.zeroes([2][32]u8);
+    _ = std.fmt.hexToBytes(&keys[0], "a0") catch unreachable;
+    _ = std.fmt.hexToBytes(&keys[1], "a0") catch unreachable;
+
+    // Trie built with two updates to the same key — second value wins.
+    var fba = std.heap.FixedBufferAllocator.init(buf);
+    var vals = [_][]const u8{ "first", "second" };
+    var trie = try Trie.init(&fba);
+    try trie.update(&keys, &vals);
+    const updated_root = try trie.rootHash();
+    trie.deinit();
+
+    // Trie built with only the final value — must produce the same root.
+    fba.reset();
+    var vals2 = [_][]const u8{"second"};
+    var trie2 = try Trie.init(&fba);
+    try trie2.update(keys[0..1], &vals2);
+    const expected_root = try trie2.rootHash();
+    trie2.deinit();
+
+    try std.testing.expectEqualSlices(u8, &expected_root, &updated_root);
 }
 
 test "31-byte children at embedding threshold" {
