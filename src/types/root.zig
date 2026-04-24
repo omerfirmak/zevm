@@ -231,7 +231,7 @@ pub const Transaction = union(enum) {
         }
         // 0x80..0xbf: byte-string wrapper used for typed txs inside a block body.
         var inner: []const u8 = undefined;
-        const consumed = try rlp.deserialize([]const u8, allocator, serialized, &inner);
+        const consumed = try rlp.deserialize([]const u8, undefined, serialized, &inner);
         if (inner.len == 0 or inner[0] == 0 or inner[0] >= 0x80) return error.InvalidTransaction;
         _ = try self.decodeFromRLP(allocator, inner);
         return consumed;
