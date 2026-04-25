@@ -1,13 +1,14 @@
 const std = @import("std");
 const types = @import("types");
 const evm = @import("../evm/evm.zig");
+const rlp = @import("rlp");
 const EVM = evm.EVM;
 const EvmSpec = @import("../evm/spec.zig");
 const State = @import("../evm/state.zig").State;
 const ChainSpec = @import("chainspec.zig").ChainSpec;
 const secp256k1 = @import("zig-eth-secp256k1");
-const rlp = @import("rlp");
 const Keccak256 = std.crypto.hash.sha3.Keccak256;
+const blobBaseFee = @import("../blob_fee.zig").blobBaseFee;
 
 const Errors = error{
     GasLimitTooHigh,
@@ -26,6 +27,7 @@ const Errors = error{
     MismatchedGasUsed,
     MismatchedLogsBloom,
     InvalidBlobGasUsed,
+    MismatchedExcessBlobGas,
 } || evm.Errors || std.mem.Allocator.Error;
 
 pub const GAS_PER_BLOB = 131_072;
@@ -96,6 +98,8 @@ pub fn validateBlock(comptime spec: ChainSpec, p_block: *const PreprocessedBlock
         expected_base_fee_per_gas -= @intCast(base_fee_per_gas_delta);
     }
     if (expected_base_fee_per_gas != block.header.base_fee_per_gas) return Errors.InvalidBaseFee;
+
+    if (p_block.block.header.excess_blob_gas != calcExcessBlobGas(spec, parent)) return Errors.MismatchedExcessBlobGas;
 }
 
 pub fn contextFromBlock(
@@ -112,8 +116,7 @@ pub fn contextFromBlock(
         .random = std.mem.readInt(u256, &h.mix_hash, .big),
         .basefee = h.base_fee_per_gas,
         .gas_limit = h.gas_limit,
-        .excess_blob_gas = h.excess_blob_gas,
-        .blob_base_fee_update_fraction = spec.blob_base_fee_update_fraction,
+        .blob_base_fee = blobBaseFee(h.excess_blob_gas, spec.blob_base_fee_update_fraction),
         .max_blobs_per_block = spec.max_blobs_per_block,
         .ancestors = ancestors,
     };
@@ -244,6 +247,22 @@ fn bloomAdd(bloom: *[256]u8, item: []const u8) void {
         const bit: u11 = @truncate(std.mem.readInt(u16, hash[2 * i ..][0..2], .little));
         bloom[255 - bit / 8] |= @as(u8, 1) << @intCast(bit % 8);
     }
+}
+
+fn calcExcessBlobGas(comptime spec: ChainSpec, parent: *const types.BlockHeader) u64 {
+    const excess_blob_gas = parent.excess_blob_gas + parent.blob_gas_used;
+    const target_gas = spec.target_blobs_per_block * GAS_PER_BLOB;
+
+    if (excess_blob_gas < target_gas) return 0;
+
+    const reserve_price = spec.blobs_base_cost * parent.base_fee_per_gas;
+    const blob_price = blobBaseFee(parent.excess_blob_gas, spec.blob_base_fee_update_fraction);
+    if (reserve_price > blob_price) {
+        const scaled_excess = parent.blob_gas_used * (spec.max_blobs_per_block - spec.target_blobs_per_block) / spec.max_blobs_per_block;
+        return parent.excess_blob_gas + scaled_excess;
+    }
+
+    return excess_blob_gas - target_gas;
 }
 
 test {
