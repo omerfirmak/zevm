@@ -27,6 +27,7 @@ const Errors = error{
     MismatchedGasUsed,
     MismatchedLogsBloom,
     InvalidBlobGasUsed,
+    MismatchedBlobGasUsed,
     MismatchedExcessBlobGas,
 } || evm.Errors || std.mem.Allocator.Error;
 
@@ -53,17 +54,24 @@ pub fn processBlock(
     var logs: std.DoublyLinkedList = .{};
     var num_logs_per_tx = try gpa.alloc(usize, p_block.block.transactions.len);
     var gas_remaining = p_block.block.header.gas_limit;
+    var blob_gas_used: u64 = 0;
     const context = contextFromBlock(spec, &p_block.block, ancestors);
     for (p_block.block.transactions, 0..) |*tx, index| {
         const msg = try messageFromTx(gpa, tx, p_block.senders[index]);
         if (msg.gas_limit > gas_remaining) return Errors.InsufficientGas;
+
         var vm = try evm.EVM.init(gpa, logs_allocator, &logs, &msg, &context);
         const gas_used = try vm.process(.{ .fork = EvmSpec.specByFork(spec.fork) }, state);
         gas_remaining -= @intCast(gas_used);
+        blob_gas_used += switch (tx.*) {
+            .blob => |t| t.blob_hashes.len * GAS_PER_BLOB,
+            else => 0,
+        };
         num_logs_per_tx[index] = vm.num_logs;
     }
 
     if (p_block.block.header.gas_used != p_block.block.header.gas_limit - gas_remaining) return Errors.MismatchedGasUsed;
+    if (p_block.block.header.blob_gas_used != blob_gas_used) return Errors.MismatchedBlobGasUsed;
     if (!std.mem.eql(u8, &p_block.block.header.logs_bloom, &computeLogsBloom(&logs))) return Errors.MismatchedLogsBloom;
 }
 
