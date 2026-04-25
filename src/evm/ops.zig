@@ -543,8 +543,7 @@ pub fn Ops(comptime cfg: Config) type {
         }
 
         pub fn blobbasefee(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
-            const blob_fee = evm.blobBaseFee(frame.context.excess_blob_gas, frame.context.blob_base_fee_update_fraction);
-            const new_stack_head = try frame.stackPush(stack_head, blob_fee);
+            const new_stack_head = try frame.stackPush(stack_head, frame.evm.context.blob_base_fee);
             return next(next_ip, gas - fork.constantGas(.BLOBBASEFEE), new_stack_head, frame);
         }
 
