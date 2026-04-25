@@ -2,10 +2,7 @@ const std = @import("std");
 const ops = @import("ops.zig");
 const precompile = @import("precompile.zig");
 const Opcode = @import("opcode.zig").Opcode;
-
-pub const Fork = enum(u8) {
-    Osaka,
-};
+const Fork = @import("../forks.zig").Fork;
 
 // Holds the constant information related to each hardfork
 pub const Spec = struct {
@@ -121,6 +118,12 @@ pub const Spec = struct {
         return handlers[@intCast(addr)];
     }
 };
+
+pub fn specByFork(fork: Fork) Spec {
+    return switch (fork) {
+        .Osaka => Osaka,
+    };
+}
 
 // Osaka hardfork spec
 pub const Osaka = Spec{
