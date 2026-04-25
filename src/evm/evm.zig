@@ -335,6 +335,20 @@ pub const EVM = struct {
             return Errors.InitcodeSizeExceeded;
         }
 
+        const intrinsic_gas = if (is_create) cfg.fork.tx_create_gas else cfg.fork.tx_base_gas;
+        const calldata_gas, const floor_data_cost = try calldataCost(cfg.fork, msg.calldata);
+        const floor_cost = cfg.fork.tx_base_gas + floor_data_cost; // EIP-7623
+        const access_list_gas = try accessListGas(cfg.fork, msg.access_list);
+        // EIP-3860: 2 gas per 32-byte initcode word, charged as intrinsic for CREATE txs
+        const initcode_gas = if (is_create) initcodeWordCost(msg.calldata.len) else 0;
+        // EIP-7702: PER_EMPTY_ACCOUNT_COST per authorization tuple
+        const auth_list_len: i32 = if (msg.authorization_list) |al| @intCast(al.len) else 0;
+        const auth_gas = std.math.mul(i32, auth_list_len, cfg.fork.per_empty_account_cost) catch return Errors.OutOfGas;
+        const total_intrinsic = intrinsic_gas + calldata_gas + access_list_gas + initcode_gas + auth_gas;
+        if (msg.gas_limit < total_intrinsic or msg.gas_limit < floor_cost) {
+            return Errors.OutOfGas;
+        }
+
         _ = self.accessAccount(msg.caller);
         var caller_account = try state.accounts.update(msg.caller);
         if (caller_account.nonce < msg.nonce) {
@@ -372,19 +386,6 @@ pub const EVM = struct {
         // EIP-4844: deduct blob gas fee (non-refundable, uses actual base fee not max)
         caller_account.balance -= @as(u256, @intCast(blob_gas)) * blob_base_fee;
 
-        const intrinsic_gas = if (is_create) cfg.fork.tx_create_gas else cfg.fork.tx_base_gas;
-        const calldata_gas, const floor_data_cost = try calldataCost(cfg.fork, msg.calldata);
-        const floor_cost = cfg.fork.tx_base_gas + floor_data_cost; // EIP-7623
-        const access_list_gas = try accessListGas(cfg.fork, msg.access_list);
-        // EIP-3860: 2 gas per 32-byte initcode word, charged as intrinsic for CREATE txs
-        const initcode_gas = if (is_create) initcodeWordCost(msg.calldata.len) else 0;
-        // EIP-7702: PER_EMPTY_ACCOUNT_COST per authorization tuple
-        const auth_list_len: i32 = if (msg.authorization_list) |al| @intCast(al.len) else 0;
-        const auth_gas = std.math.mul(i32, auth_list_len, cfg.fork.per_empty_account_cost) catch return Errors.OutOfGas;
-        const total_intrinsic = intrinsic_gas + calldata_gas + access_list_gas + initcode_gas + auth_gas;
-        if (msg.gas_limit < total_intrinsic or msg.gas_limit < floor_cost) {
-            return Errors.OutOfGas;
-        }
         const execution_gas_limit = msg.gas_limit - total_intrinsic;
 
         inline for (precompile.Handlers(cfg.fork).table(), 0..) |handler, addr| {
