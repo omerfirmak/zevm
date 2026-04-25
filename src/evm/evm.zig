@@ -54,9 +54,8 @@ pub const Context = struct {
     gas_limit: u64,
 
     // EIP-4844
-    excess_blob_gas: u64,
+    blob_base_fee: u256,
     max_blobs_per_block: u64,
-    blob_base_fee_update_fraction: u64,
 
     ancestors: [256]u256,
 };
@@ -367,8 +366,7 @@ pub const EVM = struct {
         }
 
         // EIP-4844: blob transaction validation
-        const blob_base_fee = blobBaseFee(self.context.excess_blob_gas, self.context.blob_base_fee_update_fraction);
-        const blob_gas, const blob_upfront = try self.validateAndPriceBlobTx(cfg.fork, blob_base_fee);
+        const blob_gas, const blob_upfront = try self.validateAndPriceBlobTx(cfg.fork, self.context.blob_base_fee);
 
         // EIP-1559: upfront balance check uses maxFeePerGas (worst-case gas cost) if set
         const balance_check_price = msg.max_fee_per_gas orelse self.effective_gas_price;
@@ -384,7 +382,7 @@ pub const EVM = struct {
         const gas_cost = std.math.mul(u256, @intCast(msg.gas_limit), self.effective_gas_price) catch return Errors.GasOverflow;
         caller_account.balance -= gas_cost;
         // EIP-4844: deduct blob gas fee (non-refundable, uses actual base fee not max)
-        caller_account.balance -= @as(u256, @intCast(blob_gas)) * blob_base_fee;
+        caller_account.balance -= @as(u256, @intCast(blob_gas)) * self.context.blob_base_fee;
 
         const execution_gas_limit = msg.gas_limit - total_intrinsic;
 
@@ -871,21 +869,6 @@ fn calldataCost(comptime fork: Spec, calldata: []u8) !struct { i32, i32 } {
         return Errors.OutOfGas;
     }
     return .{ @intCast(cost), @intCast(floor) };
-}
-
-pub fn blobBaseFee(excess_blob_gas: u64, update_fraction: u64) u256 {
-    if (update_fraction == 0) return 1;
-    // fake_exponential(1, excess_blob_gas, update_fraction)
-    const denom: u256 = update_fraction;
-    var i: u256 = 1;
-    var output: u256 = 0;
-    var accum: u256 = denom; // factor(1) * denominator
-    while (accum > 0) {
-        output += accum;
-        accum = accum * excess_blob_gas / (denom * i);
-        i += 1;
-    }
-    return output / denom;
 }
 
 // EIP-7702: delegation designator prefix (0xef0100) followed by 20-byte address = 23 bytes total

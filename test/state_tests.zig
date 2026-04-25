@@ -263,8 +263,7 @@ fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []con
             .random = if (test_case.env.currentRandom) |r| r.value else 0,
             .gas_limit = test_case.env.currentGasLimit.value,
             .basefee = test_case.env.currentBaseFee.?.value,
-            .excess_blob_gas = if (test_case.env.currentExcessBlobGas) |ebg| ebg.value else 0,
-            .blob_base_fee_update_fraction = blob_update_fraction,
+            .blob_base_fee = if (test_case.env.currentExcessBlobGas) |ebg| zevm.blobBaseFee(ebg.value, blob_update_fraction) else 0,
             .max_blobs_per_block = max_blobs,
             .ancestors = ancestors,
         };
