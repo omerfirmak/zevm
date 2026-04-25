@@ -203,8 +203,10 @@ pub fn build(b: *std.Build) void {
     if (b.args) |bench_args| run_bench.addArgs(bench_args);
     bench_step.dependOn(&run_bench.step);
 
-    const state_test_step = b.step("state-tests", "Run EVM state tests");
+    // Shared modules for all integration test binaries.
     const test_zevm_mod, const test_cs_mod = createZevmModule(b, target, optimize, b.path("test/committed_state.zig"), deps);
+
+    const state_test_step = b.step("state-tests", "Run EVM state tests");
     const state_tests = b.addTest(.{
         .name = "zevm-state-test",
         .root_module = b.createModule(.{
@@ -228,4 +230,26 @@ pub fn build(b: *std.Build) void {
         run_state_tests.setEnvironmentVariable("TRACE", "TRUE");
     }
     state_test_step.dependOn(&run_state_tests.step);
+
+    const blockchain_test_step = b.step("blockchain-tests", "Run EVM blockchain tests");
+    const blockchain_tests = b.addTest(.{
+        .name = "zevm-blockchain-test",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test/blockchain_tests.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+        .use_llvm = true,
+    });
+    blockchain_tests.root_module.link_libcpp = true;
+    blockchain_tests.root_module.addImport("zevm", test_zevm_mod);
+    blockchain_tests.root_module.addImport("committed_state", test_cs_mod);
+    blockchain_tests.root_module.addImport("rlp", rlp_dep.module("zig-rlp"));
+    blockchain_tests.stack_size = 64 * 1024 * 1024;
+    const run_blockchain_tests = b.addRunArtifact(blockchain_tests);
+    run_blockchain_tests.setCwd(b.path("."));
+    if (b.option([]const u8, "blockchain-test", "Path to a specific blockchain test JSON file")) |path| {
+        run_blockchain_tests.setEnvironmentVariable("BLOCKCHAIN_TEST", path);
+    }
+    blockchain_test_step.dependOn(&run_blockchain_tests.step);
 }
