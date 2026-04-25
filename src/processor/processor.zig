@@ -25,7 +25,10 @@ const Errors = error{
     InsufficientGas,
     MismatchedGasUsed,
     MismatchedLogsBloom,
+    InvalidBlobGasUsed,
 } || evm.Errors || std.mem.Allocator.Error;
+
+pub const GAS_PER_BLOB = 131_072;
 
 pub const PreprocessedBlock = struct {
     block: types.Block,
@@ -70,6 +73,8 @@ pub fn validateBlock(comptime spec: ChainSpec, p_block: *const PreprocessedBlock
     if (block.header.timestamp <= parent.timestamp) return Errors.InvalidTimestamp;
     if (block.header.extra_data.len > 32) return Errors.ExtraDataTooLong;
     if (block.header.gas_used > block.header.gas_limit) return Errors.GasLimitExceeded;
+    if (block.header.blob_gas_used > spec.max_blobs_per_block * GAS_PER_BLOB) return Errors.InvalidBlobGasUsed;
+    if (block.header.blob_gas_used % GAS_PER_BLOB != 0) return Errors.InvalidBlobGasUsed;
     if (block.header.difficulty != 0) return Errors.InvalidDifficulty;
     if (!std.mem.eql(u8, &block.header.nonce, &[_]u8{0} ** 8)) return Errors.InvalidNonce;
     if (block.uncles.len != 0) return Errors.InvalidUncles;
