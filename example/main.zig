@@ -28,9 +28,8 @@ pub fn main() !void {
         .random = 0,
         .basefee = 7,
         .gas_limit = 30_000_000,
-        .excess_blob_gas = 0,
         .max_blobs_per_block = 9,
-        .blob_base_fee_update_fraction = 5_000_000,
+        .blob_base_fee = 0,
         .ancestors = [_]u256{0} ** 256,
     };
 
