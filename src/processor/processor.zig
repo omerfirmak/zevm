@@ -32,6 +32,8 @@ const Errors = error{
 } || evm.Errors || std.mem.Allocator.Error;
 
 pub const GAS_PER_BLOB = 131_072;
+pub const HISTORY_CONTRACT: u256 = 0x0000F90827F1C53a10cb7A02335B175320002935;
+pub const HISTORY_SERVE_WINDOW: u64 = 8192;
 
 pub const PreprocessedBlock = struct {
     block: types.Block,
@@ -50,6 +52,7 @@ pub fn processBlock(
     state: *State,
 ) Errors!void {
     try validateBlock(spec, p_block, parent);
+    try applyEip2935(&p_block.block.header, state);
 
     var logs: std.DoublyLinkedList = .{};
     var num_logs_per_tx = try gpa.alloc(usize, p_block.block.transactions.len);
@@ -255,6 +258,12 @@ fn bloomAdd(bloom: *[256]u8, item: []const u8) void {
         const bit: u11 = @truncate(std.mem.readInt(u16, hash[2 * i ..][0..2], .little));
         bloom[255 - bit / 8] |= @as(u8, 1) << @intCast(bit % 8);
     }
+}
+
+fn applyEip2935(header: *const types.BlockHeader, state: *State) !void {
+    const slot: u256 = (header.number - 1) % HISTORY_SERVE_WINDOW;
+    const value: u256 = std.mem.readInt(u256, &header.parent_hash, .big);
+    _ = try state.contract_state.write(.{ .address = HISTORY_CONTRACT, .slot = slot }, value);
 }
 
 fn calcExcessBlobGas(comptime spec: ChainSpec, parent: *const types.BlockHeader) u64 {
