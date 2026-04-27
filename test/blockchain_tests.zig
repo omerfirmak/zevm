@@ -190,8 +190,7 @@ test "blockchain tests" {
     var any_failed = std.atomic.Value(bool).init(false);
     var pool: std.Io.Group = .init;
     for (paths.items) |path| {
-        fileWorker(io, allocator, dir, path, supported_forks[0..], &any_failed);
-        //        pool.async(io, fileWorker, .{ io, allocator, dir, path, supported_forks[0..], &any_failed });
+        pool.async(io, fileWorker, .{ io, allocator, dir, path, supported_forks[0..], &any_failed });
     }
     try pool.await(io);
 
