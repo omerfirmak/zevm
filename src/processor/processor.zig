@@ -59,7 +59,6 @@ pub fn processBlock(
     const num_logs_per_tx = try gpa.alloc(usize, p_block.block.transactions.len);
     defer gpa.free(num_logs_per_tx);
     var gas_remaining = p_block.block.header.gas_limit;
-    var blob_gas_used: u64 = 0;
     var context = contextFromBlock(spec, &p_block.block, ancestors);
     for (p_block.block.transactions, 0..) |*tx, index| {
         const msg = try messageFromTx(gpa, tx, p_block.senders[index]);
@@ -72,14 +71,12 @@ pub fn processBlock(
             .blob => |t| t.blob_hashes.len,
             else => 0,
         };
-        blob_gas_used += blobs_used * GAS_PER_BLOB;
         context.max_blobs_per_block -= blobs_used;
         num_logs_per_tx[index] = vm.num_logs;
         try clearSelfdestructed(gpa, &vm, state);
     }
 
     if (p_block.block.header.gas_used != p_block.block.header.gas_limit - gas_remaining) return Errors.MismatchedGasUsed;
-    if (p_block.block.header.blob_gas_used != blob_gas_used) return Errors.MismatchedBlobGasUsed;
     if (!std.mem.eql(u8, &p_block.block.header.logs_bloom, &computeLogsBloom(&logs))) return Errors.MismatchedLogsBloom;
     try applyWithdrawals(&p_block.block, state);
 }
@@ -131,8 +128,16 @@ pub fn validateBlock(comptime spec: ChainSpec, p_block: *const PreprocessedBlock
     if (block.header.timestamp <= parent.timestamp) return Errors.InvalidTimestamp;
     if (block.header.extra_data.len > 32) return Errors.ExtraDataTooLong;
     if (block.header.gas_used > block.header.gas_limit) return Errors.GasLimitExceeded;
-    if (block.header.blob_gas_used > spec.max_blobs_per_block * GAS_PER_BLOB) return Errors.InvalidBlobGasUsed;
     if (block.header.blob_gas_used % GAS_PER_BLOB != 0) return Errors.InvalidBlobGasUsed;
+    var expected_blob_gas_used: u64 = 0;
+    for (block.transactions) |tx| {
+        const blobs = switch (tx) {
+            .blob => |t| t.blob_hashes.len,
+            else => 0,
+        };
+        expected_blob_gas_used += blobs * GAS_PER_BLOB;
+    }
+    if (block.header.blob_gas_used != expected_blob_gas_used) return Errors.MismatchedBlobGasUsed;
     if (block.header.difficulty != 0) return Errors.InvalidDifficulty;
     if (!std.mem.eql(u8, &block.header.nonce, &[_]u8{0} ** 8)) return Errors.InvalidNonce;
     if (block.uncles.len != 0) return Errors.InvalidUncles;
