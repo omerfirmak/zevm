@@ -133,7 +133,6 @@ fn runBlockchainTestFile(io: std.Io, allocator: std.mem.Allocator, dir: std.Io.D
         }
         if (!matches_fork) continue;
 
-        std.debug.print("running {s}\n", .{name});
         runBlockchainTest(allocator, &test_case) catch |err| {
             std.debug.print("{s}: FAIL: {}\n", .{ name, err });
             any_failed = true;
