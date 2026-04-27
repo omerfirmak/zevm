@@ -261,6 +261,8 @@ const exception_map = .{
     .{ "TransactionException.TYPE_4_EMPTY_AUTHORIZATION_LIST", evm.Errors.EmptyAuthorizationList },
     .{ "TransactionException.TYPE_4_TX_CONTRACT_CREATION", evm.Errors.CreateSetCodeTx },
     // Block exceptions — processor errors
+    .{ "TransactionException.TYPE_3_TX_MAX_BLOB_GAS_ALLOWANCE_EXCEEDED", error.InvalidBlobGasUsed },
+    .{ "TransactionException.TYPE_3_TX_BLOB_COUNT_EXCEEDED", error.InvalidBlobGasUsed },
     .{ "BlockException.RLP_BLOCK_LIMIT_EXCEEDED", error.BlockRlpTooBig },
     .{ "BlockException.INCORRECT_BLOB_GAS_USED", error.MismatchedBlobGasUsed },
     .{ "BlockException.BLOB_GAS_USED_ABOVE_LIMIT", error.InvalidBlobGasUsed },
