@@ -57,7 +57,6 @@ fn runBlockchainTest(gpa: std.mem.Allocator, test_case: *const BlockchainTest) !
     var committed = try utils.buildCommittedState(gpa, test_case.pre);
     defer committed.deinit();
 
-    // Decode the genesis block to establish the initial parent context.
     var genesis_arena = std.heap.ArenaAllocator.init(gpa);
     const arena_allocator = genesis_arena.allocator();
     defer genesis_arena.deinit();
@@ -66,10 +65,15 @@ fn runBlockchainTest(gpa: std.mem.Allocator, test_case: *const BlockchainTest) !
         _ = try rlp.deserialize(types.Block, genesis_arena.allocator(), test_case.genesisRLP.value, &block);
         break :blk block;
     };
-    _ = &parent;
 
     var state = try state_mod.State.init(arena_allocator, &committed, 10_000_000);
     defer state.deinit(arena_allocator);
+
+    // ancestor_chain[k] = parent_hash of the block that is k+1 levels below the current parent.
+    // Invariant: ancestors[0] for the next block = prepared.block.header.parent_hash (read directly);
+    //            ancestors[k] for k>=1 = ancestor_chain[k-1].
+    var ancestor_chain: [255][32]u8 = undefined;
+    var ancestor_chain_len: usize = 0;
 
     for (test_case.blocks) |block_entry| {
         var arena = std.heap.ArenaAllocator.init(gpa);
@@ -77,13 +81,19 @@ fn runBlockchainTest(gpa: std.mem.Allocator, test_case: *const BlockchainTest) !
 
         const prepared = try prepareBlock(arena.allocator(), block_entry);
 
+        var ancestors = [_]u256{0} ** 256;
+        ancestors[0] = std.mem.readInt(u256, &prepared.block.header.parent_hash, .big);
+        for (0..@min(ancestor_chain_len, 255)) |k| {
+            ancestors[k + 1] = std.mem.readInt(u256, &ancestor_chain[k], .big);
+        }
+
         const validate_err: ?anyerror = if (zevm.processor.processBlock(
             arena.allocator(),
             gpa,
             zevm.chainspec.Osaka,
             &prepared,
             &parent.header,
-            [_]u256{0} ** 256, //todo
+            ancestors,
             &state,
         )) |_| null else |err| err;
 
@@ -94,6 +104,11 @@ fn runBlockchainTest(gpa: std.mem.Allocator, test_case: *const BlockchainTest) !
         } else if (validate_err) |err| {
             return err;
         }
+
+        const new_len = @min(ancestor_chain_len + 1, 255);
+        std.mem.copyBackwards([32]u8, ancestor_chain[1..new_len], ancestor_chain[0 .. new_len - 1]);
+        ancestor_chain[0] = prepared.block.header.parent_hash;
+        ancestor_chain_len = new_len;
 
         parent = prepared.block;
     }
