@@ -300,7 +300,7 @@ fn bloomAdd(bloom: *[256]u8, item: []const u8) void {
     var hash: [32]u8 = undefined;
     Keccak256.hash(item, &hash, .{});
     for (0..3) |i| {
-        const bit: u11 = @truncate(std.mem.readInt(u16, hash[2 * i ..][0..2], .little));
+        const bit: u11 = @truncate(std.mem.readInt(u16, hash[2 * i ..][0..2], .big));
         bloom[255 - bit / 8] |= @as(u8, 1) << @intCast(bit % 8);
     }
 }
