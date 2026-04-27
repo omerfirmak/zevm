@@ -79,23 +79,24 @@ fn runBlockchainTest(gpa: std.mem.Allocator, test_case: *const BlockchainTest) !
         var arena = std.heap.ArenaAllocator.init(gpa);
         defer arena.deinit();
 
-        const prepared = try prepareBlock(arena.allocator(), block_entry);
-
-        var ancestors = [_]u256{0} ** 256;
-        ancestors[0] = std.mem.readInt(u256, &prepared.block.header.parent_hash, .big);
-        for (0..@min(ancestor_chain_len, 255)) |k| {
-            ancestors[k + 1] = std.mem.readInt(u256, &ancestor_chain[k], .big);
-        }
-
-        const validate_err: ?anyerror = if (zevm.processor.processBlock(
-            arena.allocator(),
-            gpa,
-            zevm.chainspec.Osaka,
-            &prepared,
-            &parent.header,
-            ancestors,
-            &state,
-        )) |_| null else |err| err;
+        const validate_err: ?anyerror, const prepared: ?zevm.processor.PreprocessedBlock = blk: {
+            const p = prepareBlock(arena.allocator(), block_entry) catch |e| break :blk .{ e, null };
+            var ancestors = [_]u256{0} ** 256;
+            ancestors[0] = std.mem.readInt(u256, &p.block.header.parent_hash, .big);
+            for (0..@min(ancestor_chain_len, 255)) |k| {
+                ancestors[k + 1] = std.mem.readInt(u256, &ancestor_chain[k], .big);
+            }
+            const proc_err: ?anyerror = if (zevm.processor.processBlock(
+                arena.allocator(),
+                gpa,
+                zevm.chainspec.Osaka,
+                &p,
+                &parent.header,
+                ancestors,
+                &state,
+            )) |_| null else |err| err;
+            break :blk .{ proc_err, p };
+        };
 
         if (block_entry.expectException) |expected| {
             const actual = validate_err orelse return error.ExpectedExceptionButSucceeded;
@@ -105,12 +106,13 @@ fn runBlockchainTest(gpa: std.mem.Allocator, test_case: *const BlockchainTest) !
             return err;
         }
 
+        const ok = prepared.?;
         const new_len = @min(ancestor_chain_len + 1, 255);
         std.mem.copyBackwards([32]u8, ancestor_chain[1..new_len], ancestor_chain[0 .. new_len - 1]);
-        ancestor_chain[0] = prepared.block.header.parent_hash;
+        ancestor_chain[0] = ok.block.header.parent_hash;
         ancestor_chain_len = new_len;
 
-        parent = prepared.block;
+        parent = ok.block;
     }
 }
 

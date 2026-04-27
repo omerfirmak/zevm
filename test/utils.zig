@@ -237,40 +237,66 @@ pub fn computeStateRoot(
     return account_trie.rootHash();
 }
 
+const exception_map = .{
+    // Transaction exceptions
+    .{ "TransactionException.INSUFFICIENT_ACCOUNT_FUNDS", evm.Errors.NotEnoughFunds },
+    .{ "TransactionException.GASLIMIT_PRICE_PRODUCT_OVERFLOW", evm.Errors.GasOverflow },
+    .{ "TransactionException.GAS_ALLOWANCE_EXCEEDED", evm.Errors.GasOverflow },
+    .{ "TransactionException.GAS_LIMIT_EXCEEDS_MAXIMUM", evm.Errors.GasOverflow },
+    .{ "TransactionException.INTRINSIC_GAS_TOO_LOW", evm.Errors.OutOfGas },
+    .{ "TransactionException.INTRINSIC_GAS_BELOW_FLOOR_GAS_COST", evm.Errors.OutOfGas },
+    .{ "TransactionException.NONCE_IS_MAX", evm.Errors.NonceMax },
+    .{ "TransactionException.NONCE_MISMATCH_TOO_LOW", evm.Errors.NonceTooLow },
+    .{ "TransactionException.NONCE_MISMATCH_TOO_HIGH", evm.Errors.NonceTooHigh },
+    .{ "TransactionException.INITCODE_SIZE_EXCEEDED", evm.Errors.InitcodeSizeExceeded },
+    .{ "TransactionException.SENDER_NOT_EOA", evm.Errors.SenderNotEOA },
+    .{ "TransactionException.INSUFFICIENT_MAX_FEE_PER_GAS", evm.Errors.FeeTooLow },
+    .{ "TransactionException.PRIORITY_GREATER_THAN_MAX_FEE_PER_GAS", evm.Errors.PriorityFeeTooHigh },
+    .{ "TransactionException.TYPE_3_TX_ZERO_BLOBS", evm.Errors.ZeroBlobs },
+    .{ "TransactionException.TYPE_3_TX_INVALID_BLOB_VERSIONED_HASH", evm.Errors.InvalidBlobVersionedHash },
+    .{ "TransactionException.TYPE_3_TX_MAX_BLOB_GAS_ALLOWANCE_EXCEEDED", evm.Errors.TooManyBlobs },
+    .{ "TransactionException.TYPE_3_TX_BLOB_COUNT_EXCEEDED", evm.Errors.TooManyBlobs },
+    .{ "TransactionException.TYPE_3_TX_CONTRACT_CREATION", evm.Errors.CreateBlobTx },
+    .{ "TransactionException.INSUFFICIENT_MAX_FEE_PER_BLOB_GAS", evm.Errors.InsufficientMaxFeePerBlobGas },
+    .{ "TransactionException.TYPE_4_EMPTY_AUTHORIZATION_LIST", evm.Errors.EmptyAuthorizationList },
+    .{ "TransactionException.TYPE_4_TX_CONTRACT_CREATION", evm.Errors.CreateSetCodeTx },
+    // Block exceptions — processor errors
+    .{ "BlockException.RLP_BLOCK_LIMIT_EXCEEDED", error.BlockRlpTooBig },
+    .{ "BlockException.INCORRECT_BLOB_GAS_USED", error.MismatchedBlobGasUsed },
+    .{ "BlockException.BLOB_GAS_USED_ABOVE_LIMIT", error.InvalidBlobGasUsed },
+    .{ "BlockException.INCORRECT_EXCESS_BLOB_GAS", error.MismatchedExcessBlobGas },
+    .{ "BlockException.INVALID_BASEFEE_PER_GAS", error.InvalidBaseFee },
+    .{ "BlockException.INVALID_GASLIMIT", error.GasLimitTooHigh },
+    .{ "BlockException.INVALID_GASLIMIT", error.GasLimitTooLow },
+    .{ "BlockException.INVALID_GASLIMIT", error.GasLimitLessThanMinimum },
+    // Block exceptions — RLP decode failures (thrown by prepareBlock before processBlock)
+    .{ "BlockException.INCORRECT_BLOCK_FORMAT", error.RlpPayloadTooShort },
+    .{ "BlockException.INCORRECT_BLOCK_FORMAT", error.InvalidSerializedLength },
+    .{ "BlockException.INCORRECT_BLOCK_FORMAT", error.NotAnRLPList },
+    .{ "BlockException.INCORRECT_BLOCK_FORMAT", error.EOF },
+    .{ "BlockException.INCORRECT_BLOCK_FORMAT", error.OffsetOverflow },
+    .{ "BlockException.RLP_STRUCTURES_ENCODING", error.RlpPayloadTooShort },
+    .{ "BlockException.RLP_STRUCTURES_ENCODING", error.InvalidSerializedLength },
+    .{ "BlockException.RLP_STRUCTURES_ENCODING", error.NotAnRLPList },
+    .{ "BlockException.RLP_STRUCTURES_ENCODING", error.EOF },
+    .{ "BlockException.RLP_STRUCTURES_ENCODING", error.OffsetOverflow },
+};
+
 pub fn mapException(name: []const u8) ?anyerror {
-    const map = .{
-        .{ "TransactionException.INSUFFICIENT_ACCOUNT_FUNDS", evm.Errors.NotEnoughFunds },
-        .{ "TransactionException.GASLIMIT_PRICE_PRODUCT_OVERFLOW", evm.Errors.GasOverflow },
-        .{ "TransactionException.GAS_ALLOWANCE_EXCEEDED", evm.Errors.GasOverflow },
-        .{ "TransactionException.GAS_LIMIT_EXCEEDS_MAXIMUM", evm.Errors.GasOverflow },
-        .{ "TransactionException.INTRINSIC_GAS_TOO_LOW", evm.Errors.OutOfGas },
-        .{ "TransactionException.INTRINSIC_GAS_BELOW_FLOOR_GAS_COST", evm.Errors.OutOfGas },
-        .{ "TransactionException.NONCE_IS_MAX", evm.Errors.NonceMax },
-        .{ "TransactionException.INITCODE_SIZE_EXCEEDED", evm.Errors.InitcodeSizeExceeded },
-        .{ "TransactionException.SENDER_NOT_EOA", evm.Errors.SenderNotEOA },
-        .{ "TransactionException.INSUFFICIENT_MAX_FEE_PER_GAS", evm.Errors.FeeTooLow },
-        .{ "TransactionException.PRIORITY_GREATER_THAN_MAX_FEE_PER_GAS", evm.Errors.PriorityFeeTooHigh },
-        .{ "TransactionException.TYPE_3_TX_ZERO_BLOBS", evm.Errors.ZeroBlobs },
-        .{ "TransactionException.TYPE_3_TX_INVALID_BLOB_VERSIONED_HASH", evm.Errors.InvalidBlobVersionedHash },
-        .{ "TransactionException.TYPE_3_TX_MAX_BLOB_GAS_ALLOWANCE_EXCEEDED", evm.Errors.TooManyBlobs },
-        .{ "TransactionException.TYPE_3_TX_BLOB_COUNT_EXCEEDED", evm.Errors.TooManyBlobs },
-        .{ "TransactionException.TYPE_3_TX_CONTRACT_CREATION", evm.Errors.CreateBlobTx },
-        .{ "TransactionException.INSUFFICIENT_MAX_FEE_PER_BLOB_GAS", evm.Errors.InsufficientMaxFeePerBlobGas },
-        .{ "TransactionException.TYPE_4_EMPTY_AUTHORIZATION_LIST", evm.Errors.EmptyAuthorizationList },
-        .{ "TransactionException.TYPE_4_TX_CONTRACT_CREATION", evm.Errors.CreateSetCodeTx },
-    };
-    inline for (map) |entry| {
+    inline for (exception_map) |entry| {
         if (std.mem.eql(u8, name, entry[0])) return entry[1];
     }
     return null;
 }
 
 // Returns true if `err` satisfies any exception in the `|`-separated list.
+// Iterates all map entries so that exception names with multiple possible errors
+// (e.g. INVALID_GASLIMIT, RLP decode errors) are handled correctly.
 pub fn exceptionMatches(err: anyerror, expected: []const u8) bool {
     var it = std.mem.splitScalar(u8, expected, '|');
     while (it.next()) |ex| {
-        if (mapException(ex)) |mapped| {
-            if (err == mapped) return true;
+        inline for (exception_map) |entry| {
+            if (std.mem.eql(u8, ex, entry[0]) and err == entry[1]) return true;
         }
     }
     return false;
