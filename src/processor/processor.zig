@@ -78,6 +78,14 @@ pub fn processBlock(
     if (p_block.block.header.blob_gas_used != blob_gas_used) return Errors.MismatchedBlobGasUsed;
     if (!std.mem.eql(u8, &p_block.block.header.logs_bloom, &computeLogsBloom(&logs))) return Errors.MismatchedLogsBloom;
     freeLogs(&logs, logs_allocator);
+    try applyWithdrawals(&p_block.block, state);
+}
+
+fn applyWithdrawals(block: *const types.Block, state: *State) !void {
+    for (block.withdrawals) |w| {
+        const addr = std.mem.readInt(u160, &w.address, .big);
+        (try state.accounts.update(addr)).balance += @as(u256, w.amount) * 1_000_000_000;
+    }
 }
 
 fn freeLogs(logs: *std.DoublyLinkedList, allocator: std.mem.Allocator) void {
