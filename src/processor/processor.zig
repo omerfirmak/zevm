@@ -55,7 +55,8 @@ pub fn processBlock(
     try applyEip2935(&p_block.block.header, state);
 
     var logs: std.DoublyLinkedList = .{};
-    var num_logs_per_tx = try gpa.alloc(usize, p_block.block.transactions.len);
+    const num_logs_per_tx = try gpa.alloc(usize, p_block.block.transactions.len);
+    defer gpa.free(num_logs_per_tx);
     var gas_remaining = p_block.block.header.gas_limit;
     var blob_gas_used: u64 = 0;
     const context = contextFromBlock(spec, &p_block.block, ancestors);
@@ -76,6 +77,16 @@ pub fn processBlock(
     if (p_block.block.header.gas_used != p_block.block.header.gas_limit - gas_remaining) return Errors.MismatchedGasUsed;
     if (p_block.block.header.blob_gas_used != blob_gas_used) return Errors.MismatchedBlobGasUsed;
     if (!std.mem.eql(u8, &p_block.block.header.logs_bloom, &computeLogsBloom(&logs))) return Errors.MismatchedLogsBloom;
+    freeLogs(&logs, logs_allocator);
+}
+
+fn freeLogs(logs: *std.DoublyLinkedList, allocator: std.mem.Allocator) void {
+    while (logs.pop()) |node| {
+        const ln: *evm.EVM.LogNode = @alignCast(@fieldParentPtr("node", node));
+        allocator.free(ln.log.data);
+        allocator.free(ln.log.topics);
+        allocator.destroy(ln);
+    }
 }
 
 pub fn validateBlock(comptime spec: ChainSpec, p_block: *const PreprocessedBlock, parent: *const types.BlockHeader) Errors!void {
