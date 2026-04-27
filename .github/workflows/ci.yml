@@ -24,12 +24,6 @@ jobs:
       - name: Test
         run: zig build test
 
-      - name: Download and extract state test fixtures
-        run: curl -L https://github.com/ethereum/execution-spec-tests/releases/download/v5.4.0/fixtures_develop.tar.gz | tar -xz
-
-      - name: Run state tests
-        run: zig build state-tests -Doptimize=ReleaseSafe
-
   block-tests:
     runs-on: ubuntu-latest
     steps:
@@ -46,3 +40,20 @@ jobs:
 
       - name: Run blockchain tests
         run: zig build blockchain-tests -Doptimize=ReleaseSafe
+
+  state-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Download and extract state test fixtures
+        run: curl -L https://github.com/ethereum/execution-spec-tests/releases/download/v5.4.0/fixtures_develop.tar.gz | tar -xz
+
+      - name: Run state tests
+        run: zig build state-tests -Doptimize=ReleaseSafe
