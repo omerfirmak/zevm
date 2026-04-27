@@ -55,6 +55,7 @@ pub fn processBlock(
     try applyEip2935(&p_block.block.header, state);
 
     var logs: std.DoublyLinkedList = .{};
+    defer freeLogs(&logs, logs_allocator);
     const num_logs_per_tx = try gpa.alloc(usize, p_block.block.transactions.len);
     defer gpa.free(num_logs_per_tx);
     var gas_remaining = p_block.block.header.gas_limit;
@@ -77,7 +78,6 @@ pub fn processBlock(
     if (p_block.block.header.gas_used != p_block.block.header.gas_limit - gas_remaining) return Errors.MismatchedGasUsed;
     if (p_block.block.header.blob_gas_used != blob_gas_used) return Errors.MismatchedBlobGasUsed;
     if (!std.mem.eql(u8, &p_block.block.header.logs_bloom, &computeLogsBloom(&logs))) return Errors.MismatchedLogsBloom;
-    freeLogs(&logs, logs_allocator);
     try applyWithdrawals(&p_block.block, state);
 }
 
