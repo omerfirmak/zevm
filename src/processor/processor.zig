@@ -60,7 +60,7 @@ pub fn processBlock(
     defer gpa.free(num_logs_per_tx);
     var gas_remaining = p_block.block.header.gas_limit;
     var blob_gas_used: u64 = 0;
-    const context = contextFromBlock(spec, &p_block.block, ancestors);
+    var context = contextFromBlock(spec, &p_block.block, ancestors);
     for (p_block.block.transactions, 0..) |*tx, index| {
         const msg = try messageFromTx(gpa, tx, p_block.senders[index]);
         if (msg.gas_limit > gas_remaining) return Errors.InsufficientGas;
@@ -68,10 +68,12 @@ pub fn processBlock(
         var vm = try evm.EVM.init(gpa, logs_allocator, &logs, &msg, &context);
         const gas_used = try vm.process(.{ .fork = EvmSpec.specByFork(spec.fork) }, state);
         gas_remaining -= @intCast(gas_used);
-        blob_gas_used += switch (tx.*) {
-            .blob => |t| t.blob_hashes.len * GAS_PER_BLOB,
+        const blobs_used = switch (tx.*) {
+            .blob => |t| t.blob_hashes.len,
             else => 0,
         };
+        blob_gas_used += blobs_used * GAS_PER_BLOB;
+        context.max_blobs_per_block -= blobs_used;
         num_logs_per_tx[index] = vm.num_logs;
         try clearSelfdestructed(gpa, &vm, state);
     }
