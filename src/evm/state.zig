@@ -59,6 +59,10 @@ pub const State = struct {
         self.transient_storage.revert(snapshot_ids.tstorage);
     }
 
+    pub fn clearAccount(self: *Self, addr: u160) void {
+        _ = self.accounts.dirties.remove(addr);
+    }
+
     pub fn get_code(self: *Self, hash: [32]u8, comptime cfg: Config) !Bytecode {
         if (self.code_storage.get(hash)) |b| {
             return b;
