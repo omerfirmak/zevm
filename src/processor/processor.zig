@@ -317,8 +317,8 @@ fn calcExcessBlobGas(comptime spec: ChainSpec, parent: *const types.BlockHeader)
 
     if (excess_blob_gas < target_gas) return 0;
 
-    const reserve_price = spec.blobs_base_cost * parent.base_fee_per_gas;
-    const blob_price = blobBaseFee(parent.excess_blob_gas, spec.blob_base_fee_update_fraction);
+    const reserve_price = @as(u128, spec.blobs_base_cost) * parent.base_fee_per_gas;
+    const blob_price = blobBaseFee(parent.excess_blob_gas, spec.blob_base_fee_update_fraction) * GAS_PER_BLOB;
     if (reserve_price > blob_price) {
         const scaled_excess = parent.blob_gas_used * (spec.max_blobs_per_block - spec.target_blobs_per_block) / spec.max_blobs_per_block;
         return parent.excess_blob_gas + scaled_excess;
