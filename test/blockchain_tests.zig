@@ -10,11 +10,20 @@ const TxSender = struct {
     sender: utils.HexInt(u160),
 };
 
+const RlpDecodedTx = struct {
+    sender: ?utils.HexInt(u160) = null,
+};
+
+const RlpDecoded = struct {
+    transactions: ?[]RlpDecodedTx = null,
+};
+
 // One entry in the "blocks" array. Valid blocks have no expectException; invalid
 // blocks (which leave the state unchanged) carry an expectException string.
 const BlockEntry = struct {
     rlp: utils.HexBytes,
     transactions: ?[]TxSender = null,
+    rlp_decoded: ?RlpDecoded = null,
     expectException: ?[]const u8 = null,
 };
 
@@ -43,6 +52,13 @@ fn prepareBlock(
     if (block_entry.transactions) |json_txs| {
         senders = try arena.alloc(u160, json_txs.len);
         for (json_txs, senders) |tx, *s| s.* = tx.sender.value;
+    } else if (block_entry.rlp_decoded) |decoded| {
+        if (decoded.transactions) |decoded_txs| {
+            for (decoded_txs, 0..) |tx, i| {
+                if (i >= senders.len) break;
+                if (tx.sender) |sender| senders[i] = sender.value;
+            }
+        }
     }
 
     return .{
