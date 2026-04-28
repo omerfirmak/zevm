@@ -243,7 +243,93 @@ pub const Transaction = union(enum) {
         self.* = @unionInit(Transaction, tag, inner);
         return size;
     }
+
+    pub fn recoveryId(self: *const Transaction) u256 {
+        return switch (self.*) {
+            .legacy => |tx| if (tx.v <= 28) tx.v - 27 else (tx.v - 35) % 2,
+            inline else => |tx| tx.v,
+        };
+    }
+
+    pub fn signingHash(self: *const Transaction, allocator: std.mem.Allocator, chain_id: u64) ![32]u8 {
+        var list = std.array_list.Managed(u8).init(allocator);
+        defer list.deinit();
+        var hasher = std.crypto.hash.sha3.Keccak256.init(.{});
+
+        switch (self.*) {
+            .legacy => |tx| {
+                if (tx.v <= 28) {
+                    try rlp.serialize(StripLast(LegacyTx, 3), allocator, stripLast(LegacyTx, 3, tx), &list);
+                } else {
+                    const Eip155Signing = struct {
+                        nonce: u64,
+                        gas_price: u256,
+                        gas_limit: u64,
+                        to: ?[20]u8,
+                        value: u256,
+                        data: []const u8,
+                        chain_id: u64,
+                        zero1: u8 = 0,
+                        zero2: u8 = 0,
+                    };
+                    try rlp.serialize(Eip155Signing, allocator, .{
+                        .nonce = tx.nonce,
+                        .gas_price = tx.gas_price,
+                        .gas_limit = tx.gas_limit,
+                        .to = tx.to,
+                        .value = tx.value,
+                        .data = tx.data,
+                        .chain_id = chain_id,
+                    }, &list);
+                }
+            },
+            inline else => |tx, tag| {
+                const typedSignHasher = stripLast(@TypeOf(tx), 3, tx);
+
+                hasher.update(&[_]u8{comptime switch (tag) {
+                    .access_list => 1,
+                    .dynamic => 2,
+                    .blob => 3,
+                    .set_code => 4,
+                    .legacy => unreachable,
+                }});
+                try rlp.serialize(@TypeOf(typedSignHasher), allocator, typedSignHasher, &list);
+            },
+        }
+
+        hasher.update(list.items);
+        var hash: [32]u8 = undefined;
+        hasher.final(&hash);
+        return hash;
+    }
 };
+
+fn StripLast(comptime T: type, comptime n: usize) type {
+    const src = @typeInfo(T).@"struct";
+    const count = src.fields.len - n;
+    var field_names: [count][]const u8 = undefined;
+    var field_types: [count]type = undefined;
+    var field_attrs: [count]std.builtin.Type.StructField.Attributes = undefined;
+    for (0..count) |i| {
+        field_names[i] = src.fields[i].name;
+        field_types[i] = src.fields[i].type;
+        field_attrs[i] = .{ .@"comptime" = src.fields[i].is_comptime, .@"align" = src.fields[i].alignment, .default_value_ptr = src.fields[i].default_value_ptr };
+    }
+    return @Struct(
+        .auto,
+        null,
+        &field_names,
+        &field_types,
+        &field_attrs,
+    );
+}
+
+fn stripLast(comptime T: type, comptime n: usize, src: T) StripLast(T, n) {
+    var out: StripLast(T, n) = undefined;
+    inline for (@typeInfo(StripLast(T, n)).@"struct".fields) |f|
+        @field(out, f.name) = @field(src, f.name);
+    return out;
+}
 
 test "legacy tx decode" {
     const allocator = std.testing.allocator;

@@ -9,6 +9,7 @@ const ChainSpec = @import("chainspec.zig").ChainSpec;
 const secp256k1 = @import("zig-eth-secp256k1");
 const Keccak256 = std.crypto.hash.sha3.Keccak256;
 const blobBaseFee = @import("../blob_fee.zig").blobBaseFee;
+const ecrecover = @import("../curve.zig").ecrecover;
 
 const Errors = error{
     GasLimitTooHigh,
@@ -251,13 +252,13 @@ fn convertAuthList(allocator: std.mem.Allocator, auth_list: []const types.Author
             .chain_id = if (src.chain_id > std.math.maxInt(u64)) std.math.maxInt(u64) else @intCast(src.chain_id),
             .address = std.mem.readInt(u160, &src.address, .big),
             .nonce = src.nonce,
-            .authority = recoverEip7702Authority(src),
+            .authority = recoverEip7702Authority(src) catch 0,
         };
     }
     return result;
 }
 
-fn recoverEip7702Authority(auth: types.AuthorizationTuple) u160 {
+fn recoverEip7702Authority(auth: types.AuthorizationTuple) !u160 {
     var stack_buf: [256]u8 = undefined;
     var fba = std.heap.FixedBufferAllocator.init(&stack_buf);
     var encoded = std.array_list.Managed(u8).init(fba.allocator());
@@ -274,16 +275,7 @@ fn recoverEip7702Authority(auth: types.AuthorizationTuple) u160 {
     var hash: [32]u8 = undefined;
     Keccak256.hash(msg[0 .. 1 + encoded.items.len], &hash, .{});
 
-    const curve = secp256k1.Secp256k1.init() catch return 0;
-    var sig: secp256k1.Signature = [_]u8{0} ** 65;
-    std.mem.writeInt(u256, sig[0..32], auth.r, .big);
-    std.mem.writeInt(u256, sig[32..64], auth.s, .big);
-    sig[64] = @intCast(auth.v & 1);
-    const pubkey = curve.recoverPubkey(hash, sig) catch return 0;
-
-    var pubkey_hash: [32]u8 = undefined;
-    Keccak256.hash(pubkey[1..65], &pubkey_hash, .{});
-    return std.mem.readInt(u160, pubkey_hash[12..32], .big);
+    return ecrecover(hash, auth.v, auth.r, auth.s);
 }
 
 pub fn computeLogsBloom(logs: *const std.DoublyLinkedList) [256]u8 {

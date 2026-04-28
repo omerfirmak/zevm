@@ -13,3 +13,4 @@ pub const types = @import("types");
 pub const Fork = @import("forks.zig").Fork;
 
 pub const blobBaseFee = @import("blob_fee.zig").blobBaseFee;
+pub const ecrecover = @import("curve.zig").ecrecover;
