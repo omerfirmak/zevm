@@ -216,6 +216,9 @@ pub fn messageFromTx(
     }, .blob_versioned_hashes = switch (tx.*) {
         .blob => |*t| try convertBlobHashes(allocator, t.blob_hashes),
         else => &.{},
+    }, .max_fee_per_blob_gas = switch (tx.*) {
+        .blob => |*t| t.max_fee_per_blob_gas,
+        else => null,
     } };
 }
 
