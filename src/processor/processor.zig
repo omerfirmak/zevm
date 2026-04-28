@@ -75,6 +75,9 @@ pub fn processBlock(
         context.max_blobs_per_block -= blobs_used;
         num_logs_per_tx[index] = vm.num_logs;
         try clearSelfdestructed(gpa, &vm, state);
+
+        state.transient_storage.dirties.clearRetainingCapacity();
+        state.transient_storage.journal.clearRetainingCapacity();
     }
 
     if (p_block.block.header.gas_used != p_block.block.header.gas_limit - gas_remaining) return Errors.MismatchedGasUsed;
