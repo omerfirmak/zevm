@@ -35,6 +35,8 @@ const Errors = error{
 pub const GAS_PER_BLOB = 131_072;
 pub const HISTORY_CONTRACT: u256 = 0x0000F90827F1C53a10cb7A02335B175320002935;
 pub const HISTORY_SERVE_WINDOW: u64 = 8192;
+const BEACON_ROOTS_ADDRESS: u256 = 0x000F3df6D732807Ef1319fB7B8bB8522d0Beac02;
+const HISTORICAL_ROOTS_MODULUS: u256 = 8191;
 
 pub const PreprocessedBlock = struct {
     block: types.Block,
@@ -53,6 +55,7 @@ pub fn processBlock(
     state: *State,
 ) Errors!void {
     try validateBlock(spec, p_block, parent);
+    try applyEip4788(&p_block.block.header, state);
     try applyEip2935(&p_block.block.header, state);
 
     var logs: std.DoublyLinkedList = .{};
@@ -306,6 +309,14 @@ fn bloomAdd(bloom: *[256]u8, item: []const u8) void {
         const bit: u11 = @truncate(std.mem.readInt(u16, hash[2 * i ..][0..2], .big));
         bloom[255 - bit / 8] |= @as(u8, 1) << @intCast(bit % 8);
     }
+}
+
+fn applyEip4788(header: *const types.BlockHeader, state: *State) !void {
+    const timestamp: u256 = header.timestamp;
+    const root: u256 = std.mem.readInt(u256, &header.parent_beacon_block_root, .big);
+    const idx = timestamp % HISTORICAL_ROOTS_MODULUS;
+    _ = try state.contract_state.write(.{ .address = BEACON_ROOTS_ADDRESS, .slot = idx }, timestamp);
+    _ = try state.contract_state.write(.{ .address = BEACON_ROOTS_ADDRESS, .slot = idx + HISTORICAL_ROOTS_MODULUS }, root);
 }
 
 fn applyEip2935(header: *const types.BlockHeader, state: *State) !void {
