@@ -5,16 +5,10 @@ const state_mod = zevm.state;
 const rlp = @import("rlp");
 const utils = @import("utils.zig");
 
-// Parses only the sender address from a transaction JSON object.
-const TxSender = struct {
-    sender: utils.HexInt(u160),
-};
-
 // One entry in the "blocks" array. Valid blocks have no expectException; invalid
 // blocks (which leave the state unchanged) carry an expectException string.
 const BlockEntry = struct {
     rlp: utils.HexBytes,
-    transactions: ?[]TxSender = null,
     expectException: ?[]const u8 = null,
 };
 
@@ -35,21 +29,25 @@ const BlockchainTestFile = std.json.ArrayHashMap(BlockchainTest);
 fn prepareBlock(
     arena: std.mem.Allocator,
     block_entry: BlockEntry,
+    chain_id: u64,
 ) !zevm.processor.PreprocessedBlock {
     var block: types.Block = undefined;
     _ = try rlp.deserialize(types.Block, arena, block_entry.rlp.value, &block);
 
     var senders = try arena.alloc(u160, block.transactions.len);
-    if (block_entry.transactions) |json_txs| {
-        senders = try arena.alloc(u160, json_txs.len);
-        for (json_txs, senders) |tx, *s| s.* = tx.sender.value;
+    var hashes = try arena.alloc([32]u8, block.transactions.len);
+    for (block.transactions, 0..) |bt, index| {
+        hashes[index] = try bt.signingHash(arena, chain_id);
+        switch (bt) {
+            inline else => |t| senders[index] = try zevm.ecrecover(hashes[index], bt.recoveryId(), t.r, t.s),
+        }
     }
 
     return .{
         .block = block,
         .senders = senders,
+        .txhashes = hashes,
         .rlp_size = block_entry.rlp.value.len,
-        .txhashes = &.{},
     };
 }
 
@@ -80,7 +78,7 @@ fn runBlockchainTest(gpa: std.mem.Allocator, test_case: *const BlockchainTest) !
         defer arena.deinit();
 
         const validate_err: ?anyerror, const prepared: ?zevm.processor.PreprocessedBlock = blk: {
-            const p = prepareBlock(arena.allocator(), block_entry) catch |e| break :blk .{ e, null };
+            const p = prepareBlock(arena.allocator(), block_entry, test_case.config.chainid.value) catch |e| break :blk .{ e, null };
             var ancestors = [_]u256{0} ** 256;
             ancestors[0] = std.mem.readInt(u256, &p.block.header.parent_hash, .big);
             for (0..@min(ancestor_chain_len, 255)) |k| {
