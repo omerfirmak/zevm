@@ -2,6 +2,7 @@ const std = @import("std");
 const evm = @import("evm.zig");
 const mem = @import("memory.zig");
 const secp256k1 = @import("zig-eth-secp256k1");
+const SpinLockOnce = @import("../sync.zig").SpinLockOnce;
 const bls12 = @import("crypto/blst.zig");
 const kzg = @import("ckzg");
 const mcl = @cImport({
@@ -50,26 +51,6 @@ pub const Precompiles = enum(u9) {
     p256verify = 0x100,
 };
 
-fn SpinLockOnce(comptime f: fn () void) type {
-    const NotInitialized: usize = 0;
-    const InProgress: usize = 1;
-    const Done: usize = 2;
-
-    return struct {
-        cur_state: std.atomic.Value(usize) = .init(NotInitialized),
-
-        pub fn call(self: *@This()) void {
-            if (self.cur_state.load(.acquire) == Done) return;
-            if (self.cur_state.cmpxchgStrong(NotInitialized, InProgress, .acq_rel, .acquire) == null) {
-                f();
-                self.cur_state.store(Done, .release);
-                return;
-            }
-            while (self.cur_state.load(.acquire) != Done) std.atomic.spinLoopHint();
-        }
-    };
-}
-
 var kzg_setup: kzg.Settings = .{};
 var kzg_once: SpinLockOnce(loadKzgSetup) = .{};
 fn loadKzgSetup() void {
@@ -113,6 +94,12 @@ fn decodeHexLines(data: []const u8, start: usize, out: []u8, num_lines: usize, b
 var mcl_once: SpinLockOnce(mcl_init) = .{};
 fn mcl_init() void {
     if (mcl.mclBn_init(mcl.mclBn_CurveSNARK1, mcl.MCLBN_COMPILED_TIME_VAR) != 0) unreachable;
+}
+
+var secp256k1_ctx: secp256k1.Secp256k1 = undefined;
+var secp256k1_once: SpinLockOnce(secp256k1_init) = .{};
+fn secp256k1_init() void {
+    secp256k1_ctx = secp256k1.Secp256k1.init() catch @panic("secp256k1 init failed");
 }
 
 const bls12_g1_discounts = [_]u16{
@@ -311,12 +298,12 @@ pub fn Handlers(comptime fork: Spec) type {
             const v = padded[63];
             if (v != 27 and v != 28) return bail;
 
-            const curve = secp256k1.Secp256k1.init() catch unreachable;
+            secp256k1_once.call();
             var sig: secp256k1.Signature = [_]u8{0} ** 65;
             @memcpy(sig[0..64], padded[64..128]);
             sig[64] = v - 27;
 
-            const pubkey = curve.recoverPubkey(padded[0..32].*, sig) catch return bail;
+            const pubkey = secp256k1_ctx.recoverPubkey(padded[0..32].*, sig) catch return bail;
 
             // Keccak256 of uncompressed pubkey (skip 0x04 prefix), take last 20 bytes as address
             var pubkey_hash: [32]u8 = undefined;
