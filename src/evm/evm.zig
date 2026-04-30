@@ -20,8 +20,7 @@ pub const Errors = error{
     StackUnderflow,
     InvalidJumpDest,
     GasOverflow,
-    NonceTooLow,
-    NonceTooHigh,
+    NonceMismatch,
     NonceMax,
     NotEnoughFunds,
     ReturnDataOutOfBounds,
@@ -350,10 +349,8 @@ pub const EVM = struct {
 
         _ = self.accessAccount(msg.caller);
         var caller_account = try state.accounts.update(msg.caller);
-        if (caller_account.nonce < msg.nonce) {
-            return Errors.NonceTooLow;
-        } else if (caller_account.nonce > msg.nonce) {
-            return Errors.NonceTooHigh;
+        if (caller_account.nonce != msg.nonce) {
+            return Errors.NonceMismatch;
         } else if (msg.nonce == std.math.maxInt(u64)) {
             return Errors.NonceMax;
         }
