@@ -258,8 +258,10 @@ const exception_map = .{
     .{ "TransactionException.TYPE_3_TX_MAX_BLOB_GAS_ALLOWANCE_EXCEEDED", evm.Errors.TooManyBlobs },
     .{ "TransactionException.TYPE_3_TX_BLOB_COUNT_EXCEEDED", evm.Errors.TooManyBlobs },
     .{ "TransactionException.TYPE_3_TX_CONTRACT_CREATION", evm.Errors.CreateBlobTx },
+    .{ "TransactionException.TYPE_3_TX_CONTRACT_CREATION", error.RlpInvalidLength },
     .{ "TransactionException.INSUFFICIENT_MAX_FEE_PER_BLOB_GAS", evm.Errors.InsufficientMaxFeePerBlobGas },
     .{ "TransactionException.TYPE_4_EMPTY_AUTHORIZATION_LIST", evm.Errors.EmptyAuthorizationList },
+    .{ "TransactionException.TYPE_4_TX_CONTRACT_CREATION", error.RlpInvalidLength },
     .{ "TransactionException.TYPE_4_TX_CONTRACT_CREATION", evm.Errors.CreateSetCodeTx },
     // Block exceptions — processor errors
     .{ "TransactionException.TYPE_3_TX_MAX_BLOB_GAS_ALLOWANCE_EXCEEDED", error.InvalidBlobGasUsed },
