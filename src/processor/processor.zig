@@ -11,6 +11,8 @@ const Keccak256 = std.crypto.hash.sha3.Keccak256;
 const Sha256 = std.crypto.hash.sha2.Sha256;
 const blobBaseFee = @import("../blob_fee.zig").blobBaseFee;
 const ecrecover = @import("../curve.zig").ecrecover;
+const Trie = @import("../trie/trie.zig").Trie;
+const empty_root_hash = @import("../trie/trie.zig").empty_root_hash;
 
 const Errors = error{
     GasLimitTooHigh,
@@ -32,6 +34,7 @@ const Errors = error{
     MismatchedBlobGasUsed,
     MismatchedExcessBlobGas,
     MismatchedRequestsHash,
+    MismatchedWithdrawalsRoot,
     SyscallRevert,
 };
 
@@ -105,6 +108,9 @@ pub fn processBlock(
 
     if (p_block.block.header.gas_used != p_block.block.header.gas_limit - gas_remaining) return Errors.MismatchedGasUsed;
     if (!std.mem.eql(u8, &p_block.block.header.logs_bloom, &computeLogsBloom(&logs))) return Errors.MismatchedLogsBloom;
+
+    const withdrawals_root = try computeWithdrawalsRoot(gpa, &p_block.block);
+    if (!std.mem.eql(u8, &withdrawals_root, &p_block.block.header.withdrawals_root)) return Errors.MismatchedWithdrawalsRoot;
     try applyWithdrawals(&p_block.block, state);
 
     const requests_hash = try computeRequestsHash(&vm, spec, state, &logs);
@@ -184,6 +190,30 @@ fn hashSystemCall(
         inner.update(ret);
         outer.update(&inner.finalResult());
     }
+}
+
+fn computeWithdrawalsRoot(gpa: std.mem.Allocator, block: *const types.Block) ![32]u8 {
+    const n = block.withdrawals.len;
+    if (n == 0) return empty_root_hash;
+    const fba_buf = try gpa.alloc(u8, 1024 * 1024);
+    defer gpa.free(fba_buf);
+    var fba = std.heap.FixedBufferAllocator.init(fba_buf);
+    var trie = try Trie.init(&fba);
+    defer trie.deinit();
+
+    // Insert in nibble-sorted key order
+    const ranges = [3][2]usize{ .{ 1, @min(0x80, n) }, .{ 0, @min(1, n) }, .{ 0x80, n } };
+    for (ranges) |range| {
+        var i = range[0];
+        while (i < range[1]) : (i += 1) {
+            var key_list = std.array_list.Managed(u8).init(fba.allocator());
+            try rlp.serialize(usize, fba.allocator(), i, &key_list);
+            var val_list = std.array_list.Managed(u8).init(fba.allocator());
+            try rlp.serialize(types.Withdrawal, fba.allocator(), block.withdrawals[i], &val_list);
+            try trie.put(key_list.items, val_list.items);
+        }
+    }
+    return trie.rootHash();
 }
 
 fn applyWithdrawals(block: *const types.Block, state: *State) !void {
