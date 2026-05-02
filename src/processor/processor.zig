@@ -32,6 +32,7 @@ const Errors = error{
     MismatchedBlobGasUsed,
     MismatchedExcessBlobGas,
     MismatchedRequestsHash,
+    SyscallRevert,
 };
 
 pub const GAS_PER_BLOB = 131_072;
@@ -123,9 +124,9 @@ fn computeRequestsHash(
     vm.logs = &dummy_logs;
 
     vm.reset();
-    hashSystemCall(vm, spec, WITHDRAWAL_REQUEST_PREDEPLOY_ADDRESS, 0x01, state, &outer);
+    try hashSystemCall(vm, spec, WITHDRAWAL_REQUEST_PREDEPLOY_ADDRESS, 0x01, state, &outer);
     vm.reset();
-    hashSystemCall(vm, spec, CONSOLIDATION_REQUEST_PREDEPLOY_ADDRESS, 0x02, state, &outer);
+    try hashSystemCall(vm, spec, CONSOLIDATION_REQUEST_PREDEPLOY_ADDRESS, 0x02, state, &outer);
 
     return outer.finalResult();
 }
@@ -170,12 +171,12 @@ fn hashSystemCall(
     type_byte: u8,
     state: *State,
     outer: *Sha256,
-) void {
+) !void {
     const calldata: []u8 = &.{};
-    const result = vm.call(.{
+    _, const call_err = vm.call(.{
         .fork = EvmSpec.specByFork(spec.fork),
     }, state, SYSTEM_ADDRESS, target, target, SYSTEM_CALL_GAS, calldata, 0, 0, &.{}, true, false) catch return;
-    if (result[1] != null) return;
+    if (call_err) |_| return Errors.SyscallRevert;
     const ret = vm.return_buffer[0..vm.return_data_size];
     if (ret.len > 0) {
         var inner = Sha256.init(.{});
