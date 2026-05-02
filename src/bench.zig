@@ -1,10 +1,10 @@
 const std = @import("std");
 const clap = @import("clap");
-const evm = @import("evm.zig");
+const evm = @import("evm/evm.zig");
 const types = @import("types");
-const state_mod = @import("state.zig");
-const spec = @import("spec.zig");
-const Config = @import("config.zig").Config;
+const state_mod = @import("evm/state.zig");
+const spec = @import("evm/spec.zig");
+const Config = @import("evm/config.zig").Config;
 
 const BenchmarkDef = struct {
     name: []const u8,
@@ -112,9 +112,8 @@ fn runBenchmark(io: std.Io, allocator: std.mem.Allocator, bench_def: BenchmarkDe
         .random = 0,
         .basefee = 0,
         .gas_limit = @intCast(bench_def.gas_limit),
-        .excess_blob_gas = 0,
+        .blob_base_fee = 0,
         .max_blobs_per_block = 9,
-        .blob_base_fee_update_fraction = 5_000_000,
         .ancestors = [_]u256{0} ** 256,
     };
 
@@ -148,9 +147,9 @@ fn runBenchmark(io: std.Io, allocator: std.mem.Allocator, bench_def: BenchmarkDe
         _ = vm_arena.reset(.retain_capacity);
         var logs: std.DoublyLinkedList = .{};
 
-        var vm = try evm.EVM.init(vm_arena.allocator(), vm_arena.allocator(), &logs, &msg, &context);
+        var vm = try evm.EVM.init(vm_arena.allocator(), vm_arena.allocator(), &logs, &context);
         start = .zero;
-        gas_used = vm.process(bench_fork, &state) catch |err| {
+        gas_used = vm.process(bench_fork, &msg, &state) catch |err| {
             std.debug.print("error at iter {d}: {}\n", .{ i, err });
             return;
         };
