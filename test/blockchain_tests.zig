@@ -65,7 +65,6 @@ fn runBlockchainTest(gpa: std.mem.Allocator, test_case: *const BlockchainTest) !
     };
 
     var state = try state_mod.State.init(arena_allocator, &committed, 10_000_000);
-    defer state.deinit(arena_allocator);
 
     // ancestor_chain[k] = parent_hash of the block that is k+1 levels below the current parent.
     // Invariant: ancestors[0] for the next block = prepared.block.header.parent_hash (read directly);
