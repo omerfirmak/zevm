@@ -12,7 +12,7 @@ pub fn main() !void {
     // Set up world state with enough capacity for this example.
     const CommittedState = @import("committed_state").CommittedState;
     const committed_state = CommittedState{};
-    var state = try zevm.state.State.init(allocator, &committed_state, 100_000);
+    var state = try zevm.state.State.init(allocator, &committed_state, fork.stateCapacities(30_000_000));
     defer state.deinit(allocator);
 
     // Sender and contract are pre-funded/deployed by the custom CommittedState.
@@ -52,7 +52,7 @@ pub fn main() !void {
     const vm_alloc = vm_arena.allocator();
 
     var logs: std.DoublyLinkedList = .{};
-    var vm = try zevm.evm.EVM.init(vm_alloc, vm_alloc, &logs, &context);
+    var vm = try zevm.evm.EVM.init(vm_alloc, vm_alloc, &logs, &context, fork.evmCapacities());
 
     // process() returns an error only for invalid transactions (bad nonce, insufficient
     // funds, etc.). Reverts are NOT errors — check return data for revert payloads.

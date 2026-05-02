@@ -106,6 +106,85 @@ pub const Spec = struct {
     ecpairing_gas: i32,
     ecpairing_per_pair_gas: i32,
 
+    /// Pre-allocation sizes for State, derived from spec gas costs.
+    pub const StateCapacities = struct {
+        account_dirties: u32,
+        account_journal: u32,
+        contract_dirties: u32,
+        contract_journal: u32,
+        transient_dirties: u32,
+        transient_journal: u32,
+        code_slots: u32,
+        bytecode_buf: usize,
+    };
+
+    /// Pre-allocation sizes for EVM, derived from spec gas costs.
+    pub const EvmCapacities = struct {
+        pre_state: u32,
+        warm_accounts: u32,
+        warm_slots: u32,
+        created: u32,
+        return_buf: usize,
+    };
+
+    /// Derive tight State pre-allocation sizes from a transaction gas limit.
+    pub fn stateCapacities(self: *const Self, gas_limit: u64) StateCapacities {
+        const tstore_gas: u64 = self.gas_table[@intFromEnum(Opcode.TSTORE)];
+        const sstore_min_gas: u64 = @as(u64, @intCast(self.cold_sload_gas)) + @as(u64, @intCast(self.sstore_reset_gas));
+        const warm: u64 = @intCast(self.warm_access_gas);
+        // Cheapest account write: CALL with value — each call modifies sender + receiver (×2)
+        const acct_write: u64 = warm + @as(u64, @intCast(self.call_value_gas));
+
+        const max_tx_gas = @as(u64, @intCast(self.max_tx_gas));
+        // Dirties: unique keys modified; ×2 for accounts because one CALL touches two accounts
+        const as_: u32 = @intCast((gas_limit / acct_write) * 2);
+        const cs: u32 = @intCast(gas_limit / sstore_min_gas);
+        const ts: u32 = @intCast(max_tx_gas / tstore_gas);
+
+        // Journal: cleared between txns, so bounded by max_tx_gas.
+        // Only value-bearing CALLs write account entries; each costs warm + call_value_gas (×2 accounts).
+        const aj: u32 = @intCast((max_tx_gas / acct_write) * 2);
+        // Contract slots: re-writes to a warm dirty slot cost only warm_access_gas
+        const cj: u32 = @intCast(max_tx_gas / warm);
+        // Transient: each TSTORE costs tstore_gas regardless of whether the slot was already dirty
+        const tj: u32 = @intCast(max_tx_gas / tstore_gas);
+
+        return .{
+            .account_dirties = as_,
+            .account_journal = aj,
+            .contract_dirties = cs,
+            .contract_journal = cj,
+            .transient_dirties = ts,
+            .transient_journal = tj,
+            .code_slots = 1_000,
+            .bytecode_buf = 4 * 1024 * 1024,
+        };
+    }
+
+    /// Derive tight EVM pre-allocation sizes from the spec's max_tx_gas.
+    pub fn evmCapacities(self: *const Self) EvmCapacities {
+        const gas_limit: u64 = @intCast(self.max_tx_gas);
+        const cold_account: u64 = @intCast(self.cold_account_access_gas);
+        const cold_slot: u64 = @intCast(self.cold_sload_gas);
+        const sstore_min: u64 = cold_slot + @as(u64, @intCast(self.sstore_reset_gas));
+        const create_gas: u64 = self.gas_table[@intFromEnum(Opcode.CREATE)];
+        // All three are per-tx (cleared in reset()), so bounded by max_tx_gas / first-access cost.
+        // warm_accounts: writeNoClobber, one entry per unique cold account
+        const wa: u32 = @intCast(gas_limit / cold_account);
+        // warm_slots: writeNoClobber, one entry per unique cold slot
+        const ws: u32 = @intCast(gas_limit / cold_slot);
+        // pre_state: getOrPut on first SSTORE per slot
+        const ps: u32 = @intCast(gas_limit / sstore_min);
+        const ca: u32 = @intCast(gas_limit / create_gas);
+        // Invert EIP-150 memory cost formula: words²/512 + 3*words = gas
+        // => words² + 1536*words - 512*gas = 0
+        // => words = (-1536 + sqrt(1536² + 2048*gas)) / 2
+        const quadratic_discriminant: u64 = 2_359_296 + 2048 * gas_limit;
+        const mem_words: u64 = (std.math.sqrt(quadratic_discriminant) -| 1536) / 2;
+        const ret: usize = @intCast(mem_words * 32);
+        return .{ .pre_state = ps, .warm_accounts = wa, .warm_slots = ws, .created = ca, .return_buf = ret };
+    }
+
     pub fn constantGas(self: *const Self, comptime op: Opcode) i32 {
         return @intCast(self.gas_table[@intFromEnum(op)]);
     }

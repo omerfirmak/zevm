@@ -43,16 +43,11 @@ fn runBlockchainTest(gpa: std.mem.Allocator, test_case: *const BlockchainTest) !
     var committed = try utils.buildCommittedState(gpa, test_case.pre);
     defer committed.deinit();
 
-    var genesis_arena = std.heap.ArenaAllocator.init(gpa);
-    const arena_allocator = genesis_arena.allocator();
-    defer genesis_arena.deinit();
     var parent: types.Block = blk: {
         var block: types.Block = undefined;
-        _ = try rlp.deserialize(types.Block, genesis_arena.allocator(), test_case.genesisRLP.value, &block);
+        _ = try rlp.deserialize(types.Block, gpa, test_case.genesisRLP.value, &block);
         break :blk block;
     };
-
-    var state = try state_mod.State.init(arena_allocator, &committed, 10_000_000);
 
     // ancestor_chain[k] = parent_hash of the block that is k+1 levels below the current parent.
     // Invariant: ancestors[0] for the next block = prepared.block.header.parent_hash (read directly);
@@ -60,17 +55,28 @@ fn runBlockchainTest(gpa: std.mem.Allocator, test_case: *const BlockchainTest) !
     var ancestor_chain: [255][32]u8 = undefined;
     var ancestor_chain_len: usize = 0;
 
-    for (test_case.blocks) |block_entry| {
+    var prep_arena = std.heap.ArenaAllocator.init(gpa);
+    defer prep_arena.deinit();
+    const blocks_parsed = try prep_arena.allocator().alloc(anyerror!zevm.processor.PreprocessedBlock, test_case.blocks.len);
+    var total_gas: u64 = 30_000_000;
+    for (test_case.blocks, blocks_parsed) |block_entry, *slot| {
+        slot.* = prepareBlock(prep_arena.allocator(), block_entry);
+        if (slot.*) |p| total_gas += p.block.header.gas_used else |_| {}
+    }
+    var state = try state_mod.State.init(prep_arena.allocator(), &committed, zevm.spec.Osaka.stateCapacities(total_gas));
+
+    for (test_case.blocks, blocks_parsed) |block_entry, parse_result| {
         var arena = std.heap.ArenaAllocator.init(gpa);
         defer arena.deinit();
 
         const validate_err: ?anyerror, const prepared: ?zevm.processor.PreprocessedBlock = blk: {
-            const p = prepareBlock(arena.allocator(), block_entry) catch |e| break :blk .{ e, null };
+            const p = parse_result catch |e| break :blk .{ e, null };
             var ancestors = [_]u256{0} ** 256;
             ancestors[0] = std.mem.readInt(u256, &p.block.header.parent_hash, .big);
             for (0..@min(ancestor_chain_len, 255)) |k| {
                 ancestors[k + 1] = std.mem.readInt(u256, &ancestor_chain[k], .big);
             }
+
             const proc_err: ?anyerror = if (zevm.processor.processBlock(
                 arena.allocator(),
                 gpa,
