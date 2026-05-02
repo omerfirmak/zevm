@@ -290,6 +290,7 @@ const exception_map = .{
     .{ "BlockException.RLP_STRUCTURES_ENCODING", error.NotAnRLPList },
     .{ "BlockException.RLP_STRUCTURES_ENCODING", error.EOF },
     .{ "BlockException.RLP_STRUCTURES_ENCODING", error.OffsetOverflow },
+    .{ "BlockException.SYSTEM_CONTRACT_CALL_FAILED", error.SyscallRevert },
 };
 
 pub fn mapException(name: []const u8) ?anyerror {
