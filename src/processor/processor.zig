@@ -64,12 +64,14 @@ pub fn processBlock(
     defer gpa.free(num_logs_per_tx);
     var gas_remaining = p_block.block.header.gas_limit;
     var context = contextFromBlock(spec, &p_block.block, ancestors);
+
+    var vm = try evm.EVM.init(gpa, logs_allocator, &logs, &context);
+
     for (p_block.block.transactions, 0..) |*tx, index| {
         const msg = try messageFromTx(gpa, tx, p_block.senders[index]);
         if (msg.gas_limit > gas_remaining) return Errors.InsufficientGas;
 
-        var vm = try evm.EVM.init(gpa, logs_allocator, &logs, &msg, &context);
-        const gas_used = try vm.process(.{ .fork = EvmSpec.specByFork(spec.fork) }, state);
+        const gas_used = try vm.process(.{ .fork = EvmSpec.specByFork(spec.fork) }, &msg, state);
         gas_remaining -= @intCast(gas_used);
         const blobs_used = switch (tx.*) {
             .blob => |t| t.blob_hashes.len,
@@ -81,6 +83,7 @@ pub fn processBlock(
 
         state.transient_storage.dirties.clearRetainingCapacity();
         state.transient_storage.journal.clearRetainingCapacity();
+        vm.reset();
     }
 
     if (p_block.block.header.gas_used != p_block.block.header.gas_limit - gas_remaining) return Errors.MismatchedGasUsed;

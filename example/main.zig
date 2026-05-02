@@ -52,14 +52,14 @@ pub fn main() !void {
     const vm_alloc = vm_arena.allocator();
 
     var logs: std.DoublyLinkedList = .{};
-    var vm = try zevm.evm.EVM.init(vm_alloc, vm_alloc, &logs, &msg, &context);
+    var vm = try zevm.evm.EVM.init(vm_alloc, vm_alloc, &logs, &context);
 
     // process() returns an error only for invalid transactions (bad nonce, insufficient
     // funds, etc.). Reverts are NOT errors — check return data for revert payloads.
     _ = vm.process(.{
         .fork = fork,
         .tracing_enabled = true,
-    }, &state) catch |err| {
+    }, &msg, &state) catch |err| {
         std.debug.print("transaction invalid: {}\n", .{err});
         return;
     };

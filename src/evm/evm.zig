@@ -223,7 +223,6 @@ pub const EVM = struct {
         gpa: std.mem.Allocator,
         logs_allocator: std.mem.Allocator,
         logs: *std.DoublyLinkedList,
-        msg: *const Message,
         context: *const Context,
     ) !Self {
         var rounded_allocator = RoundedAllocator{ .backing = gpa };
@@ -232,7 +231,7 @@ pub const EVM = struct {
         try pre_state.ensureTotalCapacity(allocator, 10_000);
         return Self{
             .rounded_allocator = rounded_allocator,
-            .msg = msg,
+            .msg = undefined,
             .context = context,
             .return_buffer = try allocator.alloc(u8, 16 * 1024 * 1024),
             .return_data_size = 0,
@@ -240,12 +239,25 @@ pub const EVM = struct {
             .warm_accounts = try storage.AccountsAccessList.init(allocator, 10_000, 10_000, {}),
             .warm_slots = try storage.SlotsAccessList.init(allocator, 10_000, 10_000, {}),
             .gas_refund = 0,
-            .effective_gas_price = effectiveGasPrice(msg, context.basefee),
+            .effective_gas_price = undefined,
             .created_accounts = try storage.CreatedAccounts.init(allocator, 1_000, 2_000, {}),
             .logs_allocator = logs_allocator,
             .logs = logs,
             .num_logs = 0,
         };
+    }
+
+    pub fn reset(self: *Self) void {
+        self.return_data_size = 0;
+        self.gas_refund = 0;
+        self.num_logs = 0;
+        self.pre_state.clearRetainingCapacity();
+        self.warm_accounts.dirties.clearRetainingCapacity();
+        self.warm_accounts.journal.clearRetainingCapacity();
+        self.warm_slots.dirties.clearRetainingCapacity();
+        self.warm_slots.journal.clearRetainingCapacity();
+        self.created_accounts.dirties.clearRetainingCapacity();
+        self.created_accounts.journal.clearRetainingCapacity();
     }
 
     pub fn snapshot(self: *Self) Snapshot {
@@ -296,8 +308,9 @@ pub const EVM = struct {
         return .{ 0, 0 };
     }
 
-    pub fn process(self: *Self, comptime cfg: Config, state: *State) !i32 {
-        const msg = self.msg;
+    pub fn process(self: *Self, comptime cfg: Config, msg: *const Message, state: *State) !i32 {
+        self.msg = msg;
+        self.effective_gas_price = effectiveGasPrice(msg, self.context.basefee);
 
         if (self.effective_gas_price < self.context.basefee) {
             return Errors.FeeTooLow;

@@ -270,27 +270,26 @@ fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []con
             arena_allocator,
             logs_allocator.allocator(),
             &logs,
-            &.{
-                .caller = tx.sender.value,
-                .nonce = tx.nonce.value,
-                .target = to,
-                .gas_limit = @intCast(gas_limit),
-                .gas_price = if (tx.gasPrice) |gp| gp.value else null,
-                .max_fee_per_gas = if (tx.maxFeePerGas) |mfpg| mfpg.value else null,
-                .max_priority_fee_per_gas = if (tx.maxPriorityFeePerGas) |mpfpg| mpfpg.value else null,
-                .calldata = calldata,
-                .value = value,
-                .access_list = access_list,
-                .max_fee_per_blob_gas = if (tx.maxFeePerBlobGas) |mfpbg| mfpbg.value else null,
-                .blob_versioned_hashes = blob_hashes,
-                .authorization_list = auth_list,
-            },
             &context,
         );
 
         const tx_err: ?anyerror = if (vm.process(.{
             .fork = forkSpec,
             .tracing_enabled = trace,
+        }, &.{
+            .caller = tx.sender.value,
+            .nonce = tx.nonce.value,
+            .target = to,
+            .gas_limit = @intCast(gas_limit),
+            .gas_price = if (tx.gasPrice) |gp| gp.value else null,
+            .max_fee_per_gas = if (tx.maxFeePerGas) |mfpg| mfpg.value else null,
+            .max_priority_fee_per_gas = if (tx.maxPriorityFeePerGas) |mpfpg| mpfpg.value else null,
+            .calldata = calldata,
+            .value = value,
+            .access_list = access_list,
+            .max_fee_per_blob_gas = if (tx.maxFeePerBlobGas) |mfpbg| mfpbg.value else null,
+            .blob_versioned_hashes = blob_hashes,
+            .authorization_list = auth_list,
         }, &state)) |_| null else |err| err;
 
         if (post_entry.expectException) |expected| {
