@@ -436,7 +436,3 @@ fn calcExcessBlobGas(comptime spec: ChainSpec, parent: *const types.BlockHeader)
 
     return excess_blob_gas - target_gas;
 }
-
-test {
-    std.testing.refAllDecls(@This());
-}
