@@ -226,7 +226,6 @@ fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []con
 
         const arena_allocator = arena.allocator();
         var state = try state_mod.State.init(arena_allocator, &committed, 10_000_000);
-        defer state.deinit(arena_allocator);
 
         const gas_limit = tx.gasLimit[post_entry.indexes.gas].value;
         const value = tx.value[post_entry.indexes.value].value;
