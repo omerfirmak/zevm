@@ -191,6 +191,10 @@ pub const Log = struct {
     }
 };
 
+/// Pre-allocation sizes for EVM. Use Spec.evmCapacities() to
+/// derive bounds from the spec's max_tx_gas and current gas costs.
+pub const EvmCapacities = Spec.EvmCapacities;
+
 pub const EVM = struct {
     const Self = @This();
 
@@ -224,23 +228,24 @@ pub const EVM = struct {
         logs_allocator: std.mem.Allocator,
         logs: *std.DoublyLinkedList,
         context: *const Context,
+        caps: EvmCapacities,
     ) !Self {
         var rounded_allocator = RoundedAllocator{ .backing = gpa };
         const allocator = rounded_allocator.allocator();
         var pre_state: storage.SlotKeyedMap(u256) = .empty;
-        try pre_state.ensureTotalCapacity(allocator, 10_000);
+        try pre_state.ensureTotalCapacity(allocator, caps.pre_state);
         return Self{
             .rounded_allocator = rounded_allocator,
             .msg = undefined,
             .context = context,
-            .return_buffer = try allocator.alloc(u8, 16 * 1024 * 1024),
+            .return_buffer = try allocator.alloc(u8, caps.return_buf),
             .return_data_size = 0,
             .pre_state = pre_state,
-            .warm_accounts = try storage.AccountsAccessList.init(allocator, 10_000, 10_000, {}),
-            .warm_slots = try storage.SlotsAccessList.init(allocator, 10_000, 10_000, {}),
+            .warm_accounts = try storage.AccountsAccessList.init(allocator, caps.warm_accounts, caps.warm_accounts, {}),
+            .warm_slots = try storage.SlotsAccessList.init(allocator, caps.warm_slots, caps.warm_slots, {}),
             .gas_refund = 0,
             .effective_gas_price = undefined,
-            .created_accounts = try storage.CreatedAccounts.init(allocator, 1_000, 2_000, {}),
+            .created_accounts = try storage.CreatedAccounts.init(allocator, caps.created, caps.created * 2, {}),
             .logs_allocator = logs_allocator,
             .logs = logs,
             .num_logs = 0,
@@ -494,15 +499,13 @@ pub const EVM = struct {
         const evm_snap = self.snapshot();
 
         self.return_data_size = 0;
-        if (!skip_value_transfer) {
+        if (!skip_value_transfer and value > 0) {
             var caller_account = try state.accounts.update(caller);
             if (caller_account.balance < value) {
                 return .{ initial_gas, Errors.NotEnoughFunds };
             }
             caller_account.balance -= value;
-            if (value > 0) {
-                (try state.accounts.update(target)).balance += value;
-            }
+            (try state.accounts.update(target)).balance += value;
         }
 
         var remaining_gas, var err = .{ initial_gas, @as(?Errors, null) };

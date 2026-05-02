@@ -224,10 +224,11 @@ fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []con
         var committed = try utils.buildCommittedState(gpa, test_case.pre);
         defer committed.deinit();
 
-        const arena_allocator = arena.allocator();
-        var state = try state_mod.State.init(arena_allocator, &committed, 10_000_000);
-
         const gas_limit = tx.gasLimit[post_entry.indexes.gas].value;
+
+        const arena_allocator = arena.allocator();
+        var state = try state_mod.State.init(arena_allocator, &committed, forkSpec.stateCapacities(gas_limit));
+
         const value = tx.value[post_entry.indexes.value].value;
         const calldata = tx.data[post_entry.indexes.data].value;
 
@@ -271,6 +272,7 @@ fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []con
             logs_allocator.allocator(),
             &logs,
             &context,
+            forkSpec.evmCapacities(),
         );
 
         const tx_err: ?anyerror = if (vm.process(.{
