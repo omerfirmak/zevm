@@ -8,6 +8,7 @@ const State = @import("../evm/state.zig").State;
 const ChainSpec = @import("chainspec.zig").ChainSpec;
 const secp256k1 = @import("zig-eth-secp256k1");
 const Keccak256 = std.crypto.hash.sha3.Keccak256;
+const Sha256 = std.crypto.hash.sha2.Sha256;
 const blobBaseFee = @import("../blob_fee.zig").blobBaseFee;
 const ecrecover = @import("../curve.zig").ecrecover;
 
@@ -30,6 +31,7 @@ const Errors = error{
     InvalidBlobGasUsed,
     MismatchedBlobGasUsed,
     MismatchedExcessBlobGas,
+    MismatchedRequestsHash,
 } || evm.Errors || std.mem.Allocator.Error;
 
 pub const GAS_PER_BLOB = 131_072;
@@ -37,6 +39,12 @@ pub const HISTORY_CONTRACT: u256 = 0x0000F90827F1C53a10cb7A02335B175320002935;
 pub const HISTORY_SERVE_WINDOW: u64 = 8192;
 const BEACON_ROOTS_ADDRESS: u256 = 0x000F3df6D732807Ef1319fB7B8bB8522d0Beac02;
 const HISTORICAL_ROOTS_MODULUS: u256 = 8191;
+const SYSTEM_ADDRESS: u160 = 0xfffffffffffffffffffffffffffffffffffffffe;
+const DEPOSIT_CONTRACT: u160 = 0x00000000219ab540356cBB839Cbe05303d7705Fa;
+const WITHDRAWAL_REQUEST_PREDEPLOY_ADDRESS: u160 = 0x00000961ef480eb55e80d19ad83579a64c007002;
+const CONSOLIDATION_REQUEST_PREDEPLOY_ADDRESS: u160 = 0x0000bbddc7ce488642fb579f8b00f3a590007251;
+const SYSTEM_CALL_GAS: i32 = 30_000_000;
+const DEPOSIT_EVENT_TOPIC: u256 = 0x649bbc62d0e31342afea4e5cd82d4049e7e1ee912fc0889aa790803be39038c5;
 
 pub const PreprocessedBlock = struct {
     block: types.Block,
@@ -89,6 +97,84 @@ pub fn processBlock(
     if (p_block.block.header.gas_used != p_block.block.header.gas_limit - gas_remaining) return Errors.MismatchedGasUsed;
     if (!std.mem.eql(u8, &p_block.block.header.logs_bloom, &computeLogsBloom(&logs))) return Errors.MismatchedLogsBloom;
     try applyWithdrawals(&p_block.block, state);
+
+    const requests_hash = try computeRequestsHash(&vm, spec, state, &logs);
+    if (!std.mem.eql(u8, &requests_hash, &p_block.block.header.requests_hash)) return Errors.MismatchedRequestsHash;
+}
+
+fn computeRequestsHash(
+    vm: *evm.EVM,
+    comptime spec: ChainSpec,
+    state: *State,
+    logs: *const std.DoublyLinkedList,
+) Errors![32]u8 {
+    var outer = Sha256.init(.{});
+    try hashDepositRequests(logs, &outer);
+
+    var dummy_logs: std.DoublyLinkedList = .{};
+    vm.logs = &dummy_logs;
+
+    vm.reset();
+    hashSystemCall(vm, spec, WITHDRAWAL_REQUEST_PREDEPLOY_ADDRESS, 0x01, state, &outer);
+    vm.reset();
+    hashSystemCall(vm, spec, CONSOLIDATION_REQUEST_PREDEPLOY_ADDRESS, 0x02, state, &outer);
+
+    return outer.finalResult();
+}
+
+fn hashDepositRequests(logs: *const std.DoublyLinkedList, outer: *Sha256) Errors!void {
+    var inner = Sha256.init(.{});
+    var count: usize = 0;
+    inner.update(&[_]u8{0x00});
+    var node = logs.first;
+    while (node) |n| {
+        const ln: *const evm.EVM.LogNode = @alignCast(@fieldParentPtr("node", n));
+        if (ln.log.address == DEPOSIT_CONTRACT and
+            ln.log.topics.len > 0 and ln.log.topics[0] == DEPOSIT_EVENT_TOPIC)
+        {
+            if (!hashDepositLog(&inner, ln.log.data)) return Errors.MismatchedRequestsHash;
+            count += 1;
+        }
+        node = n.next;
+    }
+    if (count > 0) outer.update(&inner.finalResult());
+}
+
+fn hashDepositLog(inner: *Sha256, data: []const u8) bool {
+    if (data.len < 576) return false;
+    const field_sizes = [_]usize{ 48, 32, 8, 96, 8 };
+    var fields: [5][]const u8 = undefined;
+    for (field_sizes, 0..) |size, i| {
+        const off = std.math.cast(usize, std.mem.readInt(u256, data[i * 32 ..][0..32], .big)) orelse return false;
+        if (off + 32 + size > data.len) return false;
+        const length = std.math.cast(usize, std.mem.readInt(u256, data[off..][0..32], .big)) orelse return false;
+        if (length != size) return false;
+        fields[i] = data[off + 32 .. off + 32 + size];
+    }
+    for (fields) |f| inner.update(f);
+    return true;
+}
+
+fn hashSystemCall(
+    vm: *evm.EVM,
+    comptime spec: ChainSpec,
+    target: u160,
+    type_byte: u8,
+    state: *State,
+    outer: *Sha256,
+) void {
+    const calldata: []u8 = &.{};
+    const result = vm.call(.{
+        .fork = EvmSpec.specByFork(spec.fork),
+    }, state, SYSTEM_ADDRESS, target, target, SYSTEM_CALL_GAS, calldata, 0, 0, &.{}, true, false) catch return;
+    if (result[1] != null) return;
+    const ret = vm.return_buffer[0..vm.return_data_size];
+    if (ret.len > 0) {
+        var inner = Sha256.init(.{});
+        inner.update(&[_]u8{type_byte});
+        inner.update(ret);
+        outer.update(&inner.finalResult());
+    }
 }
 
 fn applyWithdrawals(block: *const types.Block, state: *State) !void {
