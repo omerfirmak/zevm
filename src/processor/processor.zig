@@ -32,7 +32,7 @@ const Errors = error{
     MismatchedBlobGasUsed,
     MismatchedExcessBlobGas,
     MismatchedRequestsHash,
-} || evm.Errors || std.mem.Allocator.Error;
+};
 
 pub const GAS_PER_BLOB = 131_072;
 pub const HISTORY_CONTRACT: u256 = 0x0000F90827F1C53a10cb7A02335B175320002935;
@@ -49,8 +49,6 @@ const DEPOSIT_EVENT_TOPIC: u256 = 0x649bbc62d0e31342afea4e5cd82d4049e7e1ee912fc0
 pub const PreprocessedBlock = struct {
     block: types.Block,
     rlp_size: usize,
-    txhashes: []const [32]u8,
-    senders: []const u160,
 };
 
 pub fn processBlock(
@@ -61,8 +59,18 @@ pub fn processBlock(
     parent: *const types.BlockHeader,
     ancestors: [256]u256,
     state: *State,
-) Errors!void {
+) !void {
     try validateBlock(spec, p_block, parent);
+
+    var senders = try gpa.alloc(u160, p_block.block.transactions.len);
+    var hashes = try gpa.alloc([32]u8, p_block.block.transactions.len);
+    for (p_block.block.transactions, 0..) |bt, index| {
+        hashes[index] = try bt.signingHash(gpa, spec.chain_id);
+        switch (bt) {
+            inline else => |t| senders[index] = try ecrecover(hashes[index], bt.recoveryId(), t.r, t.s),
+        }
+    }
+
     try applyEip4788(&p_block.block.header, state);
     try applyEip2935(&p_block.block.header, state);
 
@@ -76,7 +84,7 @@ pub fn processBlock(
     var vm = try evm.EVM.init(gpa, logs_allocator, &logs, &context);
 
     for (p_block.block.transactions, 0..) |*tx, index| {
-        const msg = try messageFromTx(gpa, tx, p_block.senders[index]);
+        const msg = try messageFromTx(gpa, tx, senders[index]);
         if (msg.gas_limit > gas_remaining) return Errors.InsufficientGas;
 
         const gas_used = try vm.process(.{ .fork = EvmSpec.specByFork(spec.fork) }, &msg, state);
