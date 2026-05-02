@@ -126,6 +126,15 @@ pub const Trie = struct {
         }, values[0], &key_buf, &remaining_keys, &remaining_values);
     }
 
+    pub fn put(self: *Self, key_bytes: []const u8, value: []const u8) !void {
+        var key_buf: [64]u8 = undefined;
+        const nibbles = writeHexKey(key_bytes, &key_buf);
+        var path_buf: [64]u8 = undefined;
+        var ks: []const [32]u8 = &.{};
+        var vs: [][]const u8 = &.{};
+        try self.insert(self.root, nibbles, .{ .buf = &path_buf, .len = 0 }, value, &key_buf, &ks, &vs);
+    }
+
     pub fn rootHash(self: *Self) ![32]u8 {
         var path_buf: [64]u8 = undefined;
         try self.hash(self.root, .{ .buf = &path_buf, .len = 0 });
