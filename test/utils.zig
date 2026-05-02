@@ -278,6 +278,7 @@ const exception_map = .{
     .{ "BlockException.INCORRECT_BLOCK_FORMAT", error.NotAnRLPList },
     .{ "BlockException.INCORRECT_BLOCK_FORMAT", error.EOF },
     .{ "BlockException.INCORRECT_BLOCK_FORMAT", error.OffsetOverflow },
+    .{ "BlockException.RLP_STRUCTURES_ENCODING", error.RlpInvalidLength },
     .{ "BlockException.RLP_STRUCTURES_ENCODING", error.RlpPayloadTooShort },
     .{ "BlockException.RLP_STRUCTURES_ENCODING", error.InvalidSerializedLength },
     .{ "BlockException.RLP_STRUCTURES_ENCODING", error.NotAnRLPList },
