@@ -84,24 +84,31 @@ pub const StateTest = struct {
 pub const StateTestFile = std.json.ArrayHashMap(StateTest);
 
 test "state tests" {
-    const supported_forks = [_][]const u8{"Osaka"};
-
     var gpa = std.heap.DebugAllocator(.{ .thread_safe = true }){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
     const io = std.testing.io;
 
+    const fork = std.mem.span(std.c.getenv("FORK").?);
     if (std.c.getenv("STATE_TEST")) |cpath| {
         const path = std.mem.span(cpath);
         if (std.c.getenv("TRACE")) |_| {
-            try runStateTestFile(io, allocator, std.Io.Dir.cwd(), path, supported_forks[0..], true);
+            try runStateTestFile(io, allocator, std.Io.Dir.cwd(), path, fork, true);
         } else {
-            try runStateTestFile(io, allocator, std.Io.Dir.cwd(), path, supported_forks[0..], false);
+            try runStateTestFile(io, allocator, std.Io.Dir.cwd(), path, fork, false);
         }
         return;
     }
 
-    var dir = try std.Io.Dir.cwd().openDir(io, "fixtures/state_tests", .{ .iterate = true });
+    var lowercase_fork: [64]u8 = undefined;
+    var fixtures_path: [128]u8 = undefined;
+    var dir = try std.Io.Dir.cwd().openDir(
+        io,
+        try std.fmt.bufPrint(&fixtures_path, "fixtures/state_tests/for_{s}", .{
+            std.ascii.lowerString(&lowercase_fork, fork),
+        }),
+        .{ .iterate = true },
+    );
     defer dir.close(io);
 
     var paths: std.ArrayListUnmanaged([]u8) = .empty;
@@ -122,20 +129,20 @@ test "state tests" {
     var any_failed = std.atomic.Value(bool).init(false);
     var pool: std.Io.Group = .init;
     for (paths.items) |path| {
-        pool.async(io, fileWorker, .{ io, allocator, dir, path, supported_forks[0..], &any_failed });
+        pool.async(io, fileWorker, .{ io, allocator, dir, path, fork, &any_failed });
     }
     try pool.await(io);
 
     if (any_failed.load(.acquire)) return error.StateTestFailed;
 }
 
-fn fileWorker(io: std.Io, allocator: std.mem.Allocator, dir: std.Io.Dir, path: []const u8, forks: []const []const u8, any_failed: *std.atomic.Value(bool)) void {
-    runStateTestFile(io, allocator, dir, path, forks, false) catch {
+fn fileWorker(io: std.Io, allocator: std.mem.Allocator, dir: std.Io.Dir, path: []const u8, fork: []const u8, any_failed: *std.atomic.Value(bool)) void {
+    runStateTestFile(io, allocator, dir, path, fork, false) catch {
         any_failed.store(true, .release);
     };
 }
 
-fn runStateTestFile(io: std.Io, allocator: std.mem.Allocator, dir: std.Io.Dir, path: []const u8, forks: []const []const u8, comptime trace: bool) !void {
+fn runStateTestFile(io: std.Io, allocator: std.mem.Allocator, dir: std.Io.Dir, path: []const u8, fork: []const u8, comptime trace: bool) !void {
     const file = try dir.openFile(io, path, .{});
     defer file.close(io);
 
@@ -154,22 +161,20 @@ fn runStateTestFile(io: std.Io, allocator: std.mem.Allocator, dir: std.Io.Dir, p
 
     var any_failed = false;
     for (parsed.value.map.keys(), parsed.value.map.values()) |name, test_case| {
-        for (forks) |fork| {
-            _ = test_case.post.map.get(fork) orelse continue;
+        _ = test_case.post.map.get(fork) orelse continue;
 
-            const test_err = runStateTest(allocator, &test_case, fork, trace);
-            test_err catch |err| {
-                std.debug.print("{s}: FAIL: {}\n", .{ name, err });
-                any_failed = true;
-            };
-        }
+        const test_err = runStateTest(allocator, &test_case, fork, trace);
+        test_err catch |err| {
+            std.debug.print("{s}: FAIL: {}\n", .{ name, err });
+            any_failed = true;
+        };
     }
     if (any_failed) return error.StateTestFailed;
 }
 
 fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []const u8, comptime trace: bool) !void {
     const tx = test_case.transaction;
-    const forkSpec = spec.Osaka;
+    const forkSpec = spec.specByFork(utils.forkFromString(fork));
 
     const post_entries = test_case.post.map.get(fork).?;
 
@@ -275,10 +280,7 @@ fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []con
             forkSpec.evmCapacities(),
         );
 
-        const tx_err: ?anyerror = if (vm.process(.{
-            .fork = forkSpec,
-            .tracing_enabled = trace,
-        }, &.{
+        const msg: evm.Message = .{
             .caller = tx.sender.value,
             .nonce = tx.nonce.value,
             .target = to,
@@ -292,7 +294,14 @@ fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []con
             .max_fee_per_blob_gas = if (tx.maxFeePerBlobGas) |mfpbg| mfpbg.value else null,
             .blob_versioned_hashes = blob_hashes,
             .authorization_list = auth_list,
-        }, &state)) |_| null else |err| err;
+        };
+
+        const tx_err: ?anyerror = if (switch (utils.forkFromString(fork)) {
+            inline else => |f| vm.process(.{
+                .fork = spec.specByFork(f),
+                .tracing_enabled = trace,
+            }, &msg, &state),
+        }) |_| null else |err| err;
 
         if (post_entry.expectException) |expected| {
             const actual = tx_err orelse return error.ExpectedExceptionButSucceeded;

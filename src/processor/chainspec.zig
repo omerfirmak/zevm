@@ -17,6 +17,13 @@ pub const ChainSpec = struct {
     blob_base_fee_update_fraction: u64,
 };
 
+pub fn chainSpecByFork(fork: Fork) ChainSpec {
+    return switch (fork) {
+        .Osaka => Osaka,
+        .Amsterdam => Amsterdam,
+    };
+}
+
 pub const Osaka: ChainSpec = .{
     .fork = .Osaka,
     .chain_id = 1,
@@ -30,3 +37,5 @@ pub const Osaka: ChainSpec = .{
     .target_blobs_per_block = 6,
     .max_blobs_per_block = 9,
 };
+
+pub const Amsterdam = Osaka;
