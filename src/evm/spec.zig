@@ -204,6 +204,7 @@ pub const Spec = struct {
 pub fn specByFork(fork: Fork) Spec {
     return switch (fork) {
         .Osaka => Osaka,
+        .Amsterdam => Amsterdam,
     };
 }
 
@@ -418,3 +419,5 @@ pub const Osaka = Spec{
         .SELFDESTRUCT = 5000,
     }),
 };
+
+pub const Amsterdam = Osaka;

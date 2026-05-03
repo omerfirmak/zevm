@@ -313,3 +313,12 @@ pub fn exceptionMatches(err: anyerror, expected: []const u8) bool {
     }
     return false;
 }
+
+pub fn forkFromString(fork_str: []const u8) zevm.Fork {
+    const fork_map = std.StaticStringMap(zevm.Fork).initComptime(.{
+        .{ "Osaka", .Osaka },
+        .{ "Amsterdam", .Amsterdam },
+    });
+
+    return fork_map.get(fork_str) orelse unreachable;
+}
