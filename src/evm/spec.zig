@@ -205,6 +205,7 @@ pub const Spec = struct {
 pub fn specByFork(fork: Fork) Spec {
     return switch (fork) {
         .Osaka => Osaka,
+        .Amsterdam => Amsterdam,
     };
 }
 
