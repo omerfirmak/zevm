@@ -229,6 +229,10 @@ pub fn build(b: *std.Build) void {
     if (b.option(bool, "trace", "Enable tracing")) |_| {
         run_state_tests.setEnvironmentVariable("TRACE", "TRUE");
     }
+    const fork_option = b.option([]const u8, "fork", "Fork");
+    if (fork_option) |f| {
+        run_state_tests.setEnvironmentVariable("FORK", f);
+    }
     state_test_step.dependOn(&run_state_tests.step);
 
     const blockchain_test_step = b.step("blockchain-tests", "Run EVM blockchain tests");
@@ -250,6 +254,9 @@ pub fn build(b: *std.Build) void {
     run_blockchain_tests.setCwd(b.path("."));
     if (b.option([]const u8, "blockchain-test", "Path to a specific blockchain test JSON file")) |path| {
         run_blockchain_tests.setEnvironmentVariable("BLOCKCHAIN_TEST", path);
+    }
+    if (fork_option) |f| {
+        run_blockchain_tests.setEnvironmentVariable("FORK", f);
     }
     blockchain_test_step.dependOn(&run_blockchain_tests.step);
 }
