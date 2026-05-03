@@ -876,7 +876,7 @@ fn accessListGas(comptime fork: Spec, access_list: []const AccessListEntry) !i32
 fn calldataCost(comptime fork: Spec, calldata: []u8) !struct { i32, i32 } {
     const zeros = std.mem.count(u8, calldata, &[_]u8{0});
     const cost = zeros * 4 + (calldata.len - zeros) * 16;
-    const tokens = zeros + (calldata.len - zeros) * 4;
+    const tokens = if (fork.isEnabled(.Amsterdam)) calldata.len * 4 else zeros + (calldata.len - zeros) * 4;
     const floor = std.math.mul(usize, tokens, fork.total_cost_floor_per_token) catch return Errors.OutOfGas;
     if (cost > std.math.maxInt(i32) or floor > std.math.maxInt(i32)) {
         return Errors.OutOfGas;

@@ -185,7 +185,7 @@ pub const Spec = struct {
         return .{ .pre_state = ps, .warm_accounts = wa, .warm_slots = ws, .created = ca, .return_buf = ret };
     }
 
-    pub fn constantGas(self: *const Self, comptime op: Opcode) i32 {
+    pub inline fn constantGas(comptime self: Self, comptime op: Opcode) i32 {
         return @intCast(self.gas_table[@intFromEnum(op)]);
     }
 
@@ -195,6 +195,10 @@ pub const Spec = struct {
             return null;
         }
         return handlers[@intCast(addr)];
+    }
+
+    pub inline fn isEnabled(comptime self: Self, comptime fork: Fork) bool {
+        return @intFromEnum(self.fork) >= @intFromEnum(fork);
     }
 };
 
@@ -417,4 +421,15 @@ pub const Osaka = Spec{
     }),
 };
 
-pub const Amsterdam = Osaka;
+fn override(base: anytype, changes: anytype) @TypeOf(base) {
+    var result = base;
+    inline for (std.meta.fields(@TypeOf(changes))) |f| {
+        @field(result, f.name) = @field(changes, f.name);
+    }
+    return result;
+}
+
+pub const Amsterdam = override(Osaka, .{
+    .fork = .Amsterdam,
+    .total_cost_floor_per_token = 16,
+});
