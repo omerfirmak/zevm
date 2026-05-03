@@ -196,6 +196,10 @@ pub const Spec = struct {
         }
         return handlers[@intCast(addr)];
     }
+
+    pub inline fn isEnabled(comptime self: Self, comptime fork: Fork) bool {
+        return @intFromEnum(self.fork) >= @intFromEnum(fork);
+    }
 };
 
 pub fn specByFork(fork: Fork) Spec {
@@ -415,3 +419,15 @@ pub const Osaka = Spec{
         .SELFDESTRUCT = 5000,
     }),
 };
+
+fn override(base: anytype, changes: anytype) @TypeOf(base) {
+    var result = base;
+    inline for (std.meta.fields(@TypeOf(changes))) |f| {
+        @field(result, f.name) = @field(changes, f.name);
+    }
+    return result;
+}
+
+pub const Amsterdam = override(Osaka, .{
+    .fork = .Amsterdam,
+});
