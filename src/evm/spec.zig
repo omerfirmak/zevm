@@ -432,4 +432,5 @@ fn override(base: anytype, changes: anytype) @TypeOf(base) {
 pub const Amsterdam = override(Osaka, .{
     .fork = .Amsterdam,
     .total_cost_floor_per_token = 16,
+    .max_code_size = 0x8000,
 });
