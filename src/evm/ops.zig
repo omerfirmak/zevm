@@ -877,6 +877,13 @@ pub fn Ops(comptime cfg: Config) type {
                 empty_account_cost = if (beneficiary_account.isEmptyAccount()) fork.selfdestruct_empty_target_gas else 0;
                 beneficiary_account.balance += transferred_value;
                 current_account.balance = 0;
+                if (fork.isEnabled(.Amsterdam)) {
+                    if (beneficiary != frame.target) {
+                        frame.evm.pushTransferLog(frame.target, beneficiary, transferred_value);
+                    } else {
+                        frame.evm.pushBurnLog(frame.target, transferred_value);
+                    }
+                }
             }
 
             const remaining = gas - access_cost - empty_account_cost - fork.constantGas(.SELFDESTRUCT);
