@@ -31,6 +31,7 @@ pub fn main() !void {
         .max_blobs_per_block = 9,
         .blob_base_fee = 0,
         .ancestors = [_]u256{0} ** 256,
+        .slotnum = 0,
     };
 
     // Describe the transaction (legacy, CALL).
