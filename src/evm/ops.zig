@@ -919,6 +919,11 @@ pub fn Ops(comptime cfg: Config) type {
             }.log;
         }
 
+        pub fn slotnum(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+            const new_stack_head = try frame.stackPush(stack_head, frame.context.slotnum);
+            return next(next_ip, gas - fork.constantGas(.SLOTNUM), new_stack_head, frame);
+        }
+
         pub fn entry(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             return next(next_ip, gas, stack_head, frame);
         }
@@ -1019,6 +1024,10 @@ pub fn Ops(comptime cfg: Config) type {
             }
             inline for (1..17) |n| {
                 t[@intFromEnum(Opcode.SWAP1) + n - 1] = swapN(n);
+            }
+
+            if (cfg.fork.isEnabled(.Amsterdam)) {
+                t[@intFromEnum(Opcode.SLOTNUM)] = slotnum;
             }
 
             return t;

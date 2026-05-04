@@ -424,11 +424,20 @@ pub const Osaka = Spec{
 fn override(base: anytype, changes: anytype) @TypeOf(base) {
     var result = base;
     inline for (std.meta.fields(@TypeOf(changes))) |f| {
-        @field(result, f.name) = @field(changes, f.name);
+        if (comptime std.mem.eql(u8, f.name, "gas_table")) {
+            inline for (std.meta.fields(@TypeOf(@field(changes, f.name)))) |g| {
+                result.gas_table[@intFromEnum(@field(Opcode, g.name))] = @field(@field(changes, f.name), g.name);
+            }
+        } else {
+            @field(result, f.name) = @field(changes, f.name);
+        }
     }
     return result;
 }
 
 pub const Amsterdam = override(Osaka, .{
     .fork = .Amsterdam,
+    .gas_table = .{
+        .SLOTNUM = 2,
+    },
 });

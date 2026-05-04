@@ -315,6 +315,7 @@ pub fn contextFromBlock(
         .blob_base_fee = blobBaseFee(h.excess_blob_gas, spec.blob_base_fee_update_fraction),
         .max_blobs_per_block = spec.max_blobs_per_block,
         .ancestors = ancestors,
+        .slotnum = block.header.slot_number orelse 0,
     };
 }
 
