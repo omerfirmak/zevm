@@ -12,6 +12,7 @@ const Config = @import("config.zig").Config;
 const Spec = @import("spec.zig").Spec;
 
 const max_stack_size = 1024;
+const SYSTEM_ADDRESS: u160 = 0xfffffffffffffffffffffffffffffffffffffffe;
 
 pub const Errors = error{
     OutOfGas,
@@ -471,6 +472,28 @@ pub const EVM = struct {
         if (tip > 0) {
             (try state.accounts.update(self.context.coinbase)).balance += @as(u256, @intCast(gas_used)) * tip;
         }
+
+        if (cfg.fork.isEnabled(.Amsterdam)) {
+            const alloc = self.rounded_allocator.allocator();
+            const BurnEntry = struct { addr: u160, amount: u256 };
+            var burns: std.ArrayListUnmanaged(BurnEntry) = .empty;
+            defer burns.deinit(alloc);
+            var it = self.created_accounts.dirties.iterator();
+            while (it.next()) |entry| {
+                if (entry.value_ptr.* != .Selfdestructed) continue;
+                const addr = entry.key_ptr.*;
+                if (state.accounts.dirties.get(addr)) |acct| {
+                    if (acct.balance > 0) try burns.append(alloc, .{ .addr = addr, .amount = acct.balance });
+                }
+            }
+            std.mem.sort(BurnEntry, burns.items, {}, struct {
+                fn less(_: void, a: BurnEntry, b: BurnEntry) bool {
+                    return a.addr < b.addr;
+                }
+            }.less);
+            for (burns.items) |burn| self.pushBurnLog(burn.addr, burn.amount);
+        }
+
         return gas_used;
     }
 
@@ -506,6 +529,9 @@ pub const EVM = struct {
             }
             caller_account.balance -= value;
             (try state.accounts.update(target)).balance += value;
+            if (cfg.fork.isEnabled(.Amsterdam)) {
+                if (caller != target) self.pushTransferLog(caller, target, value);
+            }
         }
 
         var remaining_gas, var err = .{ initial_gas, @as(?Errors, null) };
@@ -635,6 +661,9 @@ pub const EVM = struct {
         const new_contract_acc = try state.accounts.update(new_addr);
         new_contract_acc.nonce = 1; // EIP-161
         new_contract_acc.balance += value;
+        if (cfg.fork.isEnabled(.Amsterdam)) {
+            if (value > 0) self.pushTransferLog(creator, new_addr, value);
+        }
 
         const allocator = self.rounded_allocator.allocator();
         // Compile and execute initcode
@@ -722,6 +751,20 @@ pub const EVM = struct {
             self.logs_allocator.destroy(ln);
             self.num_logs -= 1;
         }
+    }
+
+    pub fn pushTransferLog(self: *Self, from: u160, to: u160, amount: u256) void {
+        const transfer_topic: u256 = 0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef;
+        var data: [32]u8 = undefined;
+        std.mem.writeInt(u256, &data, amount, .big);
+        self.pushLog(SYSTEM_ADDRESS, &[_]u256{ transfer_topic, from, to }, &data);
+    }
+
+    pub fn pushBurnLog(self: *Self, addr: u160, amount: u256) void {
+        const burn_topic: u256 = 0xcc16f5dbb4873280815c1ee09dbd06736cffcc184412cf7a71a0fdb75d397ca5;
+        var data: [32]u8 = undefined;
+        std.mem.writeInt(u256, &data, amount, .big);
+        self.pushLog(SYSTEM_ADDRESS, &[_]u256{ burn_topic, addr }, &data);
     }
 
     pub fn accessAccount(self: *Self, addr: u160) bool {
