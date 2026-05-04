@@ -353,8 +353,8 @@ pub const EVM = struct {
 
         const intrinsic_gas = if (is_create) cfg.fork.tx_create_gas else cfg.fork.tx_base_gas;
         const calldata_gas, const floor_data_cost = try calldataCost(cfg.fork, msg.calldata);
-        const floor_cost = cfg.fork.tx_base_gas + floor_data_cost; // EIP-7623
-        const access_list_gas = try accessListGas(cfg.fork, msg.access_list);
+        const access_list_gas, const access_list_floor = try accessListGas(cfg.fork, msg.access_list);
+        const floor_cost = cfg.fork.tx_base_gas + floor_data_cost + access_list_floor; // EIP-7623
         // EIP-3860: 2 gas per 32-byte initcode word, charged as intrinsic for CREATE txs
         const initcode_gas = if (is_create) initcodeWordCost(msg.calldata.len) else 0;
         // EIP-7702: PER_EMPTY_ACCOUNT_COST per authorization tuple
@@ -863,14 +863,24 @@ fn create2Address(creator: u160, salt: u256, initcode: []const u8) u160 {
     return std.mem.readInt(u160, hash[12..32], .big);
 }
 
-fn accessListGas(comptime fork: Spec, access_list: []const AccessListEntry) !i32 {
+fn accessListGas(comptime fork: Spec, access_list: []const AccessListEntry) !struct { i32, i32 } {
     var gas: i32 = 0;
+    var key_count: i32 = 0;
     for (access_list) |entry| {
         gas = std.math.add(i32, gas, fork.access_list_address_gas) catch return Errors.OutOfGas;
-        const key_gas = std.math.mul(usize, entry.storage_keys.len, fork.access_list_storage_key_gas) catch return Errors.OutOfGas;
+        const key_gas = std.math.mul(i32, @intCast(entry.storage_keys.len), fork.access_list_storage_key_gas) catch return Errors.OutOfGas;
         gas = std.math.add(i32, gas, @intCast(key_gas)) catch return Errors.OutOfGas;
+        key_count += @intCast(entry.storage_keys.len);
     }
-    return gas;
+
+    var floor: i32 = 0;
+    if (fork.isEnabled(.Amsterdam)) {
+        const bytes: i32 = key_count * 32 + @as(i32, @intCast(access_list.len)) * 20;
+        const tokens = bytes * 4;
+        floor = std.math.mul(i32, tokens, fork.total_cost_floor_per_token) catch return Errors.OutOfGas;
+        gas = std.math.add(i32, gas, floor) catch return Errors.OutOfGas;
+    }
+    return .{ gas, floor };
 }
 
 fn calldataCost(comptime fork: Spec, calldata: []u8) !struct { i32, i32 } {
