@@ -52,6 +52,7 @@ pub const Context = struct {
     random: u256,
     basefee: u256,
     gas_limit: u64,
+    slotnum: u64,
 
     // EIP-4844
     blob_base_fee: u256,

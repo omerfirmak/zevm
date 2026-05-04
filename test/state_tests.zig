@@ -18,6 +18,7 @@ pub const Env = struct {
     currentDifficulty: utils.HexInt(u256),
     currentBaseFee: ?utils.HexInt(u256) = null,
     currentExcessBlobGas: ?utils.HexInt(u64) = null,
+    slotNumber: ?utils.HexInt(u64) = null,
 };
 
 pub const Transaction = struct {
@@ -174,6 +175,7 @@ fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []con
             .blob_base_fee = if (test_case.env.currentExcessBlobGas) |ebg| zevm.blobBaseFee(ebg.value, blob_update_fraction) else 0,
             .max_blobs_per_block = max_blobs,
             .ancestors = ancestors,
+            .slotnum = if (test_case.env.slotNumber) |s| s.value else 0,
         };
 
         var state: state_mod.State = undefined;
