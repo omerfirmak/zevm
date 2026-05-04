@@ -219,6 +219,7 @@ pub fn build(b: *std.Build) void {
     state_tests.root_module.link_libcpp = true;
     state_tests.root_module.addImport("zevm", test_zevm_mod);
     state_tests.root_module.addImport("committed_state", test_cs_mod);
+    state_tests.root_module.addImport("rlp", rlp_dep.module("zig-rlp"));
     state_tests.stack_size = 64 * 1024 * 1024;
     b.installArtifact(state_tests);
     const run_state_tests = b.addRunArtifact(state_tests);
@@ -228,6 +229,10 @@ pub fn build(b: *std.Build) void {
     }
     if (b.option(bool, "trace", "Enable tracing")) |_| {
         run_state_tests.setEnvironmentVariable("TRACE", "TRUE");
+    }
+    const fork_option = b.option([]const u8, "fork", "Fork");
+    if (fork_option) |f| {
+        run_state_tests.setEnvironmentVariable("FORK", f);
     }
     state_test_step.dependOn(&run_state_tests.step);
 
@@ -250,6 +255,9 @@ pub fn build(b: *std.Build) void {
     run_blockchain_tests.setCwd(b.path("."));
     if (b.option([]const u8, "blockchain-test", "Path to a specific blockchain test JSON file")) |path| {
         run_blockchain_tests.setEnvironmentVariable("BLOCKCHAIN_TEST", path);
+    }
+    if (fork_option) |f| {
+        run_blockchain_tests.setEnvironmentVariable("FORK", f);
     }
     blockchain_test_step.dependOn(&run_blockchain_tests.step);
 }

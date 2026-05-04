@@ -12,6 +12,7 @@ const Config = @import("config.zig").Config;
 const Spec = @import("spec.zig").Spec;
 
 const max_stack_size = 1024;
+const SYSTEM_ADDRESS: u160 = 0xfffffffffffffffffffffffffffffffffffffffe;
 
 pub const Errors = error{
     OutOfGas,
@@ -51,6 +52,7 @@ pub const Context = struct {
     random: u256,
     basefee: u256,
     gas_limit: u64,
+    slotnum: u64,
 
     // EIP-4844
     blob_base_fee: u256,
@@ -353,8 +355,8 @@ pub const EVM = struct {
 
         const intrinsic_gas = if (is_create) cfg.fork.tx_create_gas else cfg.fork.tx_base_gas;
         const calldata_gas, const floor_data_cost = try calldataCost(cfg.fork, msg.calldata);
-        const floor_cost = cfg.fork.tx_base_gas + floor_data_cost; // EIP-7623
-        const access_list_gas = try accessListGas(cfg.fork, msg.access_list);
+        const access_list_gas, const access_list_floor = try accessListGas(cfg.fork, msg.access_list);
+        const floor_cost = cfg.fork.tx_base_gas + floor_data_cost + access_list_floor; // EIP-7623
         // EIP-3860: 2 gas per 32-byte initcode word, charged as intrinsic for CREATE txs
         const initcode_gas = if (is_create) initcodeWordCost(msg.calldata.len) else 0;
         // EIP-7702: PER_EMPTY_ACCOUNT_COST per authorization tuple
@@ -471,6 +473,28 @@ pub const EVM = struct {
         if (tip > 0) {
             (try state.accounts.update(self.context.coinbase)).balance += @as(u256, @intCast(gas_used)) * tip;
         }
+
+        if (cfg.fork.isEnabled(.Amsterdam)) {
+            const alloc = self.rounded_allocator.allocator();
+            const BurnEntry = struct { addr: u160, amount: u256 };
+            var burns: std.ArrayListUnmanaged(BurnEntry) = .empty;
+            defer burns.deinit(alloc);
+            var it = self.created_accounts.dirties.iterator();
+            while (it.next()) |entry| {
+                if (entry.value_ptr.* != .Selfdestructed) continue;
+                const addr = entry.key_ptr.*;
+                if (state.accounts.dirties.get(addr)) |acct| {
+                    if (acct.balance > 0) try burns.append(alloc, .{ .addr = addr, .amount = acct.balance });
+                }
+            }
+            std.mem.sort(BurnEntry, burns.items, {}, struct {
+                fn less(_: void, a: BurnEntry, b: BurnEntry) bool {
+                    return a.addr < b.addr;
+                }
+            }.less);
+            for (burns.items) |burn| self.pushBurnLog(burn.addr, burn.amount);
+        }
+
         return gas_used;
     }
 
@@ -506,6 +530,9 @@ pub const EVM = struct {
             }
             caller_account.balance -= value;
             (try state.accounts.update(target)).balance += value;
+            if (cfg.fork.isEnabled(.Amsterdam)) {
+                if (caller != target) self.pushTransferLog(caller, target, value);
+            }
         }
 
         var remaining_gas, var err = .{ initial_gas, @as(?Errors, null) };
@@ -635,6 +662,9 @@ pub const EVM = struct {
         const new_contract_acc = try state.accounts.update(new_addr);
         new_contract_acc.nonce = 1; // EIP-161
         new_contract_acc.balance += value;
+        if (cfg.fork.isEnabled(.Amsterdam)) {
+            if (value > 0) self.pushTransferLog(creator, new_addr, value);
+        }
 
         const allocator = self.rounded_allocator.allocator();
         // Compile and execute initcode
@@ -722,6 +752,20 @@ pub const EVM = struct {
             self.logs_allocator.destroy(ln);
             self.num_logs -= 1;
         }
+    }
+
+    pub fn pushTransferLog(self: *Self, from: u160, to: u160, amount: u256) void {
+        const transfer_topic: u256 = 0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef;
+        var data: [32]u8 = undefined;
+        std.mem.writeInt(u256, &data, amount, .big);
+        self.pushLog(SYSTEM_ADDRESS, &[_]u256{ transfer_topic, from, to }, &data);
+    }
+
+    pub fn pushBurnLog(self: *Self, addr: u160, amount: u256) void {
+        const burn_topic: u256 = 0xcc16f5dbb4873280815c1ee09dbd06736cffcc184412cf7a71a0fdb75d397ca5;
+        var data: [32]u8 = undefined;
+        std.mem.writeInt(u256, &data, amount, .big);
+        self.pushLog(SYSTEM_ADDRESS, &[_]u256{ burn_topic, addr }, &data);
     }
 
     pub fn accessAccount(self: *Self, addr: u160) bool {
@@ -863,20 +907,30 @@ fn create2Address(creator: u160, salt: u256, initcode: []const u8) u160 {
     return std.mem.readInt(u160, hash[12..32], .big);
 }
 
-fn accessListGas(comptime fork: Spec, access_list: []const AccessListEntry) !i32 {
+fn accessListGas(comptime fork: Spec, access_list: []const AccessListEntry) !struct { i32, i32 } {
     var gas: i32 = 0;
+    var key_count: i32 = 0;
     for (access_list) |entry| {
         gas = std.math.add(i32, gas, fork.access_list_address_gas) catch return Errors.OutOfGas;
-        const key_gas = std.math.mul(usize, entry.storage_keys.len, fork.access_list_storage_key_gas) catch return Errors.OutOfGas;
+        const key_gas = std.math.mul(i32, @intCast(entry.storage_keys.len), fork.access_list_storage_key_gas) catch return Errors.OutOfGas;
         gas = std.math.add(i32, gas, @intCast(key_gas)) catch return Errors.OutOfGas;
+        key_count += @intCast(entry.storage_keys.len);
     }
-    return gas;
+
+    var floor: i32 = 0;
+    if (fork.isEnabled(.Amsterdam)) {
+        const bytes: i32 = key_count * 32 + @as(i32, @intCast(access_list.len)) * 20;
+        const tokens = bytes * 4;
+        floor = std.math.mul(i32, tokens, fork.total_cost_floor_per_token) catch return Errors.OutOfGas;
+        gas = std.math.add(i32, gas, floor) catch return Errors.OutOfGas;
+    }
+    return .{ gas, floor };
 }
 
 fn calldataCost(comptime fork: Spec, calldata: []u8) !struct { i32, i32 } {
     const zeros = std.mem.count(u8, calldata, &[_]u8{0});
     const cost = zeros * 4 + (calldata.len - zeros) * 16;
-    const tokens = zeros + (calldata.len - zeros) * 4;
+    const tokens = if (fork.isEnabled(.Amsterdam)) calldata.len * 4 else zeros + (calldata.len - zeros) * 4;
     const floor = std.math.mul(usize, tokens, fork.total_cost_floor_per_token) catch return Errors.OutOfGas;
     if (cost > std.math.maxInt(i32) or floor > std.math.maxInt(i32)) {
         return Errors.OutOfGas;

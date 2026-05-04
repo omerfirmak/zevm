@@ -4,6 +4,7 @@ const evm = zevm.evm;
 const state_mod = zevm.state;
 const types = zevm.types;
 const spec = zevm.spec;
+const rlp = @import("rlp");
 const CommittedState = @import("committed_state").CommittedState;
 const utils = @import("utils.zig");
 
@@ -17,43 +18,11 @@ pub const Env = struct {
     currentDifficulty: utils.HexInt(u256),
     currentBaseFee: ?utils.HexInt(u256) = null,
     currentExcessBlobGas: ?utils.HexInt(u64) = null,
-};
-
-pub const AccessListEntry = struct {
-    address: utils.HexInt(u160),
-    storageKeys: []utils.HexInt(u256),
-};
-
-pub const AuthorizationTuple = struct {
-    chainId: utils.HexInt(u256),
-    address: utils.HexInt(u160),
-    nonce: utils.HexInt(u64),
-    signer: ?utils.HexInt(u160) = null,
-    v: ?utils.HexInt(u64) = null,
-    yParity: ?utils.HexInt(u64) = null,
-    r: ?utils.HexBytes = null,
-    s: ?utils.HexBytes = null,
+    slotNumber: ?utils.HexInt(u64) = null,
 };
 
 pub const Transaction = struct {
-    nonce: utils.HexInt(u64),
-    gasPrice: ?utils.HexInt(u256) = null,
-    // EIP-1559 (type 2) fee fields
-    maxFeePerGas: ?utils.HexInt(u256) = null,
-    maxPriorityFeePerGas: ?utils.HexInt(u256) = null,
-    gasLimit: []utils.HexInt(u64),
-    to: ?utils.HexAddress = null,
-    value: []utils.HexInt(u256),
-    data: []utils.HexBytes,
     sender: utils.HexInt(u160),
-    secretKey: ?utils.HexBytes = null,
-    // EIP-2930: one access list per data index (parallel to data[]/gasLimit[]/value[])
-    accessLists: ?[][]AccessListEntry = null,
-    // EIP-4844: blob transaction fields
-    maxFeePerBlobGas: ?utils.HexInt(u256) = null,
-    blobVersionedHashes: ?[]utils.HexInt(u256) = null,
-    // EIP-7702: authorization list (type-4 tx)
-    authorizationList: ?[]AuthorizationTuple = null,
 };
 
 pub const PostIndexes = struct {
@@ -84,24 +53,31 @@ pub const StateTest = struct {
 pub const StateTestFile = std.json.ArrayHashMap(StateTest);
 
 test "state tests" {
-    const supported_forks = [_][]const u8{"Osaka"};
-
     var gpa = std.heap.DebugAllocator(.{ .thread_safe = true }){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
     const io = std.testing.io;
 
+    const fork = std.mem.span(std.c.getenv("FORK").?);
     if (std.c.getenv("STATE_TEST")) |cpath| {
         const path = std.mem.span(cpath);
         if (std.c.getenv("TRACE")) |_| {
-            try runStateTestFile(io, allocator, std.Io.Dir.cwd(), path, supported_forks[0..], true);
+            try runStateTestFile(io, allocator, std.Io.Dir.cwd(), path, fork, true);
         } else {
-            try runStateTestFile(io, allocator, std.Io.Dir.cwd(), path, supported_forks[0..], false);
+            try runStateTestFile(io, allocator, std.Io.Dir.cwd(), path, fork, false);
         }
         return;
     }
 
-    var dir = try std.Io.Dir.cwd().openDir(io, "fixtures/state_tests", .{ .iterate = true });
+    var lowercase_fork: [64]u8 = undefined;
+    var fixtures_path: [128]u8 = undefined;
+    var dir = try std.Io.Dir.cwd().openDir(
+        io,
+        try std.fmt.bufPrint(&fixtures_path, "fixtures/state_tests/for_{s}", .{
+            std.ascii.lowerString(&lowercase_fork, fork),
+        }),
+        .{ .iterate = true },
+    );
     defer dir.close(io);
 
     var paths: std.ArrayListUnmanaged([]u8) = .empty;
@@ -122,20 +98,20 @@ test "state tests" {
     var any_failed = std.atomic.Value(bool).init(false);
     var pool: std.Io.Group = .init;
     for (paths.items) |path| {
-        pool.async(io, fileWorker, .{ io, allocator, dir, path, supported_forks[0..], &any_failed });
+        pool.async(io, fileWorker, .{ io, allocator, dir, path, fork, &any_failed });
     }
     try pool.await(io);
 
     if (any_failed.load(.acquire)) return error.StateTestFailed;
 }
 
-fn fileWorker(io: std.Io, allocator: std.mem.Allocator, dir: std.Io.Dir, path: []const u8, forks: []const []const u8, any_failed: *std.atomic.Value(bool)) void {
-    runStateTestFile(io, allocator, dir, path, forks, false) catch {
+fn fileWorker(io: std.Io, allocator: std.mem.Allocator, dir: std.Io.Dir, path: []const u8, fork: []const u8, any_failed: *std.atomic.Value(bool)) void {
+    runStateTestFile(io, allocator, dir, path, fork, false) catch {
         any_failed.store(true, .release);
     };
 }
 
-fn runStateTestFile(io: std.Io, allocator: std.mem.Allocator, dir: std.Io.Dir, path: []const u8, forks: []const []const u8, comptime trace: bool) !void {
+fn runStateTestFile(io: std.Io, allocator: std.mem.Allocator, dir: std.Io.Dir, path: []const u8, fork: []const u8, comptime trace: bool) !void {
     const file = try dir.openFile(io, path, .{});
     defer file.close(io);
 
@@ -154,64 +130,25 @@ fn runStateTestFile(io: std.Io, allocator: std.mem.Allocator, dir: std.Io.Dir, p
 
     var any_failed = false;
     for (parsed.value.map.keys(), parsed.value.map.values()) |name, test_case| {
-        for (forks) |fork| {
-            _ = test_case.post.map.get(fork) orelse continue;
+        _ = test_case.post.map.get(fork) orelse continue;
 
-            const test_err = runStateTest(allocator, &test_case, fork, trace);
-            test_err catch |err| {
-                std.debug.print("{s}: FAIL: {}\n", .{ name, err });
-                any_failed = true;
-            };
-        }
+        const test_err = runStateTest(allocator, &test_case, fork, trace);
+        test_err catch |err| {
+            std.debug.print("{s}: FAIL: {}\n", .{ name, err });
+            any_failed = true;
+        };
     }
     if (any_failed) return error.StateTestFailed;
 }
 
 fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []const u8, comptime trace: bool) !void {
     const tx = test_case.transaction;
-    const forkSpec = spec.Osaka;
-
+    const forkSpec = spec.specByFork(utils.forkFromString(fork));
     const post_entries = test_case.post.map.get(fork).?;
 
-    // EIP-4844: build blob versioned hashes slice for context (BLOBHASH opcode)
-    const blob_hashes: []u256 = if (tx.blobVersionedHashes) |bvh| blk: {
-        const hashes = try gpa.alloc(u256, bvh.len);
-        for (bvh, hashes) |src, *dst| {
-            dst.* = src.value;
-        }
-        break :blk hashes;
-    } else &.{};
-    defer if (tx.blobVersionedHashes != null) gpa.free(blob_hashes);
-
-    // EIP-4844: get blob schedule for this fork
     const blob_schedule = if (test_case.config.blobSchedule) |bs| bs.map.get(fork) else null;
     const blob_update_fraction: u64 = if (blob_schedule) |s| s.baseFeeUpdateFraction.value else 0;
     const max_blobs: u64 = if (blob_schedule) |s| s.max.value else 0;
-
-    // EIP-7702: build authorization list
-    // secp256k1 n/2: s must be in [1, N/2] per EIP-2 style check in EIP-7702
-    const secp256k1_n_half: u256 = 0x7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5D576E7357A4501DDFE92F46681B20A0;
-    const auth_list: ?[]evm.Authorization = if (tx.authorizationList) |al| blk: {
-        const list = try gpa.alloc(evm.Authorization, al.len);
-        for (al, list) |src, *dst| {
-            // Invalid if signer missing (ecrecover failed), or s out of EIP-2 range
-            const s_invalid = if (src.s) |s_bytes| s_blk: {
-                var s_val: u256 = 0;
-                for (s_bytes.value) |b| s_val = (s_val << 8) | b;
-                break :s_blk s_val == 0 or s_val > secp256k1_n_half;
-            } else false;
-            // chain_id > u64 max will never match current chain (which is u64)
-            const chain_id: u64 = if (src.chainId.value > std.math.maxInt(u64)) std.math.maxInt(u64) else @intCast(src.chainId.value);
-            dst.* = .{
-                .chain_id = chain_id,
-                .address = src.address.value,
-                .nonce = src.nonce.value,
-                .authority = if (src.signer == null or s_invalid) 0 else src.signer.?.value,
-            };
-        }
-        break :blk list;
-    } else null;
-    defer if (tx.authorizationList != null) gpa.free(auth_list.?);
 
     for (post_entries) |post_entry| {
         var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
@@ -220,41 +157,13 @@ fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []con
         defer logs_allocator.deinit();
         var logs: std.DoublyLinkedList = .{};
 
-        // Build committed state from pre-state
         var committed = try utils.buildCommittedState(gpa, test_case.pre);
         defer committed.deinit();
 
-        const gas_limit = tx.gasLimit[post_entry.indexes.gas].value;
-
         const arena_allocator = arena.allocator();
-        var state = try state_mod.State.init(arena_allocator, &committed, forkSpec.stateCapacities(gas_limit));
 
-        const value = tx.value[post_entry.indexes.value].value;
-        const calldata = tx.data[post_entry.indexes.data].value;
-
-        // convert parsed access list entries to evm.AccessListEntry for this tx variant
-        const raw_al: []AccessListEntry = if (tx.accessLists) |als|
-            if (post_entry.indexes.data < als.len) als[post_entry.indexes.data] else &.{}
-        else
-            &.{};
-        const access_list = try gpa.alloc(evm.AccessListEntry, raw_al.len);
-        var al_count: usize = 0;
-        defer {
-            for (access_list[0..al_count]) |entry| gpa.free(entry.storage_keys);
-            gpa.free(access_list);
-        }
-        for (raw_al, access_list) |src, *dst| {
-            const keys = try gpa.alloc(u256, src.storageKeys.len);
-            for (src.storageKeys, keys) |k, *out| out.* = k.value;
-            dst.* = .{ .address = src.address.value, .storage_keys = keys };
-            al_count += 1;
-        }
-
-        const to: ?u160 = if (tx.to) |t| t.value else null; // HexAddress.value is ?u160; null JSON or empty string both yield null
         var ancestors = [_]u256{0} ** 256;
-        if (test_case.env.previousHash) |previousHash| {
-            ancestors[0] = previousHash.value;
-        }
+        if (test_case.env.previousHash) |h| ancestors[0] = h.value;
         const context = evm.Context{
             .chainid = 1,
             .number = test_case.env.currentNumber.value,
@@ -266,33 +175,28 @@ fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []con
             .blob_base_fee = if (test_case.env.currentExcessBlobGas) |ebg| zevm.blobBaseFee(ebg.value, blob_update_fraction) else 0,
             .max_blobs_per_block = max_blobs,
             .ancestors = ancestors,
+            .slotnum = if (test_case.env.slotNumber) |s| s.value else 0,
         };
-        var vm = try evm.EVM.init(
-            arena_allocator,
-            logs_allocator.allocator(),
-            &logs,
-            &context,
-            forkSpec.evmCapacities(),
-        );
 
-        const tx_err: ?anyerror = if (vm.process(.{
-            .fork = forkSpec,
-            .tracing_enabled = trace,
-        }, &.{
-            .caller = tx.sender.value,
-            .nonce = tx.nonce.value,
-            .target = to,
-            .gas_limit = @intCast(gas_limit),
-            .gas_price = if (tx.gasPrice) |gp| gp.value else null,
-            .max_fee_per_gas = if (tx.maxFeePerGas) |mfpg| mfpg.value else null,
-            .max_priority_fee_per_gas = if (tx.maxPriorityFeePerGas) |mpfpg| mpfpg.value else null,
-            .calldata = calldata,
-            .value = value,
-            .access_list = access_list,
-            .max_fee_per_blob_gas = if (tx.maxFeePerBlobGas) |mfpbg| mfpbg.value else null,
-            .blob_versioned_hashes = blob_hashes,
-            .authorization_list = auth_list,
-        }, &state)) |_| null else |err| err;
+        var state: state_mod.State = undefined;
+        var vm: evm.EVM = undefined;
+
+        const tx_err: ?anyerror = blk: {
+            const txbytes = (post_entry.txbytes orelse break :blk error.MissingTxBytes).value;
+            var decoded_tx: types.Transaction = undefined;
+            _ = rlp.deserialize(types.Transaction, arena_allocator, txbytes, &decoded_tx) catch |e| break :blk e;
+
+            const gas_limit: u64 = switch (decoded_tx) {
+                inline else => |t| @intCast(t.gas_limit),
+            };
+            state = try state_mod.State.init(arena_allocator, &committed, forkSpec.stateCapacities(gas_limit));
+            vm = try evm.EVM.init(arena_allocator, logs_allocator.allocator(), &logs, &context, forkSpec.evmCapacities());
+
+            const msg = zevm.processor.messageFromTx(arena_allocator, &decoded_tx, tx.sender.value) catch |e| break :blk e;
+            break :blk switch (utils.forkFromString(fork)) {
+                inline else => |f| if (vm.process(.{ .fork = spec.specByFork(f), .tracing_enabled = trace }, &msg, &state)) |_| null else |err| err,
+            };
+        };
 
         if (post_entry.expectException) |expected| {
             const actual = tx_err orelse return error.ExpectedExceptionButSucceeded;
@@ -302,7 +206,6 @@ fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []con
             return err;
         }
 
-        // Verify logs hash.
         if (post_entry.logs.value.len == 32 and !std.mem.allEqual(u8, post_entry.logs.value, 0)) {
             const actual_logs_hash = try evm.computeLogsHash(gpa, &logs);
             if (!std.mem.eql(u8, &actual_logs_hash, post_entry.logs.value)) {

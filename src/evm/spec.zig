@@ -185,7 +185,7 @@ pub const Spec = struct {
         return .{ .pre_state = ps, .warm_accounts = wa, .warm_slots = ws, .created = ca, .return_buf = ret };
     }
 
-    pub fn constantGas(self: *const Self, comptime op: Opcode) i32 {
+    pub inline fn constantGas(comptime self: Self, comptime op: Opcode) i32 {
         return @intCast(self.gas_table[@intFromEnum(op)]);
     }
 
@@ -196,11 +196,16 @@ pub const Spec = struct {
         }
         return handlers[@intCast(addr)];
     }
+
+    pub inline fn isEnabled(comptime self: Self, comptime fork: Fork) bool {
+        return @intFromEnum(self.fork) >= @intFromEnum(fork);
+    }
 };
 
 pub fn specByFork(fork: Fork) Spec {
     return switch (fork) {
         .Osaka => Osaka,
+        .Amsterdam => Amsterdam,
     };
 }
 
@@ -415,3 +420,26 @@ pub const Osaka = Spec{
         .SELFDESTRUCT = 5000,
     }),
 };
+
+fn override(base: anytype, changes: anytype) @TypeOf(base) {
+    var result = base;
+    inline for (std.meta.fields(@TypeOf(changes))) |f| {
+        if (comptime std.mem.eql(u8, f.name, "gas_table")) {
+            inline for (std.meta.fields(@TypeOf(@field(changes, f.name)))) |g| {
+                result.gas_table[@intFromEnum(@field(Opcode, g.name))] = @field(@field(changes, f.name), g.name);
+            }
+        } else {
+            @field(result, f.name) = @field(changes, f.name);
+        }
+    }
+    return result;
+}
+
+pub const Amsterdam = override(Osaka, .{
+    .fork = .Amsterdam,
+    .total_cost_floor_per_token = 16,
+    .max_code_size = 0x8000,
+    .gas_table = .{
+        .SLOTNUM = 2,
+    },
+});

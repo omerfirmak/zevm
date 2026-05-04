@@ -315,6 +315,7 @@ pub fn contextFromBlock(
         .blob_base_fee = blobBaseFee(h.excess_blob_gas, spec.blob_base_fee_update_fraction),
         .max_blobs_per_block = spec.max_blobs_per_block,
         .ancestors = ancestors,
+        .slotnum = block.header.slot_number orelse 0,
     };
 }
 
@@ -392,7 +393,12 @@ fn convertAuthList(allocator: std.mem.Allocator, auth_list: []const types.Author
     return result;
 }
 
+const secp256k1_n_half: u256 = 0x7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5D576E7357A4501DDFE92F46681B20A0;
+
 fn recoverEip7702Authority(allocator: std.mem.Allocator, auth: types.AuthorizationTuple) !u160 {
+    if (auth.v > 1) return error.InvalidSignature;
+    if (auth.s == 0 or auth.s > secp256k1_n_half) return error.InvalidSignature;
+
     var encoded = std.array_list.Managed(u8).init(allocator);
     defer encoded.deinit();
     const Tuple = struct { chain_id: u256, address: [20]u8, nonce: u64 };

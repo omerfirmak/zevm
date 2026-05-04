@@ -39,7 +39,7 @@ fn prepareBlock(
     };
 }
 
-fn runBlockchainTest(gpa: std.mem.Allocator, test_case: *const BlockchainTest) !void {
+fn runBlockchainTest(gpa: std.mem.Allocator, test_case: *const BlockchainTest, comptime chainspec: zevm.chainspec.ChainSpec) !void {
     var committed = try utils.buildCommittedState(gpa, test_case.pre);
     defer committed.deinit();
 
@@ -80,7 +80,7 @@ fn runBlockchainTest(gpa: std.mem.Allocator, test_case: *const BlockchainTest) !
             const proc_err: ?anyerror = if (zevm.processor.processBlock(
                 arena.allocator(),
                 gpa,
-                zevm.chainspec.Osaka,
+                chainspec,
                 &p,
                 &parent.header,
                 ancestors,
@@ -107,13 +107,13 @@ fn runBlockchainTest(gpa: std.mem.Allocator, test_case: *const BlockchainTest) !
     }
 }
 
-fn fileWorker(io: std.Io, allocator: std.mem.Allocator, dir: std.Io.Dir, path: []const u8, forks: []const []const u8, any_failed: *std.atomic.Value(bool)) void {
-    runBlockchainTestFile(io, allocator, dir, path, forks) catch {
+fn fileWorker(io: std.Io, allocator: std.mem.Allocator, dir: std.Io.Dir, path: []const u8, fork: []const u8, any_failed: *std.atomic.Value(bool)) void {
+    runBlockchainTestFile(io, allocator, dir, path, fork) catch {
         any_failed.store(true, .release);
     };
 }
 
-fn runBlockchainTestFile(io: std.Io, allocator: std.mem.Allocator, dir: std.Io.Dir, path: []const u8, forks: []const []const u8) !void {
+fn runBlockchainTestFile(io: std.Io, allocator: std.mem.Allocator, dir: std.Io.Dir, path: []const u8, fork: []const u8) !void {
     const file = try dir.openFile(io, path, .{});
     defer file.close(io);
 
@@ -130,39 +130,46 @@ fn runBlockchainTestFile(io: std.Io, allocator: std.mem.Allocator, dir: std.Io.D
     };
     defer parsed.deinit();
 
+    const fork_enum = utils.forkFromString(fork);
     var any_failed = false;
     for (parsed.value.map.keys(), parsed.value.map.values()) |name, test_case| {
-        var matches_fork = false;
-        for (forks) |fork| {
-            if (std.mem.eql(u8, test_case.network, fork)) {
-                matches_fork = true;
-                break;
-            }
+        if (!std.mem.eql(u8, test_case.network, fork)) {
+            continue;
         }
-        if (!matches_fork) continue;
 
-        runBlockchainTest(allocator, &test_case) catch |err| {
-            std.debug.print("{s}: FAIL: {}\n", .{ name, err });
-            any_failed = true;
-        };
+        switch (fork_enum) {
+            inline else => |f| {
+                runBlockchainTest(allocator, &test_case, zevm.chainspec.chainSpecByFork(f)) catch |err| {
+                    std.debug.print("{s}: FAIL: {}\n", .{ name, err });
+                    any_failed = true;
+                };
+            },
+        }
     }
     if (any_failed) return error.BlockchainTestFailed;
 }
 
 test "blockchain tests" {
-    const supported_forks = [_][]const u8{"Osaka"};
-
     var gpa = std.heap.DebugAllocator(.{ .thread_safe = true }){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
     const io = std.testing.io;
 
+    const fork = std.mem.span(std.c.getenv("FORK").?);
     if (std.c.getenv("BLOCKCHAIN_TEST")) |cpath| {
-        try runBlockchainTestFile(io, allocator, std.Io.Dir.cwd(), std.mem.span(cpath), supported_forks[0..]);
+        try runBlockchainTestFile(io, allocator, std.Io.Dir.cwd(), std.mem.span(cpath), fork);
         return;
     }
 
-    var dir = try std.Io.Dir.cwd().openDir(io, "fixtures/blockchain_tests", .{ .iterate = true });
+    var lowercase_fork: [64]u8 = undefined;
+    var fixtures_path: [128]u8 = undefined;
+    var dir = try std.Io.Dir.cwd().openDir(
+        io,
+        try std.fmt.bufPrint(&fixtures_path, "fixtures/blockchain_tests/for_{s}", .{
+            std.ascii.lowerString(&lowercase_fork, fork),
+        }),
+        .{ .iterate = true },
+    );
     defer dir.close(io);
 
     var paths: std.ArrayListUnmanaged([]u8) = .empty;
@@ -183,7 +190,7 @@ test "blockchain tests" {
     var any_failed = std.atomic.Value(bool).init(false);
     var pool: std.Io.Group = .init;
     for (paths.items) |path| {
-        pool.async(io, fileWorker, .{ io, allocator, dir, path, supported_forks[0..], &any_failed });
+        pool.async(io, fileWorker, .{ io, allocator, dir, path, fork, &any_failed });
     }
     try pool.await(io);
 

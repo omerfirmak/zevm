@@ -877,6 +877,13 @@ pub fn Ops(comptime cfg: Config) type {
                 empty_account_cost = if (beneficiary_account.isEmptyAccount()) fork.selfdestruct_empty_target_gas else 0;
                 beneficiary_account.balance += transferred_value;
                 current_account.balance = 0;
+                if (fork.isEnabled(.Amsterdam)) {
+                    if (beneficiary != frame.target) {
+                        frame.evm.pushTransferLog(frame.target, beneficiary, transferred_value);
+                    } else {
+                        frame.evm.pushBurnLog(frame.target, transferred_value);
+                    }
+                }
             }
 
             const remaining = gas - access_cost - empty_account_cost - fork.constantGas(.SELFDESTRUCT);
@@ -910,6 +917,11 @@ pub fn Ops(comptime cfg: Config) type {
                     return next(next_ip, available_gas - fork.constantGas(variant) - dynamic_gas, new_stack_head, frame);
                 }
             }.log;
+        }
+
+        pub fn slotnum(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+            const new_stack_head = try frame.stackPush(stack_head, frame.context.slotnum);
+            return next(next_ip, gas - fork.constantGas(.SLOTNUM), new_stack_head, frame);
         }
 
         pub fn entry(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
@@ -1012,6 +1024,10 @@ pub fn Ops(comptime cfg: Config) type {
             }
             inline for (1..17) |n| {
                 t[@intFromEnum(Opcode.SWAP1) + n - 1] = swapN(n);
+            }
+
+            if (cfg.fork.isEnabled(.Amsterdam)) {
+                t[@intFromEnum(Opcode.SLOTNUM)] = slotnum;
             }
 
             return t;

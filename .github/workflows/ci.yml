@@ -26,6 +26,10 @@ jobs:
 
   block-tests:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        fork: [Osaka, Amsterdam]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -36,13 +40,17 @@ jobs:
           version: 0.16.0
 
       - name: Download and extract state test fixtures
-        run: curl -L https://github.com/ethereum/execution-spec-tests/releases/download/v5.4.0/fixtures_develop.tar.gz | tar -xz
+        run: curl -L https://github.com/ethereum/execution-spec-tests/releases/download/snobal-devnet-6%40v1.1.0/fixtures_snobal-devnet-6.tar.gz | tar -xz
 
       - name: Run blockchain tests
-        run: zig build blockchain-tests -Doptimize=ReleaseSafe
+        run: zig build blockchain-tests -Doptimize=ReleaseSafe -Dfork=${{ matrix.fork }}
 
   state-tests:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        fork: [Osaka, Amsterdam]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -53,7 +61,7 @@ jobs:
           version: 0.16.0
 
       - name: Download and extract state test fixtures
-        run: curl -L https://github.com/ethereum/execution-spec-tests/releases/download/v5.4.0/fixtures_develop.tar.gz | tar -xz
+        run: curl -L https://github.com/ethereum/execution-spec-tests/releases/download/snobal-devnet-6%40v1.1.0/fixtures_snobal-devnet-6.tar.gz | tar -xz
 
       - name: Run state tests
-        run: zig build state-tests -Doptimize=ReleaseSafe
+        run: zig build state-tests -Doptimize=ReleaseSafe -Dfork=${{ matrix.fork }}
