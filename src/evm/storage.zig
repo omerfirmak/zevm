@@ -143,6 +143,18 @@ pub fn JournaledStorage(comptime Key: type, comptime Value: type, comptime Map: 
                 }
             }
         }
+
+        pub fn clearViaJournal(self: *Self) void {
+            if (Committed != void) @compileError("clearViaJournal not supported with committed state");
+            for (self.journal.items) |entry| {
+                if (std.meta.eql(entry.old_value, zero_value)) {
+                    _ = self.dirties.remove(entry.key);
+                }
+                if (self.dirties.size == 0) break;
+            }
+            self.journal.items.len = 0;
+            std.debug.assert(self.dirties.size == 0);
+        }
     };
 }
 

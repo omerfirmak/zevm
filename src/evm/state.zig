@@ -65,10 +65,9 @@ pub const State = struct {
     }
 
     pub fn clearTxState(self: *Self) void {
-        self.accounts.journal.clearRetainingCapacity();
-        self.contract_state.journal.clearRetainingCapacity();
-        self.transient_storage.dirties.clearRetainingCapacity();
-        self.transient_storage.journal.clearRetainingCapacity();
+        self.accounts.journal.items.len = 0;
+        self.contract_state.journal.items.len = 0;
+        self.transient_storage.clearViaJournal();
     }
 
     pub fn clearAccount(self: *Self, addr: u160) void {
