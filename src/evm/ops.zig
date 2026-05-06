@@ -324,7 +324,7 @@ pub fn Ops(comptime cfg: Config) type {
                 pub fn dup(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
                     var new_stack_head, const s = try frame.stackPop(stack_head, n, n);
                     new_stack_head = try frame.stackPush(new_stack_head, s[0]);
-                    return next(next_ip, gas - fork.constantGas(@enumFromInt(@intFromEnum(Opcode.DUP1) + n - 1)), new_stack_head, frame);
+                    return next(next_ip, gas - fork.constantGas(@enumFromInt(Opcode.DUP1.byte() + n - 1)), new_stack_head, frame);
                 }
             }.dup;
         }
@@ -336,9 +336,46 @@ pub fn Ops(comptime cfg: Config) type {
                     const tmp = s[0];
                     s[0] = s[n];
                     s[n] = tmp;
-                    return next(next_ip, gas - fork.constantGas(@enumFromInt(@intFromEnum(Opcode.SWAP1) + n - 1)), new_stack_head, frame);
+                    return next(next_ip, gas - fork.constantGas(@enumFromInt(Opcode.SWAP1.byte() + n - 1)), new_stack_head, frame);
                 }
             }.swap;
+        }
+
+        fn decodeSingle(imm: u8) u16 {
+            return @as(u16, imm +% 145);
+        }
+
+        fn decodePair(imm: u8) struct { u16, u16 } {
+            const k: u8 = imm ^ 0x8F;
+            const q: u16 = k / 16;
+            const r: u16 = k % 16;
+            return if (q < r) .{ q + 1, r + 1 } else .{ r + 1, 29 - q };
+        }
+
+        pub fn dupn(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+            const n = decodeSingle(frame.code.readByte(next_ip));
+            if (stack_head < n) return evm.Errors.StackUnderflow;
+            const new_stack_head, const slot = try frame.stackReserve(stack_head);
+            slot.* = frame.stack[stack_head - n];
+            return next(next_ip + 1, gas - fork.constantGas(.DUPN), new_stack_head, frame);
+        }
+
+        pub fn swapn(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+            const n = decodeSingle(frame.code.readByte(next_ip));
+            if (stack_head <= n) return evm.Errors.StackUnderflow;
+            const tmp = frame.stack[stack_head - 1];
+            frame.stack[stack_head - 1] = frame.stack[stack_head - 1 - n];
+            frame.stack[stack_head - 1 - n] = tmp;
+            return next(next_ip + 1, gas - fork.constantGas(.SWAPN), stack_head, frame);
+        }
+
+        pub fn exchange(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+            const n, const m = decodePair(frame.code.readByte(next_ip));
+            if (stack_head <= m) return evm.Errors.StackUnderflow;
+            const tmp = frame.stack[stack_head - 1 - n];
+            frame.stack[stack_head - 1 - n] = frame.stack[stack_head - 1 - m];
+            frame.stack[stack_head - 1 - m] = tmp;
+            return next(next_ip + 1, gas - fork.constantGas(.EXCHANGE), stack_head, frame);
         }
 
         pub fn address(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
@@ -897,7 +934,7 @@ pub fn Ops(comptime cfg: Config) type {
             return struct {
                 pub fn log(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
                     if (frame.is_static) return evm.Errors.WriteProtection;
-                    const topic_count = @intFromEnum(variant) - @intFromEnum(Opcode.LOG0);
+                    const topic_count = variant.byte() - Opcode.LOG0.byte();
                     const num_args = 2 + topic_count;
                     // stackPop returns bottom-to-top: args[0] is deepest, args[n-1] is top.
                     // Stack layout: [...topics (deepest first)..., memSize, memOffset (top)]
@@ -1017,17 +1054,20 @@ pub fn Ops(comptime cfg: Config) type {
                 .LOG4 = log_variant(.LOG4),
             });
             inline for (0..33) |n| {
-                t[@intFromEnum(Opcode.PUSH0) + n] = pushN(n);
+                t[Opcode.PUSH0.byte() + n] = pushN(n);
             }
             inline for (1..17) |n| {
-                t[@intFromEnum(Opcode.DUP1) + n - 1] = dupN(n);
+                t[Opcode.DUP1.byte() + n - 1] = dupN(n);
             }
             inline for (1..17) |n| {
-                t[@intFromEnum(Opcode.SWAP1) + n - 1] = swapN(n);
+                t[Opcode.SWAP1.byte() + n - 1] = swapN(n);
             }
 
             if (cfg.fork.isEnabled(.Amsterdam)) {
-                t[@intFromEnum(Opcode.SLOTNUM)] = slotnum;
+                t[Opcode.SLOTNUM.byte()] = slotnum;
+                t[Opcode.DUPN.byte()] = dupn;
+                t[Opcode.SWAPN.byte()] = swapn;
+                t[Opcode.EXCHANGE.byte()] = exchange;
             }
 
             return t;
@@ -1049,7 +1089,7 @@ fn tracing_hook(next_ip: InstructionPointer, gas: i32, stack_head: u16, frame: *
         .depth = frame.depth,
         .pc = pc,
         .gas = gas,
-        .op = if (pc < bytecode.len) bytecode[pc] else @intFromEnum(Opcode.STOP),
+        .op = if (pc < bytecode.len) bytecode[pc] else Opcode.STOP.byte(),
         .stack = frame.stack[0..stack_head],
     }, .{})});
 }
