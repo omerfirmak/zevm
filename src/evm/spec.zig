@@ -129,7 +129,7 @@ pub const Spec = struct {
 
     /// Derive tight State pre-allocation sizes from a transaction gas limit.
     pub fn stateCapacities(self: *const Self, gas_limit: u64) StateCapacities {
-        const tstore_gas: u64 = self.gas_table[@intFromEnum(Opcode.TSTORE)];
+        const tstore_gas: u64 = self.gas_table[Opcode.TSTORE.byte()];
         const sstore_min_gas: u64 = @as(u64, @intCast(self.cold_sload_gas)) + @as(u64, @intCast(self.sstore_reset_gas));
         const warm: u64 = @intCast(self.warm_access_gas);
         const cold_account: u64 = @intCast(self.cold_account_access_gas);
@@ -170,7 +170,7 @@ pub const Spec = struct {
         const cold_account: u64 = @intCast(self.cold_account_access_gas);
         const cold_slot: u64 = @intCast(self.cold_sload_gas);
         const sstore_min: u64 = cold_slot + @as(u64, @intCast(self.sstore_reset_gas));
-        const create_gas: u64 = self.gas_table[@intFromEnum(Opcode.CREATE)];
+        const create_gas: u64 = self.gas_table[Opcode.CREATE.byte()];
         // All three are per-tx (cleared in reset()), so bounded by max_tx_gas / first-access cost.
         // warm_accounts: writeNoClobber, one entry per unique cold account
         const wa: u32 = @intCast(gas_limit / cold_account);
@@ -189,7 +189,7 @@ pub const Spec = struct {
     }
 
     pub inline fn constantGas(comptime self: Self, comptime op: Opcode) u32 {
-        return @intCast(self.gas_table[@intFromEnum(op)]);
+        return @intCast(self.gas_table[op.byte()]);
     }
 
     pub fn getPrecompile(comptime self: Self, addr: u160) ?precompile.Handler {
@@ -429,7 +429,7 @@ fn override(base: anytype, changes: anytype) @TypeOf(base) {
     inline for (std.meta.fields(@TypeOf(changes))) |f| {
         if (comptime std.mem.eql(u8, f.name, "gas_table")) {
             inline for (std.meta.fields(@TypeOf(@field(changes, f.name)))) |g| {
-                result.gas_table[@intFromEnum(@field(Opcode, g.name))] = @field(@field(changes, f.name), g.name);
+                result.gas_table[@field(Opcode, g.name).byte()] = @field(@field(changes, f.name), g.name);
             }
         } else {
             @field(result, f.name) = @field(changes, f.name);
@@ -444,5 +444,8 @@ pub const Amsterdam = override(Osaka, .{
     .max_code_size = 0x8000,
     .gas_table = .{
         .SLOTNUM = 2,
+        .DUPN = 3,
+        .SWAPN = 3,
+        .EXCHANGE = 3,
     },
 });
