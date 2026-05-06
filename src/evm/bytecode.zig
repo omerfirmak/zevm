@@ -25,18 +25,35 @@ pub fn init(gpa: std.mem.Allocator, bytes: []const u8, comptime cfg: Config) !By
         const opcode = bytes[pc];
         threaded_code[pc] = jump_table[opcode];
         // Skip push data, leave the function pointer null
-        if (opcode >= @intFromEnum(Opcode.PUSH1) and opcode <= @intFromEnum(Opcode.PUSH32)) {
-            const data_len = opcode - @intFromEnum(Opcode.PUSH1) + 1;
-            const data_end = pc + data_len + 1;
-            // Fill positions of PUSH data bytes with null function pointers
-            for (threaded_code[pc + 1 .. data_end]) |*slot| {
-                slot.* = null;
-            }
-            // land on the last data byte; loop increment moves to next opcode
-            pc = data_end - 1;
+
+        switch (opcode) {
+            Opcode.PUSH1.byte()...Opcode.PUSH32.byte() => {
+                const data_len = opcode - Opcode.PUSH1.byte() + 1;
+                const data_end = pc + data_len + 1;
+                // Fill positions of PUSH data bytes with null function pointers
+                for (threaded_code[pc + 1 .. data_end]) |*slot| {
+                    slot.* = null;
+                }
+                // land on the last data byte; loop increment moves to next opcode
+                pc = data_end - 1;
+            },
+            inline Opcode.DUPN.byte(), Opcode.SWAPN.byte(), Opcode.EXCHANGE.byte() => |op| if (cfg.fork.isEnabled(.Amsterdam)) {
+                const inv_imm_low = if (op == Opcode.EXCHANGE.byte()) 0x52 else 0x5b;
+                const inv_imm_high = 0x7F;
+                if (pc + 1 < bytes.len) {
+                    const imm = bytes[pc + 1];
+                    if (inv_imm_low <= imm and imm <= inv_imm_high) {
+                        threaded_code[pc] = jump_table[Opcode.INVALID.byte()];
+                    } else {
+                        threaded_code[pc + 1] = null;
+                        pc += 1;
+                    }
+                }
+            },
+            else => {},
         }
     }
-    @memset(threaded_code[pc..], jump_table[@intFromEnum(Opcode.STOP)]);
+    @memset(threaded_code[pc..], jump_table[Opcode.STOP.byte()]);
 
     return .{
         .bytes = bytes,
@@ -56,7 +73,7 @@ pub fn isValidJumpDest(self: *const Bytecode, pc: u256) ?InstructionPointer {
     }
     const truncated_pc: usize = @intCast(pc);
     if (self.threaded_code[truncated_pc] == null or
-        self.bytes[truncated_pc] != @intFromEnum(Opcode.JUMPDEST))
+        self.bytes[truncated_pc] != Opcode.JUMPDEST.byte())
     {
         @branchHint(.unlikely);
         return null;
@@ -72,6 +89,11 @@ pub fn readBytesToValue(self: *const Bytecode, ip: InstructionPointer, comptime 
     const end = @min(self.bytes.len, start + size);
 
     ops.readBeSliceToU256(self.bytes[start..end], size, value);
+}
+
+pub fn readByte(self: *const Bytecode, ip: InstructionPointer) u8 {
+    const offset: usize = ip - self.threaded_code.ptr;
+    return if (offset < self.bytes.len) self.bytes[offset] else 0;
 }
 
 pub fn safeSlice(self: *const Bytecode, index: u256, size: u64) []const u8 {
