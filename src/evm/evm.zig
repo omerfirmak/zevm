@@ -493,8 +493,9 @@ pub const EVM = struct {
                 }
             }.less);
             for (burns.items) |burn| self.pushBurnLog(burn.addr, burn.amount);
-        }
 
+            return @max(gas_used_before_refund, floor_cost);
+        }
         return gas_used;
     }
 
