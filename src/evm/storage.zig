@@ -144,6 +144,32 @@ pub fn JournaledStorage(comptime Key: type, comptime Value: type, comptime Map: 
             }
         }
 
+        pub const DirtiesIterator = struct {
+            storage: *const Self,
+            journal_index: usize,
+
+            pub fn next(self: *DirtiesIterator) ?Map.Entry {
+                while (self.journal_index < self.storage.journal.items.len) {
+                    const entry = self.storage.journal.items[self.journal_index];
+                    self.journal_index += 1;
+                    const map_entry = self.storage.dirties.getEntry(entry.key);
+                    if (map_entry) |e| {
+                        return e;
+                    }
+                }
+                return null;
+            }
+        };
+
+        // Returns an iterator that uses the journal to figure out which keys are dirty, without
+        // walking the entire map. Depending on how many times an entry was updated, it might yield
+        // duplicates. Since we are not walking the map, it is also fine to update dirties as this
+        // iterator is consumed. Since the definition of "dirty" is existence of a related journal
+        // entry, it will only iterate over keys that were touched in the last transaction.
+        pub fn dirtiesIterator(self: *const Self) DirtiesIterator {
+            return .{ .storage = self, .journal_index = 0 };
+        }
+
         pub fn clearViaJournal(self: *Self) void {
             if (Committed != void) @compileError("clearViaJournal not supported with committed state");
             for (self.journal.items) |entry| {

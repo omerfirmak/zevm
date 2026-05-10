@@ -100,7 +100,7 @@ pub fn processBlock(
         };
         context.max_blobs_per_block -= blobs_used;
         num_logs_per_tx[index] = vm.num_logs;
-        try clearSelfdestructed(gpa, &vm, state);
+        try clearSelfdestructed(&vm, state);
 
         state.clearTxState();
         vm.reset();
@@ -223,9 +223,9 @@ fn applyWithdrawals(block: *const types.Block, state: *State) !void {
     }
 }
 
-fn clearSelfdestructed(gpa: std.mem.Allocator, vm: *evm.EVM, state: *State) !void {
+fn clearSelfdestructed(vm: *evm.EVM, state: *State) !void {
     var any = false;
-    var it = vm.created_accounts.dirties.iterator();
+    var it = vm.created_accounts.dirtiesIterator();
     while (it.next()) |entry| {
         if (entry.value_ptr.* == .Selfdestructed) {
             state.clearAccount(entry.key_ptr.*);
@@ -234,16 +234,13 @@ fn clearSelfdestructed(gpa: std.mem.Allocator, vm: *evm.EVM, state: *State) !voi
     }
     if (!any) return;
 
-    var to_remove: std.ArrayListUnmanaged(types.StorageLookup) = .empty;
-    defer to_remove.deinit(gpa);
-    var slots = state.contract_state.dirties.iterator();
+    var slots = state.contract_state.dirtiesIterator();
     while (slots.next()) |entry| {
         const addr: u160 = @truncate(entry.key_ptr.address);
         if (vm.created_accounts.dirties.get(addr)) |lc| {
-            if (lc == .Selfdestructed) try to_remove.append(gpa, entry.key_ptr.*);
+            if (lc == .Selfdestructed) _ = state.contract_state.dirties.remove(entry.key_ptr.*);
         }
     }
-    for (to_remove.items) |k| _ = state.contract_state.dirties.remove(k);
 }
 
 fn freeLogs(logs: *std.DoublyLinkedList, allocator: std.mem.Allocator) void {
