@@ -237,6 +237,157 @@ pub fn computeStateRoot(
     return account_trie.rootHash();
 }
 
+/// Prints a human-readable account/storage diff to stderr when a state root mismatch occurs.
+/// `expected_opt` is the post-state from the test fixture (may be null if absent).
+pub fn dumpStateDiff(
+    gpa: std.mem.Allocator,
+    expected_opt: ?std.json.ArrayHashMap(AccountState),
+    state: *state_mod.State,
+    committed: *const CommittedState,
+) !void {
+    // Build expected map: u160 -> AccountState
+    var expected_map = std.AutoHashMap(u160, AccountState).init(gpa);
+    defer expected_map.deinit();
+    if (expected_opt) |expected| {
+        for (expected.map.keys(), expected.map.values()) |addr_str, acct| {
+            const addr = try parseHex(u160, addr_str);
+            try expected_map.put(addr, acct);
+        }
+    }
+
+    // Collect every address that appears in committed or dirty state, plus expected.
+    var all_addrs = std.AutoHashMap(u160, void).init(gpa);
+    defer all_addrs.deinit();
+    {
+        var it = committed.account_map.keyIterator();
+        while (it.next()) |addr| try all_addrs.put(addr.*, {});
+    }
+    {
+        var it = state.accounts.dirties.keyIterator();
+        while (it.next()) |addr| try all_addrs.put(addr.*, {});
+    }
+    {
+        var it = expected_map.keyIterator();
+        while (it.next()) |addr| try all_addrs.put(addr.*, {});
+    }
+
+    // Sort for deterministic output.
+    var addr_list: std.ArrayListUnmanaged(u160) = .empty;
+    defer addr_list.deinit(gpa);
+    try addr_list.ensureTotalCapacity(gpa, all_addrs.count());
+    {
+        var it = all_addrs.keyIterator();
+        while (it.next()) |addr| addr_list.appendAssumeCapacity(addr.*);
+    }
+    std.sort.pdq(u160, addr_list.items, {}, struct {
+        fn lt(_: void, a: u160, b: u160) bool {
+            return a < b;
+        }
+    }.lt);
+
+    for (addr_list.items) |addr| {
+        const actual = try state.accounts.read(addr);
+        const exp_acct = expected_map.get(addr);
+
+        const exp_nonce: u256 = if (exp_acct) |e| e.nonce.value else 0;
+        const exp_balance: u256 = if (exp_acct) |e| e.balance.value else 0;
+        const exp_code: []const u8 = if (exp_acct) |e| e.code.value else &.{};
+
+        // Resolve actual code bytes.
+        var actual_code: []const u8 = &.{};
+        if (!std.mem.eql(u8, &actual.code_hash, &types.empty_code_hash)) {
+            if (committed.code_map.get(actual.code_hash)) |c| {
+                actual_code = c;
+            } else if (state.code_storage.get(actual.code_hash)) |b| {
+                actual_code = b.bytes;
+            }
+        }
+
+        // Build expected storage map: u256 -> u256.
+        var exp_storage = std.AutoHashMap(u256, u256).init(gpa);
+        defer exp_storage.deinit();
+        if (exp_acct) |e| {
+            for (e.storage.map.keys(), e.storage.map.values()) |slot_str, val| {
+                const slot = try parseHex(u256, slot_str);
+                if (val.value != 0) try exp_storage.put(slot, val.value);
+            }
+        }
+
+        // Collect all storage slots for this address.
+        var slots = std.AutoHashMap(u256, void).init(gpa);
+        defer slots.deinit();
+        {
+            var it = committed.storage_map.keyIterator();
+            while (it.next()) |lookup| {
+                if (lookup.address == @as(u256, addr)) try slots.put(lookup.slot, {});
+            }
+        }
+        {
+            var it = state.contract_state.dirties.keyIterator();
+            while (it.next()) |lookup| {
+                if (lookup.address == @as(u256, addr)) try slots.put(lookup.slot, {});
+            }
+        }
+        {
+            var it = exp_storage.keyIterator();
+            while (it.next()) |slot| try slots.put(slot.*, {});
+        }
+
+        // Check storage diffs.
+        var storage_diffs: std.ArrayListUnmanaged([3]u256) = .empty; // [slot, expected, actual]
+        defer storage_diffs.deinit(gpa);
+        {
+            var it = slots.keyIterator();
+            while (it.next()) |slot_ptr| {
+                const slot = slot_ptr.*;
+                const actual_val = try state.contract_state.read(.{ .address = addr, .slot = slot });
+                const exp_val = exp_storage.get(slot) orelse 0;
+                if (actual_val != exp_val) try storage_diffs.append(gpa, .{ slot, exp_val, actual_val });
+            }
+        }
+        std.sort.pdq([3]u256, storage_diffs.items, {}, struct {
+            fn lt(_: void, a: [3]u256, b: [3]u256) bool {
+                return a[0] < b[0];
+            }
+        }.lt);
+
+        // Skip account entirely if nothing differs.
+        const has_diff = actual.nonce != exp_nonce or
+            actual.balance != exp_balance or
+            !std.mem.eql(u8, actual_code, exp_code) or
+            storage_diffs.items.len > 0;
+        if (!has_diff) continue;
+
+        var addr_bytes: [20]u8 = undefined;
+        std.mem.writeInt(u160, &addr_bytes, addr, .big);
+        std.debug.print("  0x{s}:\n", .{std.fmt.bytesToHex(addr_bytes, .lower)});
+
+        if (actual.nonce != exp_nonce) {
+            std.debug.print("    nonce:   expected={d} actual={d}\n", .{ exp_nonce, actual.nonce });
+        }
+        if (actual.balance != exp_balance) {
+            std.debug.print("    balance: expected=0x{x} actual=0x{x}\n", .{ exp_balance, actual.balance });
+        }
+        if (!std.mem.eql(u8, actual_code, exp_code)) {
+            var exp_code_hash: [32]u8 = types.empty_code_hash;
+            if (exp_code.len > 0) Keccak256.hash(exp_code, &exp_code_hash, .{});
+            std.debug.print("    code:    expected({d}b)=0x{s} actual({d}b)=0x{s}\n", .{
+                exp_code.len,    std.fmt.bytesToHex(exp_code_hash, .lower),
+                actual_code.len, std.fmt.bytesToHex(actual.code_hash, .lower),
+            });
+        }
+        for (storage_diffs.items) |diff| {
+            var slot_bytes: [32]u8 = undefined;
+            std.mem.writeInt(u256, &slot_bytes, diff[0], .big);
+            std.debug.print("    storage[0x{s}]: expected=0x{x} actual=0x{x}\n", .{
+                std.fmt.bytesToHex(slot_bytes, .lower),
+                diff[1],
+                diff[2],
+            });
+        }
+    }
+}
+
 const exception_map = .{
     // Transaction exceptions
     .{ "TransactionException.INSUFFICIENT_ACCOUNT_FUNDS", evm.Errors.NotEnoughFunds },

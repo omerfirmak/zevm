@@ -62,9 +62,9 @@ test "state tests" {
     if (std.c.getenv("STATE_TEST")) |cpath| {
         const path = std.mem.span(cpath);
         if (std.c.getenv("TRACE")) |_| {
-            try runStateTestFile(io, allocator, std.Io.Dir.cwd(), path, fork, true);
+            try runStateTestFile(io, allocator, std.Io.Dir.cwd(), path, fork, true, true);
         } else {
-            try runStateTestFile(io, allocator, std.Io.Dir.cwd(), path, fork, false);
+            try runStateTestFile(io, allocator, std.Io.Dir.cwd(), path, fork, false, true);
         }
         return;
     }
@@ -106,12 +106,12 @@ test "state tests" {
 }
 
 fn fileWorker(io: std.Io, allocator: std.mem.Allocator, dir: std.Io.Dir, path: []const u8, fork: []const u8, any_failed: *std.atomic.Value(bool)) void {
-    runStateTestFile(io, allocator, dir, path, fork, false) catch {
+    runStateTestFile(io, allocator, dir, path, fork, false, false) catch {
         any_failed.store(true, .release);
     };
 }
 
-fn runStateTestFile(io: std.Io, allocator: std.mem.Allocator, dir: std.Io.Dir, path: []const u8, fork: []const u8, comptime trace: bool) !void {
+fn runStateTestFile(io: std.Io, allocator: std.mem.Allocator, dir: std.Io.Dir, path: []const u8, fork: []const u8, comptime trace: bool, comptime dump_diff: bool) !void {
     const file = try dir.openFile(io, path, .{});
     defer file.close(io);
 
@@ -132,7 +132,7 @@ fn runStateTestFile(io: std.Io, allocator: std.mem.Allocator, dir: std.Io.Dir, p
     for (parsed.value.map.keys(), parsed.value.map.values()) |name, test_case| {
         _ = test_case.post.map.get(fork) orelse continue;
 
-        const test_err = runStateTest(allocator, &test_case, fork, trace);
+        const test_err = runStateTest(allocator, &test_case, fork, trace, dump_diff);
         test_err catch |err| {
             std.debug.print("{s}: FAIL: {}\n", .{ name, err });
             any_failed = true;
@@ -141,7 +141,7 @@ fn runStateTestFile(io: std.Io, allocator: std.mem.Allocator, dir: std.Io.Dir, p
     if (any_failed) return error.StateTestFailed;
 }
 
-fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []const u8, comptime trace: bool) !void {
+fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []const u8, comptime trace: bool, comptime dump_diff: bool) !void {
     const tx = test_case.transaction;
     const forkSpec = spec.specByFork(utils.forkFromString(fork));
     const post_entries = test_case.post.map.get(fork).?;
@@ -219,6 +219,9 @@ fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []con
 
         const actual_root = try utils.computeStateRoot(gpa, &trie_fba, &state, &committed, &vm);
         if (!std.mem.allEqual(u8, post_entry.logs.value, 0) and !std.mem.eql(u8, &actual_root, post_entry.hash.value)) {
+            if (comptime dump_diff) {
+                try utils.dumpStateDiff(gpa, post_entry.state, &state, &committed);
+            }
             return error.StateRootHashMismatch;
         }
         if (trace) {
