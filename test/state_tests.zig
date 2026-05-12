@@ -143,7 +143,7 @@ fn runStateTestFile(io: std.Io, allocator: std.mem.Allocator, dir: std.Io.Dir, p
 
 fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []const u8, comptime trace: bool, comptime dump_diff: bool) !void {
     const tx = test_case.transaction;
-    const forkSpec = spec.specByFork(utils.forkFromString(fork));
+    const fork_enum = utils.forkFromString(fork);
     const post_entries = test_case.post.map.get(fork).?;
 
     const blob_schedule = if (test_case.config.blobSchedule) |bs| bs.map.get(fork) else null;
@@ -189,11 +189,15 @@ fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []con
             const gas_limit: u64 = switch (decoded_tx) {
                 inline else => |t| @intCast(t.gas_limit),
             };
-            state = try state_mod.State.init(arena_allocator, &committed, forkSpec.stateCapacities(gas_limit));
-            vm = try evm.EVM.init(arena_allocator, logs_allocator.allocator(), &logs, &context, forkSpec.evmCapacities());
+            state = try state_mod.State.init(arena_allocator, &committed, switch (fork_enum) {
+                inline else => |f| (comptime spec.specByFork(f)).stateCapacities(gas_limit),
+            });
+            vm = try evm.EVM.init(arena_allocator, logs_allocator.allocator(), &logs, &context, switch (fork_enum) {
+                inline else => |f| (comptime spec.specByFork(f)).evmCapacities(),
+            });
 
             const msg = zevm.processor.messageFromTx(arena_allocator, &decoded_tx, tx.sender.value) catch |e| break :blk e;
-            break :blk switch (utils.forkFromString(fork)) {
+            break :blk switch (fork_enum) {
                 inline else => |f| if (vm.process(.{ .fork = spec.specByFork(f), .tracing_enabled = trace }, &msg, &state)) |_| null else |err| err,
             };
         };
