@@ -1,3 +1,4 @@
+const std = @import("std");
 const Fork = @import("../forks.zig").Fork;
 
 pub const ChainSpec = struct {
@@ -38,4 +39,17 @@ pub const Osaka: ChainSpec = .{
     .max_blobs_per_block = 9,
 };
 
-pub const Amsterdam = Osaka;
+fn override(base: anytype, changes: anytype) @TypeOf(base) {
+    var result = base;
+    inline for (std.meta.fields(@TypeOf(changes))) |f| {
+        @field(result, f.name) = @field(changes, f.name);
+    }
+    return result;
+}
+
+pub const Amsterdam = override(Osaka, .{
+    .fork = .Amsterdam,
+    .blob_base_fee_update_fraction = 11684671,
+    .target_blobs_per_block = 14,
+    .max_blobs_per_block = 21,
+});
