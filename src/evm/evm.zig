@@ -527,9 +527,7 @@ pub const EVM = struct {
             }
             caller_account.balance -= value;
             (try state.accounts.update(target)).balance += value;
-            if (cfg.fork.isEnabled(.Amsterdam)) {
-                if (caller != target) self.pushTransferLog(caller, target, value);
-            }
+            if (cfg.fork.isEnabled(.Amsterdam) and caller != target) self.pushTransferLog(caller, target, value);
         }
 
         var remaining_gas, var err = .{ initial_gas, @as(?Errors, null) };
