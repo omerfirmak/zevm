@@ -191,10 +191,6 @@ pub const Log = struct {
     }
 };
 
-/// Pre-allocation sizes for EVM. Use Spec.evmCapacities() to
-/// derive bounds from the spec's max_tx_gas and current gas costs.
-pub const EvmCapacities = Spec.EvmCapacities;
-
 pub const EVM = struct {
     const Self = @This();
 
@@ -228,7 +224,7 @@ pub const EVM = struct {
         logs_allocator: std.mem.Allocator,
         logs: *std.DoublyLinkedList,
         context: *const Context,
-        caps: EvmCapacities,
+        caps: Spec.EvmCapacities,
     ) !Self {
         var rounded_allocator = RoundedAllocator{ .backing = gpa };
         const allocator = rounded_allocator.allocator();
