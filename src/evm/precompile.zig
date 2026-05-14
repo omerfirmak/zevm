@@ -17,7 +17,7 @@ const BigIntLimb = std.math.big.Limb;
 
 pub const Result = struct {
     return_size: usize = 0,
-    remaining_gas: i32 = 0,
+    remaining_gas: u32 = 0,
     err: ?evm.Errors = null,
 };
 
@@ -25,7 +25,7 @@ const out_of_gas: Result = .{ .err = evm.Errors.OutOfGas };
 const invalid_input: Result = .{ .err = evm.Errors.InvalidPrecompileInput };
 
 pub const Handler = *const fn (
-    gas: i32,
+    gas: u32,
     calldata: []const u8,
     return_buffer: []u8,
 ) Result;
@@ -245,7 +245,7 @@ fn blake2bCompress(h: *[8]u64, m: *const [16]u64, t0: u64, t1: u64, final: bool,
 pub fn Handlers(comptime fork: Spec) type {
     return struct {
         pub fn identity(
-            gas: i32,
+            gas: u32,
             calldata: []const u8,
             return_buffer: []u8,
         ) Result {
@@ -256,7 +256,7 @@ pub fn Handlers(comptime fork: Spec) type {
         }
 
         pub fn sha2_256(
-            gas: i32,
+            gas: u32,
             calldata: []const u8,
             return_buffer: []u8,
         ) Result {
@@ -269,7 +269,7 @@ pub fn Handlers(comptime fork: Spec) type {
         }
 
         pub fn ripemd_160(
-            gas: i32,
+            gas: u32,
             calldata: []const u8,
             return_buffer: []u8,
         ) Result {
@@ -282,7 +282,7 @@ pub fn Handlers(comptime fork: Spec) type {
         }
 
         pub fn ecrecover(
-            gas: i32,
+            gas: u32,
             calldata: []const u8,
             return_buffer: []u8,
         ) Result {
@@ -315,7 +315,7 @@ pub fn Handlers(comptime fork: Spec) type {
         }
 
         pub fn p256verify(
-            gas: i32,
+            gas: u32,
             calldata: []const u8,
             return_buffer: []u8,
         ) Result {
@@ -371,14 +371,14 @@ pub fn Handlers(comptime fork: Spec) type {
         }
 
         pub fn blake2f(
-            gas: i32,
+            gas: u32,
             calldata: []const u8,
             return_buffer: []u8,
         ) Result {
             if (calldata.len != 213) return invalid_input;
 
             const rounds = std.mem.readInt(u32, calldata[0..4], .big);
-            const cost = if (rounds > std.math.maxInt(i32)) std.math.maxInt(i32) else @as(i32, @intCast(rounds));
+            const cost = if (rounds > std.math.maxInt(u32)) std.math.maxInt(u32) else @as(u32, @intCast(rounds));
             if (gas < cost) return out_of_gas;
 
             const final_flag = calldata[212];
@@ -406,7 +406,7 @@ pub fn Handlers(comptime fork: Spec) type {
             return .{ .return_size = 64, .remaining_gas = gas - cost };
         }
 
-        fn modexpGasCost(base_len: usize, mod_len: usize, exp_len: usize, exp_head: []const u8) i32 {
+        fn modexpGasCost(base_len: usize, mod_len: usize, exp_len: usize, exp_head: []const u8) u32 {
             const max_len = @max(base_len, mod_len);
             const words = (max_len + 7) / 8;
             const multiplication_complexity: u64 = if (max_len > fork.modexp_small_length)
@@ -425,11 +425,11 @@ pub fn Handlers(comptime fork: Spec) type {
                 16 * @as(u64, exp_len - fork.modexp_small_length) + large_head_bit;
             const iteration_count = @max(adjusted_exp_len, 1);
             const cost = @max(@as(u64, fork.modexp_minimum_cost), multiplication_complexity * iteration_count);
-            return if (cost > std.math.maxInt(i32)) std.math.maxInt(i32) else @intCast(cost);
+            return if (cost > std.math.maxInt(u32)) std.math.maxInt(u32) else @intCast(cost);
         }
 
         pub fn modexp(
-            gas: i32,
+            gas: u32,
             calldata: []const u8,
             return_buffer: []u8,
         ) Result {
@@ -523,7 +523,7 @@ pub fn Handlers(comptime fork: Spec) type {
         }
 
         pub fn bls12G1add(
-            gas: i32,
+            gas: u32,
             calldata: []const u8,
             return_buffer: []u8,
         ) Result {
@@ -539,16 +539,16 @@ pub fn Handlers(comptime fork: Spec) type {
             return .{ .return_size = return_size, .remaining_gas = gas - fork.bls12_g1add_gas };
         }
 
-        fn bls12MsmCost(input_len: usize, comptime pair_len: usize, comptime mul_cost: i32, comptime discounts: []const u16) i32 {
+        fn bls12MsmCost(input_len: usize, comptime pair_len: usize, comptime mul_cost: u32, comptime discounts: []const u16) u32 {
             const k = input_len / pair_len;
             if (k == 0) return 0;
             const discount = discounts[@min(k, discounts.len - 1)];
             const cost_u64 = @as(u64, k) * @as(u64, @intCast(mul_cost)) * @as(u64, discount) / 1000;
-            return if (cost_u64 > std.math.maxInt(i32)) std.math.maxInt(i32) else @intCast(cost_u64);
+            return if (cost_u64 > std.math.maxInt(u32)) std.math.maxInt(u32) else @intCast(cost_u64);
         }
 
         pub fn bls12G1msm(
-            gas: i32,
+            gas: u32,
             calldata: []const u8,
             return_buffer: []u8,
         ) Result {
@@ -573,7 +573,7 @@ pub fn Handlers(comptime fork: Spec) type {
         }
 
         pub fn bls12G2add(
-            gas: i32,
+            gas: u32,
             calldata: []const u8,
             return_buffer: []u8,
         ) Result {
@@ -590,7 +590,7 @@ pub fn Handlers(comptime fork: Spec) type {
         }
 
         pub fn bls12G2msm(
-            gas: i32,
+            gas: u32,
             calldata: []const u8,
             return_buffer: []u8,
         ) Result {
@@ -614,14 +614,14 @@ pub fn Handlers(comptime fork: Spec) type {
             return .{ .return_size = return_size, .remaining_gas = gas - cost };
         }
 
-        fn bls12PairingCost(input_len: usize, comptime pair_len: usize, comptime base_cost: i32, comptime per_pair_cost: i32) i32 {
+        fn bls12PairingCost(input_len: usize, comptime pair_len: usize, comptime base_cost: u32, comptime per_pair_cost: u32) u32 {
             const k = input_len / pair_len;
             const cost_u64 = @as(u64, @intCast(base_cost)) + @as(u64, k) * @as(u64, @intCast(per_pair_cost));
-            return if (cost_u64 > std.math.maxInt(i32)) std.math.maxInt(i32) else @intCast(cost_u64);
+            return if (cost_u64 > std.math.maxInt(u32)) std.math.maxInt(u32) else @intCast(cost_u64);
         }
 
         pub fn bls12PairingCheck(
-            gas: i32,
+            gas: u32,
             calldata: []const u8,
             return_buffer: []u8,
         ) Result {
@@ -652,7 +652,7 @@ pub fn Handlers(comptime fork: Spec) type {
         }
 
         pub fn bls12MapFpToG1(
-            gas: i32,
+            gas: u32,
             calldata: []const u8,
             return_buffer: []u8,
         ) Result {
@@ -667,7 +667,7 @@ pub fn Handlers(comptime fork: Spec) type {
         }
 
         pub fn bls12MapFp2ToG2(
-            gas: i32,
+            gas: u32,
             calldata: []const u8,
             return_buffer: []u8,
         ) Result {
@@ -682,7 +682,7 @@ pub fn Handlers(comptime fork: Spec) type {
         }
 
         pub fn point_eval(
-            gas: i32,
+            gas: u32,
             calldata: []const u8,
             return_buffer: []u8,
         ) Result {
@@ -797,7 +797,7 @@ pub fn Handlers(comptime fork: Spec) type {
         }
 
         pub fn ecadd(
-            gas: i32,
+            gas: u32,
             calldata: []const u8,
             return_buffer: []u8,
         ) Result {
@@ -822,7 +822,7 @@ pub fn Handlers(comptime fork: Spec) type {
         }
 
         pub fn ecmul(
-            gas: i32,
+            gas: u32,
             calldata: []const u8,
             return_buffer: []u8,
         ) Result {
@@ -848,7 +848,7 @@ pub fn Handlers(comptime fork: Spec) type {
         }
 
         pub fn ecpairing(
-            gas: i32,
+            gas: u32,
             calldata: []const u8,
             return_buffer: []u8,
         ) Result {
@@ -857,7 +857,7 @@ pub fn Handlers(comptime fork: Spec) type {
 
             const pair_len = calldata.len / 192;
             const cost = fork.ecpairing_gas +
-                @as(i32, @intCast(pair_len)) * fork.ecpairing_per_pair_gas;
+                @as(u32, @intCast(pair_len)) * fork.ecpairing_per_pair_gas;
 
             if (gas < cost) return out_of_gas;
 

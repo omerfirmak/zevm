@@ -34,7 +34,7 @@ pub fn slice(self: *Memory, start: usize, size: usize) []u8 {
 
 // Tries to grow the memory to fit the given region if there is enough gas
 // Returns the remaning gas
-pub fn growToFit(self: *Memory, offset: u256, size: u256, available_gas: i32) !i32 {
+pub fn growToFit(self: *Memory, offset: u256, size: u256, available_gas: u32) !u32 {
     if (size == 0) {
         return available_gas;
     }
@@ -67,7 +67,7 @@ pub fn growToFit(self: *Memory, offset: u256, size: u256, available_gas: i32) !i
     }
 
     self.costSoFar += cost;
-    return available_gas - @as(i32, @intCast(cost));
+    return available_gas - @as(u32, @intCast(cost));
 }
 
 // Copies from source to the memory region given. Clears tail part of the memory region
@@ -78,6 +78,6 @@ pub fn copyAndClearRemaining(self: *Memory, offset: usize, size: usize, source: 
     @memset(destination[source.len..], 0);
 }
 
-pub fn toWordSize(size: u256) i32 {
-    return @divFloor((@as(i32, @intCast(size)) + 31), 32);
+pub fn toWordSize(size: u256) u32 {
+    return @divFloor((@as(u32, @intCast(size)) + 31), 32);
 }

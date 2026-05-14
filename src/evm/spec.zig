@@ -12,99 +12,99 @@ pub const Spec = struct {
     gas_table: [256]u32,
 
     // EIP-2929: access cost tiers
-    warm_access_gas: i32,
-    cold_account_access_gas: i32,
-    cold_sload_gas: i32,
+    warm_access_gas: u32,
+    cold_account_access_gas: u32,
+    cold_sload_gas: u32,
 
     // EIP-2200/3529: SSTORE gas schedule
-    sstore_set_gas: i32,
-    sstore_reset_gas: i32,
-    sstore_clears_schedule: i32,
+    sstore_set_gas: u32,
+    sstore_reset_gas: u32,
+    sstore_clears_schedule: u32,
 
     // EIP-170: max deployed code size and deposit cost per byte
     max_code_size: usize,
     code_deposit_gas: usize,
 
     // EIP-2930: access list intrinsic gas
-    access_list_address_gas: i32,
-    access_list_storage_key_gas: i32,
+    access_list_address_gas: u32,
+    access_list_storage_key_gas: u32,
 
     // Intrinsic base gas per transaction type
-    tx_base_gas: i32,
-    tx_create_gas: i32,
+    tx_base_gas: u32,
+    tx_create_gas: u32,
 
     // Per-word gas for hashing operations (KECCAK256, CREATE2)
-    keccak_word_gas: i32,
+    keccak_word_gas: u32,
 
     // EIP-150: denominator for the 63/64 gas forwarding rule
-    gas_forward_denom: i32,
+    gas_forward_denom: u32,
 
-    selfdestruct_empty_target_gas: i32,
+    selfdestruct_empty_target_gas: u32,
 
     // EIP-7623 TOTAL_COST_FLOOR_PER_TOKEN
-    total_cost_floor_per_token: i32,
+    total_cost_floor_per_token: u32,
 
     // EIP-7825: maximum transaction gas limit
-    max_tx_gas: i32,
+    max_tx_gas: u32,
 
     // EIP-160: gas per byte of exponent in EXP
-    exp_per_byte_gas: i32,
+    exp_per_byte_gas: u32,
 
     // CALL gas constants
-    call_value_gas: i32, // charged when CALL/CALLCODE sends non-zero value
-    call_new_account_gas: i32, // charged when CALL creates a new (empty) account
-    call_stipend: i32, // bonus gas given to callee when value is transferred
+    call_value_gas: u32, // charged when CALL/CALLCODE sends non-zero value
+    call_new_account_gas: u32, // charged when CALL creates a new (empty) account
+    call_stipend: u32, // bonus gas given to callee when value is transferred
 
-    log_size_gas_factor: i32,
+    log_size_gas_factor: u32,
 
     // Identity precompile
-    identity_base_gas: i32,
-    identity_per_word_gas: i32,
+    identity_base_gas: u32,
+    identity_per_word_gas: u32,
 
     // SHA2-256 precompile
-    sha2256_base_gas: i32,
-    sha2256_per_word_gas: i32,
+    sha2256_base_gas: u32,
+    sha2256_per_word_gas: u32,
 
     // RIPEMD160 precompile
-    ripemd160_base_gas: i32,
-    ripemd160_per_word_gas: i32,
+    ripemd160_base_gas: u32,
+    ripemd160_per_word_gas: u32,
 
     // ECRECOVER precompile
-    ecrecover_gas: i32,
+    ecrecover_gas: u32,
 
     // P256VERIFY precompile (EIP-7951)
-    p256verify_gas: i32,
+    p256verify_gas: u32,
 
     // EIP-2537 BLS12-381 precompiles
-    bls12_g1add_gas: i32,
-    bls12_g1mul_gas: i32,
-    bls12_g2add_gas: i32,
-    bls12_g2mul_gas: i32,
-    bls12_pairing_base_gas: i32,
-    bls12_pairing_per_pair_gas: i32,
-    bls12_map_fp_to_g1_gas: i32,
-    bls12_map_fp2_to_g2_gas: i32,
+    bls12_g1add_gas: u32,
+    bls12_g1mul_gas: u32,
+    bls12_g2add_gas: u32,
+    bls12_g2mul_gas: u32,
+    bls12_pairing_base_gas: u32,
+    bls12_pairing_per_pair_gas: u32,
+    bls12_map_fp_to_g1_gas: u32,
+    bls12_map_fp2_to_g2_gas: u32,
 
     // EIP-4844 / EIP-7594
-    gas_per_blob: i32,
-    point_evaluation_gas: i32,
+    gas_per_blob: u32,
+    point_evaluation_gas: u32,
     max_blobs_per_tx: u64,
 
     // EIP-7883 / 7823 modexp pricing helpers
-    modexp_minimum_cost: i32,
+    modexp_minimum_cost: u32,
     modexp_small_length: usize,
-    modexp_small_cost: i32,
-    modexp_large_multiplier: i32,
+    modexp_small_cost: u32,
+    modexp_large_multiplier: u32,
 
     // EIP-7702: set code for EOAs
-    per_empty_account_cost: i32, // intrinsic cost per authorization tuple
-    per_auth_base_cost: i32, // refund amount when authority account is non-empty
+    per_empty_account_cost: u32, // intrinsic cost per authorization tuple
+    per_auth_base_cost: u32, // refund amount when authority account is non-empty
 
     // EC precompiles
-    ecadd_gas: i32,
-    ecmul_gas: i32,
-    ecpairing_gas: i32,
-    ecpairing_per_pair_gas: i32,
+    ecadd_gas: u32,
+    ecmul_gas: u32,
+    ecpairing_gas: u32,
+    ecpairing_per_pair_gas: u32,
 
     /// Pre-allocation sizes for State, derived from spec gas costs.
     pub const StateCapacities = struct {
@@ -185,7 +185,7 @@ pub const Spec = struct {
         return .{ .pre_state = ps, .warm_accounts = wa, .warm_slots = ws, .created = ca, .return_buf = ret };
     }
 
-    pub fn constantGas(self: *const Self, comptime op: Opcode) i32 {
+    pub fn constantGas(self: *const Self, comptime op: Opcode) u32 {
         return @intCast(self.gas_table[@intFromEnum(op)]);
     }
 

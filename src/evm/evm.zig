@@ -78,7 +78,7 @@ pub const Frame = struct {
     return_buffer: []u8,
 
     // vm state
-    gas: i32,
+    gas: u32,
     stack: [max_stack_size]u256 align(@sizeOf(u256)),
     memory: Memory,
 
@@ -146,7 +146,7 @@ pub const Message = struct {
     caller: u160,
     nonce: u64,
     target: ?u160, // null = CREATE, some(addr) = CALL (including to address 0)
-    gas_limit: i32,
+    gas_limit: u32,
     gas_price: ?u256 = null, // legacy gas price; null for EIP-1559 txs
     calldata: []u8,
     value: u256,
@@ -287,7 +287,7 @@ pub const EVM = struct {
             msg.gas_price orelse 0;
     }
 
-    pub fn validateAndPriceBlobTx(self: *const Self, comptime fork: Spec, blob_base_fee: u256) !struct { i32, u256 } {
+    pub fn validateAndPriceBlobTx(self: *const Self, comptime fork: Spec, blob_base_fee: u256) !struct { u32, u256 } {
         const msg = self.msg;
         if (msg.max_fee_per_blob_gas) |max_fee_per_blob| {
             const hashes = msg.blob_versioned_hashes;
@@ -302,14 +302,14 @@ pub const EVM = struct {
             }
             if (max_fee_per_blob < blob_base_fee) return Errors.InsufficientMaxFeePerBlobGas;
 
-            const gas = @as(i32, @intCast(hashes.len)) * fork.gas_per_blob;
+            const gas = @as(u32, @intCast(hashes.len)) * fork.gas_per_blob;
             const upfront = std.math.mul(u256, @intCast(gas), max_fee_per_blob) catch return Errors.NotEnoughFunds;
             return .{ gas, upfront };
         }
         return .{ 0, 0 };
     }
 
-    pub fn process(self: *Self, comptime cfg: Config, msg: *const Message, state: *State) !i32 {
+    pub fn process(self: *Self, comptime cfg: Config, msg: *const Message, state: *State) !u32 {
         self.msg = msg;
         self.effective_gas_price = effectiveGasPrice(msg, self.context.basefee);
 
@@ -354,8 +354,8 @@ pub const EVM = struct {
         // EIP-3860: 2 gas per 32-byte initcode word, charged as intrinsic for CREATE txs
         const initcode_gas = if (is_create) initcodeWordCost(msg.calldata.len) else 0;
         // EIP-7702: PER_EMPTY_ACCOUNT_COST per authorization tuple
-        const auth_list_len: i32 = if (msg.authorization_list) |al| @intCast(al.len) else 0;
-        const auth_gas = std.math.mul(i32, auth_list_len, cfg.fork.per_empty_account_cost) catch return Errors.OutOfGas;
+        const auth_list_len: u32 = if (msg.authorization_list) |al| @intCast(al.len) else 0;
+        const auth_gas = std.math.mul(u32, auth_list_len, cfg.fork.per_empty_account_cost) catch return Errors.OutOfGas;
         const total_intrinsic = intrinsic_gas + calldata_gas + access_list_gas + initcode_gas + auth_gas;
         if (msg.gas_limit < total_intrinsic or msg.gas_limit < floor_cost) {
             return Errors.OutOfGas;
@@ -481,14 +481,14 @@ pub const EVM = struct {
         caller: u160,
         target: u160,
         code_addr: u160,
-        initial_gas: i32,
+        initial_gas: u32,
         calldata: []u8,
         value: u256,
         depth: usize,
         return_buffer: []u8,
         skip_value_transfer: bool,
         is_static: bool,
-    ) !struct { i32, ?Errors } {
+    ) !struct { u32, ?Errors } {
         if (depth >= 1024) return .{ initial_gas, Errors.CallDepthExceeded };
 
         const state_snap = state.snapshot();
@@ -557,7 +557,7 @@ pub const EVM = struct {
     // EIP-7702: return the EIP-2929 access cost for following a delegation on code_addr, also
     // marking the delegate as warm. Returns 0 if code_addr has no delegation designator.
     // Must be called from CALL/CALLCODE/DELEGATECALL/STATICCALL before forwarding gas.
-    pub fn delegationAccessCost(self: *Self, comptime cfg: Config, code_addr: u160, state: *State) !i32 {
+    pub fn delegationAccessCost(self: *Self, comptime cfg: Config, code_addr: u160, state: *State) !u32 {
         const code_hash = (try state.accounts.read(code_addr)).code_hash;
         if (std.mem.eql(u8, &code_hash, &types.empty_code_hash)) return 0;
         const raw = try state.get_code(code_hash, cfg);
@@ -568,10 +568,10 @@ pub const EVM = struct {
     pub fn callPrecompile(
         self: *Self,
         handler: precompile.Handler,
-        initial_gas: i32,
+        initial_gas: u32,
         calldata: []u8,
         return_buffer: []u8,
-    ) struct { i32, ?Errors } {
+    ) struct { u32, ?Errors } {
         const result = handler(initial_gas, calldata, self.return_buffer);
         self.return_data_size = result.return_size;
         if (result.return_size > 0) {
@@ -590,10 +590,10 @@ pub const EVM = struct {
         creator: u160,
         initcode: []const u8,
         value: u256,
-        initial_gas: i32,
+        initial_gas: u32,
         depth: usize,
         salt: ?u256,
-    ) !struct { i32, u160 } {
+    ) !struct { u32, u160 } {
         // Depth/nonce/balance failures are "never started" — return all forwarded gas to caller.
         if (depth >= 1024) return .{ initial_gas, 0 };
 
@@ -673,7 +673,7 @@ pub const EVM = struct {
         const deployed_len = self.return_data_size;
         self.return_data_size = 0;
         const deployed_code = self.return_buffer[0..deployed_len];
-        const deposit_gas: i32 = @intCast(deployed_len * cfg.fork.code_deposit_gas);
+        const deposit_gas: u32 = @intCast(deployed_len * cfg.fork.code_deposit_gas);
 
         if (deployed_len > cfg.fork.max_code_size or // EIP-170
             (deployed_len > 0 and deployed_code[0] == 0xef) or // EIP-3541: reject EOF containers (0xEF prefix) in non-EOF deployments
@@ -724,7 +724,7 @@ pub const EVM = struct {
         return !(self.warm_accounts.writeNoClobber(addr, {}) catch unreachable);
     }
 
-    pub fn accessAccountCost(self: *Self, comptime fork: Spec, addr: u160) i32 {
+    pub fn accessAccountCost(self: *Self, comptime fork: Spec, addr: u160) u32 {
         return if (self.accessAccount(addr)) fork.warm_access_gas else fork.cold_account_access_gas;
     }
 
@@ -732,7 +732,7 @@ pub const EVM = struct {
         return !(self.warm_slots.writeNoClobber(.{ .address = addr, .slot = slot }, {}) catch unreachable);
     }
 
-    pub fn accessSlotCost(self: *Self, comptime fork: Spec, addr: u160, slot: u256) i32 {
+    pub fn accessSlotCost(self: *Self, comptime fork: Spec, addr: u160, slot: u256) u32 {
         return if (self.accessSlot(addr, slot)) fork.warm_access_gas else fork.cold_sload_gas;
     }
 
@@ -805,7 +805,7 @@ fn resolveCode(code_addr: u160, state: *State, comptime cfg: Config) !?Bytecode 
 }
 
 // EIP-3860: 2 gas per 32-byte initcode word (ceiling division)
-fn initcodeWordCost(len: usize) i32 {
+fn initcodeWordCost(len: usize) u32 {
     return @intCast(((len + 31) / 32) * 2);
 }
 
@@ -859,22 +859,22 @@ fn create2Address(creator: u160, salt: u256, initcode: []const u8) u160 {
     return std.mem.readInt(u160, hash[12..32], .big);
 }
 
-fn accessListGas(comptime fork: Spec, access_list: []const AccessListEntry) !i32 {
-    var gas: i32 = 0;
+fn accessListGas(comptime fork: Spec, access_list: []const AccessListEntry) !u32 {
+    var gas: u32 = 0;
     for (access_list) |entry| {
-        gas = std.math.add(i32, gas, fork.access_list_address_gas) catch return Errors.OutOfGas;
+        gas = std.math.add(u32, gas, fork.access_list_address_gas) catch return Errors.OutOfGas;
         const key_gas = std.math.mul(usize, entry.storage_keys.len, fork.access_list_storage_key_gas) catch return Errors.OutOfGas;
-        gas = std.math.add(i32, gas, @intCast(key_gas)) catch return Errors.OutOfGas;
+        gas = std.math.add(u32, gas, @intCast(key_gas)) catch return Errors.OutOfGas;
     }
     return gas;
 }
 
-fn calldataCost(comptime fork: Spec, calldata: []u8) !struct { i32, i32 } {
+fn calldataCost(comptime fork: Spec, calldata: []u8) !struct { u32, u32 } {
     const zeros = std.mem.count(u8, calldata, &[_]u8{0});
     const cost = zeros * 4 + (calldata.len - zeros) * 16;
     const tokens = zeros + (calldata.len - zeros) * 4;
     const floor = std.math.mul(usize, tokens, fork.total_cost_floor_per_token) catch return Errors.OutOfGas;
-    if (cost > std.math.maxInt(i32) or floor > std.math.maxInt(i32)) {
+    if (cost > std.math.maxInt(u32) or floor > std.math.maxInt(u32)) {
         return Errors.OutOfGas;
     }
     return .{ @intCast(cost), @intCast(floor) };
