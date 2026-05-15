@@ -12,7 +12,7 @@ const BenchmarkDef = struct {
     hex_bytes: []const u8,
     /// Raw calldata bytes.
     calldata: []const u8,
-    gas_limit: i32 = 1_000_000_000,
+    gas_limit: u32 = 1_000_000_000,
     /// Size of the deployed-bytecode buffer (bytes).
     bytecode_buf_size: usize = 4 * 1024 * 1024,
 };
@@ -21,7 +21,7 @@ const BenchmarkDef = struct {
 // matching revm's `tx_gas_limit_cap = Some(u64::MAX)` config.
 const bench_fork: Config = blk: {
     var f = spec.Osaka;
-    f.max_tx_gas = std.math.maxInt(i32);
+    f.max_tx_gas = std.math.maxInt(u32);
     break :blk .{ .fork = f, .tracing_enabled = false };
 };
 
@@ -83,7 +83,7 @@ fn runBenchmark(io: std.Io, allocator: std.mem.Allocator, bench_def: BenchmarkDe
     defer allocator.free(bytecode);
 
     const committed_state = state_mod.CommittedState{};
-    var state = try state_mod.State.init(allocator, &committed_state, bench_def.bytecode_buf_size);
+    var state = try state_mod.State.init(allocator, &committed_state, bench_fork.fork.stateCapacities(30_000_000));
     defer state.deinit(allocator);
 
     _ = try state.accounts.write(BENCH_CALLER, .{
@@ -110,6 +110,7 @@ fn runBenchmark(io: std.Io, allocator: std.mem.Allocator, bench_def: BenchmarkDe
         .coinbase = 0,
         .time = 0,
         .random = 0,
+        .slotnum = 0,
         .basefee = 0,
         .gas_limit = @intCast(bench_def.gas_limit),
         .blob_base_fee = 0,
@@ -141,15 +142,16 @@ fn runBenchmark(io: std.Io, allocator: std.mem.Allocator, bench_def: BenchmarkDe
     var times = try allocator.alloc(u64, iters);
     defer allocator.free(times);
     var start = std.Io.Timestamp.now(io, .real);
-    var gas_used: i32 = 0;
+    var gas_used: u32 = 0;
+    var state_gas_used: u32 = 0;
 
     for (0..iters + warmup) |i| {
         _ = vm_arena.reset(.retain_capacity);
         var logs: std.DoublyLinkedList = .{};
 
-        var vm = try evm.EVM.init(vm_arena.allocator(), vm_arena.allocator(), &logs, &context);
+        var vm = try evm.EVM.init(vm_arena.allocator(), vm_arena.allocator(), &logs, &context, bench_fork.fork.evmCapacities());
         start = .zero;
-        gas_used = vm.process(bench_fork, &msg, &state) catch |err| {
+        gas_used, state_gas_used = vm.process(bench_fork, &msg, &state) catch |err| {
             std.debug.print("error at iter {d}: {}\n", .{ i, err });
             return;
         };
@@ -173,11 +175,12 @@ fn runBenchmark(io: std.Io, allocator: std.mem.Allocator, bench_def: BenchmarkDe
     const min_ns = times[0];
     const max_ns = times[iters - 1];
 
-    std.debug.print("  min    {d:.3} ms\n", .{nsToMs(min_ns)});
-    std.debug.print("  median {d:.3} ms\n", .{nsToMs(median_ns)});
-    std.debug.print("  mean   {d:.3} ms\n", .{nsToMs(mean_ns)});
-    std.debug.print("  max    {d:.3} ms\n", .{nsToMs(max_ns)});
-    std.debug.print("  gas    {}\n", .{gas_used});
+    std.debug.print("  min          {d:.3} ms\n", .{nsToMs(min_ns)});
+    std.debug.print("  median       {d:.3} ms\n", .{nsToMs(median_ns)});
+    std.debug.print("  mean         {d:.3} ms\n", .{nsToMs(mean_ns)});
+    std.debug.print("  max          {d:.3} ms\n", .{nsToMs(max_ns)});
+    std.debug.print("  gas          {}\n", .{gas_used});
+    std.debug.print("  state_gas    {}\n", .{state_gas_used});
 }
 
 fn nsToMs(ns: u64) f64 {
