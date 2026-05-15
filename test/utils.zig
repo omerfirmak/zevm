@@ -429,6 +429,9 @@ const exception_map = .{
     .{ "BlockException.INVALID_GASLIMIT", error.GasLimitTooHigh },
     .{ "BlockException.INVALID_GASLIMIT", error.GasLimitTooLow },
     .{ "BlockException.INVALID_GASLIMIT", error.GasLimitLessThanMinimum },
+    .{ "BlockException.GAS_USED_OVERFLOW", error.InsufficientGas },
+    .{ "BlockException.GAS_USED_OVERFLOW", error.MismatchedGasUsed },
+    .{ "BlockException.GAS_USED_OVERFLOW", evm.Errors.GasOverflow },
     // Block exceptions — RLP decode failures (thrown by prepareBlock before processBlock)
     .{ "BlockException.INCORRECT_BLOCK_FORMAT", error.RlpPayloadTooShort },
     .{ "BlockException.INCORRECT_BLOCK_FORMAT", error.InvalidSerializedLength },
