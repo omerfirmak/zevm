@@ -23,7 +23,7 @@ pub const Spec = struct {
 
     // EIP-170: max deployed code size and deposit cost per byte
     max_code_size: usize,
-    code_deposit_gas: usize,
+    code_deposit_gas: u32,
 
     // EIP-2930: access list intrinsic gas
     access_list_address_gas: u32,
@@ -40,6 +40,9 @@ pub const Spec = struct {
     gas_forward_denom: u32,
 
     selfdestruct_empty_target_gas: u32,
+
+    // EIP-8037: cost per state byte (0 = disabled)
+    cpsb: u32 = 0,
 
     // EIP-7623 TOTAL_COST_FLOOR_PER_TOKEN
     total_cost_floor_per_token: u32,
@@ -442,10 +445,19 @@ pub const Amsterdam = override(Osaka, .{
     .fork = .Amsterdam,
     .total_cost_floor_per_token = 16,
     .max_code_size = 0x8000,
+    .cpsb = 1530,
+    .tx_create_gas = 30000,
+    .call_new_account_gas = 0,
+    .per_empty_account_cost = 0,
+    .selfdestruct_empty_target_gas = 0,
+    .per_auth_base_cost = 7500,
+    .sstore_set_gas = 2900,
     .gas_table = .{
         .SLOTNUM = 2,
         .DUPN = 3,
         .SWAPN = 3,
         .EXCHANGE = 3,
+        .CREATE = 9000,
+        .CREATE2 = 9000,
     },
 });

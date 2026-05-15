@@ -164,7 +164,7 @@ fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []con
 
         var ancestors = [_]u256{0} ** 256;
         if (test_case.env.previousHash) |h| ancestors[0] = h.value;
-        const context = evm.Context{
+        var context = evm.Context{
             .chainid = 1,
             .number = test_case.env.currentNumber.value,
             .coinbase = test_case.env.currentCoinbase.value,

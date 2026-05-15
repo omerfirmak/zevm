@@ -19,7 +19,7 @@ pub fn main() !void {
     const contract: u160 = 0xcafe;
 
     // Describe the block.
-    const context = zevm.evm.Context{
+    var context = zevm.evm.Context{
         .chainid = 1,
         .number = 1,
         .coinbase = 0,

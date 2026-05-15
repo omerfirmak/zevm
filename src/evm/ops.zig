@@ -35,7 +35,7 @@ pub fn Ops(comptime cfg: Config) type {
                 return evm.Errors.OutOfGas;
             }
             if (cfg.tracing_enabled) {
-                tracing_hook(next_ip, gas, stack_head, frame);
+                tracing_hook(next_ip, gas - cost, stack_head, frame);
             }
 
             // It is safe to unwrap unconditionally here, jumpdest analysis should protect against a
@@ -619,8 +619,8 @@ pub fn Ops(comptime cfg: Config) type {
         }
 
         // EIP-2200/EIP-3529 refund delta for an SSTORE.
-        fn refund_sstore(new_value: u256, current_value: u256, original_value: u256) i32 {
-            if (new_value == current_value) return 0;
+        fn refund_sstore(new_value: u256, current_value: u256, original_value: u256) struct { i32, u32 } {
+            if (new_value == current_value) return .{ 0, 0 };
 
             var delta: i32 = 0;
 
@@ -636,31 +636,38 @@ pub fn Ops(comptime cfg: Config) type {
                 }
             }
 
+            var state_gas_refund: u32 = 0;
             // Restoring a slot to its original value earns back the gas that was
             // charged above the cheap SLOAD cost.
             if (new_value == original_value) {
-                delta += if (original_value == 0) fork.sstore_set_gas - fork.warm_access_gas else fork.sstore_reset_gas - fork.warm_access_gas;
+                if (original_value == 0) {
+                    delta += fork.sstore_set_gas - fork.warm_access_gas;
+                    state_gas_refund = evm.STATE_BYTES_PER_STORAGE_SLOT * fork.cpsb;
+                } else {
+                    delta += fork.sstore_reset_gas - fork.warm_access_gas;
+                }
             }
 
-            return delta;
+            return .{ delta, state_gas_refund };
         }
 
         // EIP-2200 net-metered SSTORE gas: charges based on the transition from
         // original (pre-tx) value → current value → new value.
-        fn gas_sstore(value: u256, current_value: u256, original_value: u256, is_warm: bool) u32 {
+        fn gas_sstore(value: u256, current_value: u256, original_value: u256, is_warm: bool) struct { u32, u32 } {
             // cold slot access surcharge (EIP-2929)
             const base_dynamic_gas: u32 = if (is_warm) 0 else fork.cold_sload_gas;
+            const storage_state_gas: u32 = evm.STATE_BYTES_PER_STORAGE_SLOT * fork.cpsb;
 
             if (value == current_value) {
-                return base_dynamic_gas + fork.warm_access_gas;
+                return .{ base_dynamic_gas + fork.warm_access_gas, 0 };
             } else if (current_value == original_value) {
                 if (original_value == 0) {
-                    return base_dynamic_gas + fork.sstore_set_gas;
+                    return .{ base_dynamic_gas + fork.sstore_set_gas, if (value != 0) storage_state_gas else 0 };
                 } else {
-                    return base_dynamic_gas + fork.sstore_reset_gas;
+                    return .{ base_dynamic_gas + fork.sstore_reset_gas, 0 };
                 }
             } else {
-                return base_dynamic_gas + fork.warm_access_gas;
+                return .{ base_dynamic_gas + fork.warm_access_gas, 0 };
             }
         }
 
@@ -677,9 +684,18 @@ pub fn Ops(comptime cfg: Config) type {
                 original_value_entry.value_ptr.* = old_value;
             }
             const original_value = original_value_entry.value_ptr.*;
-            const dynamic_gas = gas_sstore(args[0], old_value, original_value, is_warm);
-            frame.evm.gas_refund += refund_sstore(args[0], old_value, original_value);
-            return next(next_ip, gas, fork.constantGas(.SSTORE) + dynamic_gas, new_stack_head, frame);
+            const dynamic_gas, const state_gas = gas_sstore(args[0], old_value, original_value, is_warm);
+            const regular_refund, const state_gas_refund = refund_sstore(args[0], old_value, original_value);
+            frame.evm.gas_refund += regular_refund;
+            frame.creditStateGasRefund(state_gas_refund);
+
+            const regular_cost = fork.constantGas(.SSTORE) + dynamic_gas;
+            if (gas < regular_cost) {
+                return evm.Errors.OutOfGas;
+            }
+            var remaining_regular_gas = gas - regular_cost;
+            remaining_regular_gas = try frame.chargeStateGas(remaining_regular_gas, state_gas);
+            return next(next_ip, remaining_regular_gas, 0, new_stack_head, frame);
         }
 
         pub fn tload(next_ip: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
@@ -740,12 +756,15 @@ pub fn Ops(comptime cfg: Config) type {
                         available_gas -= hash_cost;
                     }
 
+                    const create_state_gas = evm.STATE_BYTES_PER_NEW_ACCOUNT * fork.cpsb;
+                    available_gas = try frame.chargeStateGas(available_gas, create_state_gas);
+
                     // EIP-150: forward at most (denom-1)/denom of remaining gas
                     const max_forwardable = available_gas - @divFloor(available_gas, fork.gas_forward_denom);
                     available_gas -= max_forwardable;
 
                     const initcode = frame.memory.slice(@truncate(offset), @intCast(size));
-                    const leftover_gas, const new_addr = try frame.evm.create(
+                    const leftover_gas, const child_state_gas_used, const new_addr = try frame.evm.create(
                         cfg,
                         frame.state,
                         frame.target,
@@ -756,7 +775,8 @@ pub fn Ops(comptime cfg: Config) type {
                         salt,
                     );
                     available_gas += leftover_gas;
-
+                    frame.state_gas_used += child_state_gas_used;
+                    frame.creditStateGasRefund(if (new_addr == 0) create_state_gas else 0);
                     args[0] = new_addr; // 0 on failure, address on success
                     return next(next_ip, available_gas, 0, new_stack_head, frame);
                 }
@@ -819,6 +839,10 @@ pub fn Ops(comptime cfg: Config) type {
                     }
                     available_gas -= dynamic_cost;
 
+                    if (fork.isEnabled(.Amsterdam) and variant == .CALL and value_is_positive and target_account.isEmptyAccount()) {
+                        available_gas = try frame.chargeStateGas(available_gas, evm.STATE_BYTES_PER_NEW_ACCOUNT * fork.cpsb);
+                    }
+
                     // EIP-150: forward at most (denom-1)/denom of remaining gas to sub-calls
                     const forwarded_gas = @min(call_gas, available_gas - @divFloor(available_gas, fork.gas_forward_denom));
                     available_gas -= forwarded_gas;
@@ -826,7 +850,7 @@ pub fn Ops(comptime cfg: Config) type {
                     const calldata = frame.memory.slice(@truncate(args[3]), @intCast(args[2]));
                     const return_buffer = frame.memory.slice(@truncate(args[1]), @intCast(args[0]));
 
-                    const leftover_gas, const err = try frame.evm.call(
+                    const leftover_gas, const child_state_gas_used, const err = try frame.evm.call(
                         cfg,
                         frame.state,
                         call_caller,
@@ -843,6 +867,7 @@ pub fn Ops(comptime cfg: Config) type {
 
                     args[0] = if (err != null) 0 else 1;
                     available_gas += leftover_gas;
+                    frame.state_gas_used += child_state_gas_used;
                     return next(next_ip, available_gas, 0, new_stack_head, frame);
                 }
             }.call;
@@ -905,13 +930,15 @@ pub fn Ops(comptime cfg: Config) type {
             const access_cost = if (!is_warm) fork.cold_account_access_gas else 0;
 
             var empty_account_cost: u32 = 0;
+            var beneficiary_is_empty = false;
             var current_account = try frame.state.accounts.update(frame.target);
             const transferred_value = current_account.balance;
             const is_new_account = frame.evm.markForDestruction(frame.target);
             const should_transfer = transferred_value > 0 and (is_new_account or beneficiary != frame.target);
             if (should_transfer) {
                 var beneficiary_account = try frame.state.accounts.update(beneficiary);
-                empty_account_cost = if (beneficiary_account.isEmptyAccount()) fork.selfdestruct_empty_target_gas else 0;
+                beneficiary_is_empty = beneficiary_account.isEmptyAccount();
+                empty_account_cost = if (beneficiary_is_empty) fork.selfdestruct_empty_target_gas else 0;
                 beneficiary_account.balance += transferred_value;
                 current_account.balance = 0;
                 if (fork.isEnabled(.Amsterdam)) {
@@ -927,7 +954,12 @@ pub fn Ops(comptime cfg: Config) type {
             if (gas < cost) {
                 return evm.Errors.OutOfGas;
             }
-            frame.gas = @intCast(gas - cost);
+            const remaining = gas - cost;
+            if (fork.isEnabled(.Amsterdam) and beneficiary_is_empty) {
+                frame.gas = try frame.chargeStateGas(@intCast(remaining), evm.STATE_BYTES_PER_NEW_ACCOUNT * fork.cpsb);
+            } else {
+                frame.gas = @intCast(remaining);
+            }
         }
 
         pub fn log_variant(comptime variant: Opcode) Fn {
@@ -1079,18 +1111,20 @@ fn tracing_hook(next_ip: InstructionPointer, gas: u32, stack_head: u16, frame: *
     const log = struct {
         depth: usize,
         pc: u64,
-        gas: u32,
+        gas: []const u8,
         op: u8,
         stack: []u256,
+        stateGas: []const u8,
     };
     const bytecode = frame.code.bytes;
     const pc = frame.code.programCounter(next_ip);
     std.debug.print("{f}\n", .{std.json.fmt(log{
         .depth = frame.depth,
         .pc = pc,
-        .gas = gas,
+        .gas = &std.fmt.hex(@byteSwap(gas)),
         .op = if (pc < bytecode.len) bytecode[pc] else Opcode.STOP.byte(),
         .stack = frame.stack[0..stack_head],
+        .stateGas = &std.fmt.hex(@byteSwap(frame.evm.state_gas_reservoir)),
     }, .{})});
 }
 

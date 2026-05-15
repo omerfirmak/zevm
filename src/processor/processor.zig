@@ -48,6 +48,7 @@ const DEPOSIT_CONTRACT: u160 = 0x00000000219ab540356cBB839Cbe05303d7705Fa;
 const WITHDRAWAL_REQUEST_PREDEPLOY_ADDRESS: u160 = 0x00000961ef480eb55e80d19ad83579a64c007002;
 const CONSOLIDATION_REQUEST_PREDEPLOY_ADDRESS: u160 = 0x0000bbddc7ce488642fb579f8b00f3a590007251;
 const SYSTEM_CALL_GAS: u32 = 30_000_000;
+const SYSTEM_MAX_SSTORES_PER_CALL: u32 = 16;
 const DEPOSIT_EVENT_TOPIC: u256 = 0x649bbc62d0e31342afea4e5cd82d4049e7e1ee912fc0889aa790803be39038c5;
 
 pub const PreprocessedBlock = struct {
@@ -82,7 +83,6 @@ pub fn processBlock(
     defer freeLogs(&logs, logs_allocator);
     const num_logs_per_tx = try gpa.alloc(usize, p_block.block.transactions.len);
     defer gpa.free(num_logs_per_tx);
-    var gas_remaining = p_block.block.header.gas_limit;
     var context = contextFromBlock(spec, &p_block.block, ancestors);
 
     const evm_spec = comptime EvmSpec.specByFork(spec.fork);
@@ -90,23 +90,30 @@ pub fn processBlock(
 
     for (p_block.block.transactions, 0..) |*tx, index| {
         const msg = try messageFromTx(gpa, tx, senders[index]);
-        if (msg.gas_limit > gas_remaining) return Errors.InsufficientGas;
+        if (!evm_spec.isEnabled(.Amsterdam)) {
+            if (msg.gas_limit > p_block.block.header.gas_limit - context.block_regular_used) return Errors.InsufficientGas;
+        }
 
-        const gas_used = try vm.process(.{ .fork = evm_spec }, &msg, state);
-        gas_remaining -= @intCast(gas_used);
+        const tx_regular, const tx_state = try vm.process(.{ .fork = evm_spec }, &msg, state);
+        context.block_regular_used += tx_regular;
+        context.block_state_used += tx_state;
+
         const blobs_used = switch (tx.*) {
             .blob => |t| t.blob_hashes.len,
             else => 0,
         };
         context.max_blobs_per_block -= blobs_used;
         num_logs_per_tx[index] = vm.num_logs;
-        try clearSelfdestructed(&vm, state);
 
         state.clearTxState();
         vm.reset();
     }
 
-    if (p_block.block.header.gas_used != p_block.block.header.gas_limit - gas_remaining) return Errors.MismatchedGasUsed;
+    const block_gas_used: u64 = if (evm_spec.isEnabled(.Amsterdam))
+        @max(context.block_regular_used, context.block_state_used)
+    else
+        context.block_regular_used;
+    if (p_block.block.header.gas_used != block_gas_used) return Errors.MismatchedGasUsed;
     if (!std.mem.eql(u8, &p_block.block.header.logs_bloom, &computeLogsBloom(&logs))) return Errors.MismatchedLogsBloom;
 
     const withdrawals_root = try computeWithdrawalsRoot(gpa, &p_block.block);
@@ -179,8 +186,10 @@ fn hashSystemCall(
     outer: *Sha256,
 ) !void {
     const calldata: []u8 = &.{};
-    _, const call_err = vm.call(.{
-        .fork = EvmSpec.specByFork(spec.fork),
+    const evm_spec = comptime EvmSpec.specByFork(spec.fork);
+    vm.state_gas_reservoir = evm.STATE_BYTES_PER_STORAGE_SLOT * evm_spec.cpsb * SYSTEM_MAX_SSTORES_PER_CALL;
+    _, _, const call_err = vm.call(.{
+        .fork = evm_spec,
     }, state, SYSTEM_ADDRESS, target, target, SYSTEM_CALL_GAS, calldata, 0, 0, &.{}, true, false) catch return;
     if (call_err) |_| return Errors.SyscallRevert;
     const ret = vm.return_buffer[0..vm.return_data_size];
@@ -220,26 +229,6 @@ fn applyWithdrawals(block: *const types.Block, state: *State) !void {
     for (block.withdrawals) |w| {
         const addr = std.mem.readInt(u160, &w.address, .big);
         (try state.accounts.update(addr)).balance += @as(u256, w.amount) * 1_000_000_000;
-    }
-}
-
-fn clearSelfdestructed(vm: *evm.EVM, state: *State) !void {
-    var any = false;
-    var it = vm.created_accounts.dirtiesIterator();
-    while (it.next()) |entry| {
-        if (entry.value_ptr.* == .Selfdestructed) {
-            state.clearAccount(entry.key_ptr.*);
-            any = true;
-        }
-    }
-    if (!any) return;
-
-    var slots = state.contract_state.dirtiesIterator();
-    while (slots.next()) |entry| {
-        const addr: u160 = @truncate(entry.key_ptr.address);
-        if (vm.created_accounts.dirties.get(addr)) |lc| {
-            if (lc == .Selfdestructed) _ = state.contract_state.dirties.remove(entry.key_ptr.*);
-        }
     }
 }
 
