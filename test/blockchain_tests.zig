@@ -86,7 +86,21 @@ fn runBlockchainTest(gpa: std.mem.Allocator, test_case: *const BlockchainTest, c
                 ancestors,
                 &state,
             )) |_| null else |err| err;
-            break :blk .{ proc_err, p };
+
+            if (proc_err) |_| {
+                break :blk .{ proc_err, p };
+            }
+
+            const trie_buf = try gpa.alloc(u8, 16 * 1024 * 1024);
+            defer gpa.free(trie_buf);
+            var trie_fba = std.heap.FixedBufferAllocator.init(trie_buf);
+
+            const actual_root = try utils.computeStateRoot(gpa, &trie_fba, &state, &committed);
+            if (!std.mem.eql(u8, &actual_root, &p.block.header.state_root)) {
+                break :blk .{ error.StateRootHashMismatch, p };
+            }
+
+            break :blk .{ null, p };
         };
 
         if (block_entry.expectException) |expected| {
