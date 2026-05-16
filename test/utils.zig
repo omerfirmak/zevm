@@ -141,22 +141,17 @@ pub fn computeStateRoot(
     fba: *std.heap.FixedBufferAllocator,
     state: *state_mod.State,
     committed: *const CommittedState,
-    vm: *evm.EVM,
 ) ![32]u8 {
     // Collect every address live in committed or dirty state.
     var addresses = std.AutoHashMap(u160, void).init(gpa);
     defer addresses.deinit();
     var pre_it = committed.account_map.keyIterator();
     while (pre_it.next()) |addr| {
-        if (try vm.created_accounts.read(addr.*) != .Selfdestructed) {
-            try addresses.put(addr.*, {});
-        }
+        try addresses.put(addr.*, {});
     }
     var dirty_acct_it = state.accounts.dirties.keyIterator();
     while (dirty_acct_it.next()) |addr| {
-        if (try vm.created_accounts.read(addr.*) != .Selfdestructed) {
-            try addresses.put(addr.*, {});
-        }
+        try addresses.put(addr.*, {});
     }
 
     // Build a sorted list of live accounts: [(keccak256(addr), addr, account)].

@@ -221,7 +221,7 @@ fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []con
         defer gpa.free(trie_buf);
         var trie_fba = std.heap.FixedBufferAllocator.init(trie_buf);
 
-        const actual_root = try utils.computeStateRoot(gpa, &trie_fba, &state, &committed, &vm);
+        const actual_root = try utils.computeStateRoot(gpa, &trie_fba, &state, &committed);
         if (!std.mem.allEqual(u8, post_entry.logs.value, 0) and !std.mem.eql(u8, &actual_root, post_entry.hash.value)) {
             if (comptime dump_diff) {
                 try utils.dumpStateDiff(gpa, post_entry.state, &state, &committed);
