@@ -197,7 +197,7 @@ pub fn computeStateRoot(
         defer slot_list.deinit(gpa);
         var slot_it = slots.keyIterator();
         while (slot_it.next()) |slot_ptr| {
-            const val = try state.contract_state.read(.{ .address = @as(u256, ae.addr), .slot = slot_ptr.* });
+            const val = try state.contract_state.read(.{ .address = ae.addr, .slot = slot_ptr.* });
             if (val != 0) try slot_list.append(gpa, .{ .key = keccak256OfU256(slot_ptr.*), .slot = slot_ptr.*, .value = val });
         }
         std.sort.pdq(SlotEntry, slot_list.items, {}, struct {

@@ -3,7 +3,7 @@ const rlp = @import("rlp");
 
 // Key type for the global contract state storage
 pub const StorageLookup = struct {
-    address: u256,
+    address: u160,
     slot: u256,
 };
 
