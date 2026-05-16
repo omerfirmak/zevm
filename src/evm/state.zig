@@ -71,7 +71,12 @@ pub const State = struct {
     }
 
     pub fn clearAccount(self: *Self, addr: u160) void {
-        _ = self.accounts.dirties.remove(addr);
+        _ = self.accounts.dirties.putAssumeCapacity(addr, .{
+            .balance = 0,
+            .nonce = 0,
+            .code_hash = types.empty_code_hash,
+            .storage_hash = types.empty_root_hash,
+        });
     }
 
     pub fn get_code(self: *Self, hash: [32]u8, comptime cfg: Config) !Bytecode {
