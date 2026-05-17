@@ -229,6 +229,7 @@ pub fn build(b: *std.Build) void {
     blockchain_tests.root_module.addImport("zevm", test_zevm_mod);
     blockchain_tests.root_module.addImport("rlp", rlp_dep.module("zig-rlp"));
     blockchain_tests.stack_size = 64 * 1024 * 1024;
+    b.installArtifact(blockchain_tests);
     const run_blockchain_tests = b.addRunArtifact(blockchain_tests);
     run_blockchain_tests.setCwd(b.path("."));
     if (b.option([]const u8, "blockchain-test", "Path to a specific blockchain test JSON file")) |path| {
