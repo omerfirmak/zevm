@@ -58,6 +58,7 @@ pub const Opcode = enum(u8) {
     BASEFEE = 0x48,
     BLOBHASH = 0x49,
     BLOBBASEFEE = 0x4a,
+    SLOTNUM = 0x4b,
 
     POP = 0x50,
     MLOAD = 0x51,
@@ -149,6 +150,10 @@ pub const Opcode = enum(u8) {
     LOG3 = 0xa3,
     LOG4 = 0xa4,
 
+    DUPN = 0xe6,
+    SWAPN = 0xe7,
+    EXCHANGE = 0xe8,
+
     CREATE = 0xf0,
     CALL = 0xf1,
     CALLCODE = 0xf2,
@@ -159,4 +164,8 @@ pub const Opcode = enum(u8) {
     REVERT = 0xfd,
     INVALID = 0xfe,
     SELFDESTRUCT = 0xff,
+
+    pub inline fn byte(self: Opcode) u8 {
+        return @intFromEnum(self);
+    }
 };
