@@ -132,13 +132,16 @@ pub const Spec = struct {
         const tstore_gas: u64 = self.gas_table[@intFromEnum(Opcode.TSTORE)];
         const sstore_min_gas: u64 = @as(u64, @intCast(self.cold_sload_gas)) + @as(u64, @intCast(self.sstore_reset_gas));
         const warm: u64 = @intCast(self.warm_access_gas);
+        const cold_account: u64 = @intCast(self.cold_account_access_gas);
+        const cold_slot: u64 = @intCast(self.cold_sload_gas);
         // Cheapest account write: CALL with value — each call modifies sender + receiver (×2)
         const acct_write: u64 = warm + @as(u64, @intCast(self.call_value_gas));
 
         const max_tx_gas = @as(u64, @intCast(self.max_tx_gas));
-        // Dirties: unique keys modified; ×2 for accounts because one CALL touches two accounts
-        const as_: u32 = @intCast((gas_limit / acct_write) * 2);
-        const cs: u32 = @intCast(gas_limit / sstore_min_gas);
+        // Dirties: unique keys touched; load on read adds one entry per first cold access.
+        // *2 for accounts because one CALL touches two accounts.
+        const as_: u32 = @intCast((gas_limit / acct_write) * 2 + gas_limit / cold_account);
+        const cs: u32 = @intCast(gas_limit / sstore_min_gas + gas_limit / cold_slot);
         const ts: u32 = @intCast(max_tx_gas / tstore_gas);
 
         // Journal: cleared between txns, so bounded by max_tx_gas.
