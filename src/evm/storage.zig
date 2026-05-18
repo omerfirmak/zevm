@@ -95,8 +95,19 @@ pub fn JournaledStorage(comptime Key: type, comptime Value: type, comptime Map: 
                 self.committed.read(key);
         }
 
-        pub fn read(self: *Self, key: Key) !Value {
+        pub fn nonTemporalRead(self: *Self, key: Key) !Value {
             return self.dirties.get(key) orelse try self.committedOrZero(key);
+        }
+
+        pub fn read(self: *Self, key: Key) !Value {
+            if (Committed == void)
+                return self.nonTemporalRead(key);
+
+            const entry = self.dirties.getOrPutAssumeCapacity(key);
+            if (!entry.found_existing) {
+                entry.value_ptr.* = try self.committed.read(key);
+            }
+            return entry.value_ptr.*;
         }
 
         // Writes a value and journals the old value for revert. Returns { old_value, was_present }.

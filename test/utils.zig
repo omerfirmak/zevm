@@ -167,7 +167,7 @@ pub fn computeStateRoot(
     var addr_it = addresses.keyIterator();
     while (addr_it.next()) |addr_ptr| {
         const addr = addr_ptr.*;
-        const account = try state.accounts.read(addr);
+        const account = try state.accounts.nonTemporalRead(addr);
         if (account.isEmptyAccount()) continue;
         try acct_list.append(gpa, .{ .key = keccak256OfU160(addr), .addr = addr, .account = account });
     }
