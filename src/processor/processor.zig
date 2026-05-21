@@ -3,6 +3,7 @@ const types = @import("../types.zig");
 const evm = @import("../evm/evm.zig");
 const rlp = @import("rlp");
 const EVM = evm.EVM;
+const storage = @import("../evm/storage.zig");
 const EvmSpec = @import("../evm/spec.zig");
 const State = @import("../evm/state.zig").State;
 const ChainSpec = @import("chainspec.zig").ChainSpec;
@@ -13,8 +14,9 @@ const blobBaseFee = @import("../blob_fee.zig").blobBaseFee;
 const ecrecover = @import("../curve.zig").ecrecover;
 const Trie = @import("../trie/trie.zig").Trie;
 const empty_root_hash = @import("../trie/trie.zig").empty_root_hash;
+const bal = @import("./bal.zig");
 
-const Errors = error{
+pub const Errors = error{
     GasLimitTooHigh,
     GasLimitTooLow,
     GasLimitLessThanMinimum,
@@ -36,12 +38,13 @@ const Errors = error{
     MismatchedRequestsHash,
     MismatchedWithdrawalsRoot,
     SyscallRevert,
+    InvalidBal,
 };
 
 pub const GAS_PER_BLOB = 131_072;
 pub const HISTORY_CONTRACT: u256 = 0x0000F90827F1C53a10cb7A02335B175320002935;
 pub const HISTORY_SERVE_WINDOW: u64 = 8192;
-const BEACON_ROOTS_ADDRESS: u256 = 0x000F3df6D732807Ef1319fB7B8bB8522d0Beac02;
+pub const BEACON_ROOTS_ADDRESS: u256 = 0x000F3df6D732807Ef1319fB7B8bB8522d0Beac02;
 const HISTORICAL_ROOTS_MODULUS: u256 = 8191;
 const SYSTEM_ADDRESS: u160 = 0xfffffffffffffffffffffffffffffffffffffffe;
 const DEPOSIT_CONTRACT: u160 = 0x00000000219ab540356cBB839Cbe05303d7705Fa;
@@ -54,6 +57,7 @@ const DEPOSIT_EVENT_TOPIC: u256 = 0x649bbc62d0e31342afea4e5cd82d4049e7e1ee912fc0
 pub const PreprocessedBlock = struct {
     block: types.Block,
     rlp_size: usize,
+    bal: ?types.BlockAccessLists, // assumed to be pre-validated against the header
 };
 
 pub fn processBlock(
@@ -75,9 +79,11 @@ pub fn processBlock(
             inline else => |t| senders[index] = try ecrecover(hashes[index], bt.recoveryId(), t.r, t.s),
         }
     }
+    const evm_spec = comptime EvmSpec.specByFork(spec.fork);
 
-    try applyEip4788(&p_block.block.header, state);
-    try applyEip2935(&p_block.block.header, state);
+    var prepared_bal: bal.Prepared = undefined;
+    if (evm_spec.isEnabled(.Amsterdam))
+        prepared_bal = try bal.Prepared.init(gpa, &p_block.bal.?, p_block.block.header.gas_limit, evm_spec.bal_item_cost) orelse return Errors.InvalidBal;
 
     var logs: std.DoublyLinkedList = .{};
     defer freeLogs(&logs, logs_allocator);
@@ -85,8 +91,13 @@ pub fn processBlock(
     defer gpa.free(num_logs_per_tx);
     var context = contextFromBlock(spec, &p_block.block, ancestors);
 
-    const evm_spec = comptime EvmSpec.specByFork(spec.fork);
     var vm = try evm.EVM.init(gpa, logs_allocator, &logs, &context, evm_spec.evmCapacities());
+
+    try applyEip4788(&p_block.block.header, state);
+    try applyEip2935(&p_block.block.header, state);
+    if (evm_spec.isEnabled(.Amsterdam))
+        prepared_bal.validateWrites(0, state, &vm.pre_state);
+    state.clearTxState();
 
     for (p_block.block.transactions, 0..) |*tx, index| {
         const msg = try messageFromTx(gpa, tx, senders[index]);
@@ -105,6 +116,8 @@ pub fn processBlock(
         context.max_blobs_per_block -= blobs_used;
         num_logs_per_tx[index] = vm.num_logs;
 
+        if (evm_spec.isEnabled(.Amsterdam))
+            prepared_bal.validateWrites(@as(u32, @intCast(index)) + 1, state, &vm.pre_state);
         state.clearTxState();
         vm.reset();
     }
@@ -122,6 +135,13 @@ pub fn processBlock(
 
     const requests_hash = try computeRequestsHash(&vm, spec, state, &logs);
     if (!std.mem.eql(u8, &requests_hash, &p_block.block.header.requests_hash)) return Errors.MismatchedRequestsHash;
+
+    if (evm_spec.isEnabled(.Amsterdam))
+        prepared_bal.validateWrites(@as(u32, @intCast(p_block.block.transactions.len)) + 1, state, &vm.pre_state);
+    state.clearTxState();
+
+    if (evm_spec.isEnabled(.Amsterdam) and !prepared_bal.postExecutionCheck(state))
+        return Errors.InvalidBal;
 }
 
 fn computeRequestsHash(
@@ -436,12 +456,14 @@ fn applyEip4788(header: *const types.BlockHeader, state: *State) !void {
     const idx = timestamp % HISTORICAL_ROOTS_MODULUS;
     _ = try state.contract_state.write(.{ .address = BEACON_ROOTS_ADDRESS, .slot = idx }, timestamp);
     _ = try state.contract_state.write(.{ .address = BEACON_ROOTS_ADDRESS, .slot = idx + HISTORICAL_ROOTS_MODULUS }, root);
+    _ = try state.accounts.read(BEACON_ROOTS_ADDRESS);
 }
 
 fn applyEip2935(header: *const types.BlockHeader, state: *State) !void {
     const slot: u256 = (header.number - 1) % HISTORY_SERVE_WINDOW;
     const value: u256 = std.mem.readInt(u256, &header.parent_hash, .big);
     _ = try state.contract_state.write(.{ .address = HISTORY_CONTRACT, .slot = slot }, value);
+    _ = try state.accounts.read(HISTORY_CONTRACT);
 }
 
 fn calcExcessBlobGas(comptime spec: ChainSpec, parent: *const types.BlockHeader) u64 {

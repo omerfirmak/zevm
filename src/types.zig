@@ -583,3 +583,61 @@ test "block with blob tx decode" {
     try std.testing.expectEqual(0, block.uncles.len);
     try std.testing.expectEqual(0, block.withdrawals.len);
 }
+
+pub const BlockAccessLists = []AccountChanges;
+
+pub const AccountChanges = struct {
+    addr: u160,
+    storage_changes: []SlotChanges,
+    storage_reads: []u256,
+    balance_changes: []BalanceChange,
+    nonce_changes: []NonceChange,
+    code_changes: []CodeChange,
+
+    pub fn encodeToRLP(self: AccountChanges, allocator: std.mem.Allocator, list: *std.array_list.Managed(u8)) !void {
+        var addr_bytes: [20]u8 = undefined;
+        std.mem.writeInt(u160, &addr_bytes, self.addr, .big);
+
+        const Enc = struct {
+            address: [20]u8,
+            storage_changes: []SlotChanges,
+            storage_reads: []u256,
+            balance_changes: []BalanceChange,
+            nonce_changes: []NonceChange,
+            code_changes: []CodeChange,
+        };
+        try rlp.serialize(Enc, allocator, .{
+            .address = addr_bytes,
+            .storage_changes = self.storage_changes,
+            .storage_reads = self.storage_reads,
+            .balance_changes = self.balance_changes,
+            .nonce_changes = self.nonce_changes,
+            .code_changes = self.code_changes,
+        }, list);
+    }
+};
+
+pub const StorageChange = struct {
+    index: u32,
+    value: u256,
+};
+
+pub const BalanceChange = struct {
+    index: u32,
+    balance: u256,
+};
+
+pub const NonceChange = struct {
+    index: u32,
+    nonce: u64,
+};
+
+pub const CodeChange = struct {
+    index: u32,
+    code: []u8,
+};
+
+pub const SlotChanges = struct {
+    key: u256,
+    changes: []StorageChange,
+};

@@ -4,6 +4,7 @@ const evm = zevm.evm;
 const state_mod = zevm.state;
 const types = zevm.types;
 const CommittedState = zevm.CommittedState;
+const rlp = @import("rlp");
 
 pub fn parseHex(comptime T: type, str: []const u8) !T {
     const hex = if (std.mem.startsWith(u8, str, "0x")) str[2..] else str;
@@ -84,6 +85,50 @@ pub const Info = struct {
     @"reference-spec": ?[]const u8 = null,
     @"reference-spec-version": ?[]const u8 = null,
 };
+
+pub fn computeBalHash(allocator: std.mem.Allocator, bal: types.BlockAccessLists) ![32]u8 {
+    var encoded = std.array_list.Managed(u8).init(allocator);
+    defer encoded.deinit();
+    try rlp.serialize(types.BlockAccessLists, allocator, bal, &encoded);
+
+    var hash: [32]u8 = undefined;
+    std.crypto.hash.sha3.Keccak256.hash(encoded.items, &hash, .{});
+    return hash;
+}
+
+/// Fold per-block state mutations into `committed` and reset `state` so the next
+/// block starts with empty dirties/journals. Empty accounts and zero slots are
+/// pruned from `committed` (state-trie semantics). Deployed bytecode is left in
+/// `state.code_storage` (queried first by `state.get_code`), avoiding a copy.
+pub fn finalizeBlock(state: *state_mod.State, committed: *CommittedState) !void {
+    var acct_it = state.accounts.dirties.iterator();
+    while (acct_it.next()) |entry| {
+        const addr = entry.key_ptr.*;
+        const acct = entry.value_ptr.*;
+        if (acct.isEmptyAccount()) {
+            _ = committed.account_map.remove(addr);
+        } else {
+            try committed.account_map.put(addr, acct);
+        }
+    }
+
+    var slot_it = state.contract_state.dirties.iterator();
+    while (slot_it.next()) |entry| {
+        const lookup = entry.key_ptr.*;
+        const value = entry.value_ptr.*;
+        if (value == 0) {
+            _ = committed.storage_map.remove(lookup);
+        } else {
+            try committed.storage_map.put(lookup, value);
+        }
+    }
+
+    state.accounts.dirties.clearRetainingCapacity();
+    state.accounts.journal.clearRetainingCapacity();
+    state.contract_state.dirties.clearRetainingCapacity();
+    state.contract_state.journal.clearRetainingCapacity();
+    state.transient_storage.clearViaJournal();
+}
 
 pub fn buildCommittedState(alloc: std.mem.Allocator, pre: std.json.ArrayHashMap(AccountState)) !CommittedState {
     var committed = CommittedState.init(alloc);
@@ -389,6 +434,7 @@ const exception_map = .{
     .{ "TransactionException.GASLIMIT_PRICE_PRODUCT_OVERFLOW", evm.Errors.GasOverflow },
     .{ "TransactionException.GAS_ALLOWANCE_EXCEEDED", evm.Errors.GasOverflow },
     .{ "TransactionException.GAS_ALLOWANCE_EXCEEDED", error.InsufficientGas },
+    .{ "TransactionException.GAS_ALLOWANCE_EXCEEDED", error.InvalidBal },
     .{ "TransactionException.GAS_LIMIT_EXCEEDS_MAXIMUM", evm.Errors.GasOverflow },
     .{ "TransactionException.INTRINSIC_GAS_TOO_LOW", evm.Errors.OutOfGas },
     .{ "TransactionException.INTRINSIC_GAS_BELOW_FLOOR_GAS_COST", evm.Errors.OutOfGas },
@@ -441,6 +487,10 @@ const exception_map = .{
     .{ "BlockException.RLP_STRUCTURES_ENCODING", error.OffsetOverflow },
     .{ "BlockException.SYSTEM_CONTRACT_CALL_FAILED", error.SyscallRevert },
     .{ "BlockException.INVALID_WITHDRAWALS_ROOT", error.MismatchedWithdrawalsRoot },
+    .{ "BlockException.INVALID_BLOCK_ACCESS_LIST", error.InvalidBal },
+    .{ "BlockException.INCORRECT_BLOCK_FORMAT", error.InvalidBal },
+    .{ "BlockException.BLOCK_ACCESS_LIST_GAS_LIMIT_EXCEEDED", error.InvalidBal },
+    .{ "BlockException.INVALID_BAL_HASH", error.MismatchedBalHash },
 };
 
 pub fn mapException(name: []const u8) ?anyerror {

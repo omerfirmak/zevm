@@ -5,11 +5,54 @@ const state_mod = zevm.state;
 const rlp = @import("rlp");
 const utils = @import("utils.zig");
 
+const SlotChange = struct {
+    blockAccessIndex: utils.HexInt(u32),
+    postValue: utils.HexInt(u256),
+};
+
+const StorageChange = struct {
+    slot: utils.HexInt(u256),
+    slotChanges: []SlotChange,
+};
+
+const BalanceChange = struct {
+    blockAccessIndex: utils.HexInt(u32),
+    postBalance: utils.HexInt(u256),
+};
+
+const NonceChange = struct {
+    blockAccessIndex: utils.HexInt(u32),
+    postNonce: utils.HexInt(u64),
+};
+
+const CodeChange = struct {
+    blockAccessIndex: utils.HexInt(u32),
+    newCode: utils.HexBytes,
+};
+
+const AccountAccessList = struct {
+    address: utils.HexInt(u160),
+    storageChanges: []StorageChange,
+    storageReads: []utils.HexInt(u256),
+    balanceChanges: []BalanceChange,
+    nonceChanges: []NonceChange,
+    codeChanges: []CodeChange,
+};
+
+// Some fixture formats nest blockAccessList under rlp_decoded.
+const RlpDecoded = struct {
+    blockAccessList: ?[]AccountAccessList = null,
+};
+
 // One entry in the "blocks" array. Valid blocks have no expectException; invalid
 // blocks (which leave the state unchanged) carry an expectException string.
 const BlockEntry = struct {
     rlp: utils.HexBytes,
     expectException: ?[]const u8 = null,
+    // Older fixture format: direct field.
+    blockAccessList: ?[]AccountAccessList = null,
+    // Newer fixture format: nested under rlp_decoded.
+    rlp_decoded: ?RlpDecoded = null,
 };
 
 // Reuses the same Config shape as state tests (blobSchedule + chainid).
@@ -33,9 +76,52 @@ fn prepareBlock(
     var block: types.Block = undefined;
     _ = try rlp.deserialize(types.Block, arena, block_entry.rlp.value, &block);
 
+    const bal: ?types.BlockAccessLists = blk: {
+        const json_bal = block_entry.blockAccessList orelse
+            if (block_entry.rlp_decoded) |rd| (rd.blockAccessList orelse break :blk null) else break :blk null;
+
+        const result = try arena.alloc(types.AccountChanges, json_bal.len);
+        for (json_bal, result) |src, *dst| {
+            dst.addr = src.address.value;
+
+            dst.storage_changes = try arena.alloc(types.SlotChanges, src.storageChanges.len);
+            for (src.storageChanges, dst.storage_changes) |sc, *dsc| {
+                dsc.key = sc.slot.value;
+                dsc.changes = try arena.alloc(types.StorageChange, sc.slotChanges.len);
+                for (sc.slotChanges, dsc.changes) |slc, *dslc| {
+                    dslc.index = slc.blockAccessIndex.value;
+                    dslc.value = slc.postValue.value;
+                }
+            }
+
+            dst.storage_reads = try arena.alloc(u256, src.storageReads.len);
+            for (src.storageReads, dst.storage_reads) |sr, *dsr| dsr.* = sr.value;
+
+            dst.balance_changes = try arena.alloc(types.BalanceChange, src.balanceChanges.len);
+            for (src.balanceChanges, dst.balance_changes) |bc, *dbc| {
+                dbc.index = bc.blockAccessIndex.value;
+                dbc.balance = bc.postBalance.value;
+            }
+
+            dst.nonce_changes = try arena.alloc(types.NonceChange, src.nonceChanges.len);
+            for (src.nonceChanges, dst.nonce_changes) |nc, *dnc| {
+                dnc.index = nc.blockAccessIndex.value;
+                dnc.nonce = nc.postNonce.value;
+            }
+
+            dst.code_changes = try arena.alloc(types.CodeChange, src.codeChanges.len);
+            for (src.codeChanges, dst.code_changes) |cc, *dcc| {
+                dcc.index = cc.blockAccessIndex.value;
+                dcc.code = cc.newCode.value;
+            }
+        }
+        break :blk result;
+    };
+
     return .{
         .block = block,
         .rlp_size = block_entry.rlp.value.len,
+        .bal = bal,
     };
 }
 
@@ -77,6 +163,15 @@ fn runBlockchainTest(gpa: std.mem.Allocator, test_case: *const BlockchainTest, c
                 ancestors[k + 1] = std.mem.readInt(u256, &ancestor_chain[k], .big);
             }
 
+            if (p.bal) |bal| {
+                const computed = try utils.computeBalHash(arena.allocator(), bal);
+                if (p.block.header.block_access_list_hash) |expected| {
+                    if (!std.mem.eql(u8, &computed, &expected)) {
+                        break :blk .{ error.MismatchedBalHash, p };
+                    }
+                }
+            }
+
             const proc_err: ?anyerror = if (zevm.processor.processBlock(
                 arena.allocator(),
                 gpa,
@@ -99,6 +194,8 @@ fn runBlockchainTest(gpa: std.mem.Allocator, test_case: *const BlockchainTest, c
             if (!std.mem.eql(u8, &actual_root, &p.block.header.state_root)) {
                 break :blk .{ error.StateRootHashMismatch, p };
             }
+
+            try utils.finalizeBlock(&state, &committed);
 
             break :blk .{ null, p };
         };
