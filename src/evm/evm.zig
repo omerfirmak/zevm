@@ -521,13 +521,16 @@ pub const EVM = struct {
             remaining_gas = msg.gas_limit - floor_cost;
         }
 
-        (try state.accounts.update(msg.caller)).balance += @as(u256, @intCast(remaining_gas)) * self.effective_gas_price;
+        if (remaining_gas > 0)
+            (try state.accounts.update(msg.caller)).balance += @as(u256, @intCast(remaining_gas)) * self.effective_gas_price;
 
         // EIP-1559: coinbase receives only the tip; the base fee is burned
         const tip = self.effective_gas_price - self.context.basefee;
         const gas_used = msg.gas_limit - remaining_gas;
         if (tip > 0) {
             (try state.accounts.update(self.context.coinbase)).balance += @as(u256, @intCast(gas_used)) * tip;
+        } else {
+            _ = try state.accounts.read(self.context.coinbase); // BAL forces us to do that
         }
 
         defer self.clearSelfdestructed(state);
@@ -586,6 +589,7 @@ pub const EVM = struct {
         if (!skip_value_transfer and value > 0) {
             var caller_account = try state.accounts.update(caller);
             if (caller_account.balance < value) {
+                _ = try resolveCode(code_addr, state, cfg); // todo: remove
                 return .{ initial_gas, 0, Errors.NotEnoughFunds };
             }
             caller_account.balance -= value;
@@ -926,18 +930,18 @@ pub const EVM = struct {
         var any = false;
         var it = self.created_accounts.dirtiesIterator();
         while (it.next()) |entry| {
-            if (entry.value_ptr.* != .Selfdestructed) continue;
+            if (entry[0].value_ptr.* != .Selfdestructed) continue;
             any = true;
-            state.clearAccount(entry.key_ptr.*);
+            state.clearAccount(entry[0].key_ptr.*);
         }
         if (!any) return;
 
         var slots = state.contract_state.dirtiesIterator();
         while (slots.next()) |slot_entry| {
-            const addr: u160 = @truncate(slot_entry.key_ptr.address);
+            const addr: u160 = @truncate(slot_entry[0].key_ptr.address);
             if (self.created_accounts.dirties.get(addr)) |lc| {
                 if (lc != .Selfdestructed) continue;
-                _ = state.contract_state.dirties.remove(slot_entry.key_ptr.*);
+                slot_entry[0].value_ptr.* = 0;
             }
         }
     }

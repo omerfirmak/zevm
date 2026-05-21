@@ -159,13 +159,13 @@ pub fn JournaledStorage(comptime Key: type, comptime Value: type, comptime Map: 
             storage: *const Self,
             journal_index: usize,
 
-            pub fn next(self: *DirtiesIterator) ?Map.Entry {
+            pub fn next(self: *DirtiesIterator) ?struct { Map.Entry, *const Value } {
                 while (self.journal_index < self.storage.journal.items.len) {
-                    const entry = self.storage.journal.items[self.journal_index];
+                    const entry = &self.storage.journal.items[self.journal_index];
                     self.journal_index += 1;
                     const map_entry = self.storage.dirties.getEntry(entry.key);
                     if (map_entry) |e| {
-                        return e;
+                        return .{ e, &entry.old_value };
                     }
                 }
                 return null;

@@ -44,6 +44,9 @@ pub const Spec = struct {
     // EIP-8037: cost per state byte (0 = disabled)
     cpsb: u32 = 0,
 
+    // EIP-7928: per-item cost used to bound BAL size against block gas limit
+    bal_item_cost: u32 = 0,
+
     // EIP-7623 TOTAL_COST_FLOOR_PER_TOKEN
     total_cost_floor_per_token: u32,
 
@@ -446,6 +449,7 @@ pub const Amsterdam = override(Osaka, .{
     .total_cost_floor_per_token = 16,
     .max_code_size = 0x8000,
     .cpsb = 1530,
+    .bal_item_cost = 2000,
     .tx_create_gas = 30000,
     .call_new_account_gas = 0,
     .per_empty_account_cost = 0,
