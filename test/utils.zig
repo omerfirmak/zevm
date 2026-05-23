@@ -183,7 +183,6 @@ pub fn keccak256OfU256(v: u256) [32]u8 {
 /// Uses `gpa` for intermediate collections and `fba` for trie-node allocations.
 pub fn computeStateRoot(
     gpa: std.mem.Allocator,
-    fba: *std.heap.FixedBufferAllocator,
     state: *state_mod.State,
     committed: *const CommittedState,
 ) ![32]u8 {
@@ -247,11 +246,10 @@ pub fn computeStateRoot(
         }.lt);
 
         // Insert into storage trie and reclaim FBA memory after.
-        const saved = fba.end_index;
-        var storage_trie = try zevm.StorageTrie.init(fba);
+        var storage_trie = try zevm.StorageTrie.init(gpa);
         if (slot_list.items.len > 0) {
-            const storage_keys = try fba.allocator().alloc([32]u8, slot_list.items.len);
-            const storage_vals = try fba.allocator().alloc(u256, slot_list.items.len);
+            const storage_keys = try gpa.alloc([32]u8, slot_list.items.len);
+            const storage_vals = try gpa.alloc(u256, slot_list.items.len);
             for (slot_list.items, storage_keys, storage_vals) |se, *k, *v| {
                 k.* = se.key;
                 v.* = se.value;
@@ -259,7 +257,6 @@ pub fn computeStateRoot(
             try storage_trie.insert(storage_keys, storage_vals);
         }
         ae.account.storage_hash = try storage_trie.rootHash();
-        fba.end_index = saved;
     }
 
     // Second pass: batch-insert all accounts into the account trie.
@@ -271,7 +268,7 @@ pub fn computeStateRoot(
         k.* = ae.key;
         a.* = ae.account;
     }
-    var account_trie = try zevm.AccountTrie.init(fba);
+    var account_trie = try zevm.AccountTrie.init(gpa);
     try account_trie.insert(acct_keys, accounts);
 
     return account_trie.rootHash();

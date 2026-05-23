@@ -92,23 +92,81 @@ pub const Trie = struct {
 
     root: *Node,
 
-    fba: *std.heap.FixedBufferAllocator,
-    fba_initial_index: usize,
     allocator: std.mem.Allocator,
 
-    pub fn init(fba: *std.heap.FixedBufferAllocator) !Self {
-        const root = try fba.allocator().create(Node);
+    pub fn init(allocator: std.mem.Allocator) !Self {
+        const root = try allocator.create(Node);
         root.* = .empty;
         return Self{
             .root = root,
-            .fba = fba,
-            .allocator = fba.allocator(),
-            .fba_initial_index = fba.end_index,
+            .allocator = allocator,
         };
     }
 
-    pub fn deinit(self: *Self) void {
-        self.fba.end_index = self.fba_initial_index;
+    pub fn initFromWitness(
+        allocator: std.mem.Allocator,
+        root: [32]u8,
+        nodes: *const std.AutoArrayHashMapUnmanaged([32]u8, []const u8),
+    ) !Self {
+        if (std.mem.eql(u8, &empty_root_hash, &root)) return Self.init(allocator);
+        var t = Self{
+            .root = undefined,
+            .allocator = allocator,
+        };
+        t.root = try t.resolveSubTrie(&root, nodes);
+        return t;
+    }
+
+    fn resolveSubTrie(
+        self: *Self,
+        payload: []const u8,
+        nodes: *const std.AutoArrayHashMapUnmanaged([32]u8, []const u8),
+    ) anyerror!*Node {
+        const child = try self.allocator.create(Node);
+        if (payload.len == 32) {
+            if (nodes.get(payload[0..32].*)) |raw| {
+                try self.recursiveResolve(child, raw, nodes);
+            } else {
+                child.* = Node.Hashed.init(payload);
+            }
+        } else {
+            try self.recursiveResolve(child, (payload.ptr - 1)[0 .. payload.len + 1], nodes);
+        }
+        return child;
+    }
+
+    fn recursiveResolve(
+        self: *Self,
+        root: *Node,
+        root_rlp: []const u8,
+        nodes: *const std.AutoArrayHashMapUnmanaged([32]u8, []const u8),
+    ) anyerror!void {
+        var items: [][]const u8 = undefined;
+        _ = try rlp.deserialize([][]const u8, self.allocator, root_rlp, &items);
+        defer self.allocator.free(items);
+
+        if (items.len == 17) {
+            root.* = Node.Branch.init();
+            for (items[0..16], 0..) |child_payload, i| {
+                if (child_payload.len == 0) continue;
+                root.branch.children[i] = try self.resolveSubTrie(child_payload, nodes);
+            }
+        } else if (items.len == 2) {
+            const key_payload = items[0];
+            const value_payload = items[1];
+
+            var key_buf: [65]u8 = undefined;
+            const decoded = compactToHex(key_payload, &key_buf);
+
+            if (decoded.is_leaf) {
+                root.* = Node.Leaf.init(decoded.nibbles, value_payload);
+            } else {
+                if (value_payload.len == 0) return error.MalformedTrieNode;
+                root.* = Node.Extension.init(decoded.nibbles, try self.resolveSubTrie(value_payload, nodes));
+            }
+        } else {
+            return error.MalformedTrieNode;
+        }
     }
 
     pub fn update(self: *Self, keys: []const [32]u8, values: [][]const u8) !void {
@@ -466,11 +524,26 @@ fn hexToCompact(hex: []u8) []u8 {
     return hex[0..bin_len];
 }
 
-fn verifyCase(cases: []const struct { k: []const u8, v: []const u8 }, expected_hex: *const [64]u8) !void {
-    const buf = try std.testing.allocator.alloc(u8, 4 * 1024 * 1024);
-    defer std.testing.allocator.free(buf);
-    var fba = std.heap.FixedBufferAllocator.init(buf);
+fn compactToHex(compact: []const u8, out_buf: *[65]u8) struct { is_leaf: bool, nibbles: []u8 } {
+    const flags = compact[0] >> 4;
+    const is_leaf = (flags & 0x2) != 0;
+    const odd = (flags & 0x1) != 0;
 
+    var i: usize = 0;
+    if (odd) {
+        out_buf[i] = compact[0] & 0x0F;
+        i += 1;
+    }
+    var j: usize = 1;
+    while (j < compact.len) : (j += 1) {
+        out_buf[i] = compact[j] >> 4;
+        out_buf[i + 1] = compact[j] & 0x0F;
+        i += 2;
+    }
+    return .{ .is_leaf = is_leaf, .nibbles = out_buf[0..i] };
+}
+
+fn verifyCase(cases: []const struct { k: []const u8, v: []const u8 }, expected_hex: *const [64]u8) !void {
     var keys: [16][32]u8 = std.mem.zeroes([16][32]u8);
     var vals: [16][]const u8 = undefined;
     for (cases, 0..) |c, i| {
@@ -478,10 +551,9 @@ fn verifyCase(cases: []const struct { k: []const u8, v: []const u8 }, expected_h
         vals[i] = c.v;
     }
 
-    var trie = try Trie.init(&fba);
+    var trie = try Trie.init(std.heap.c_allocator);
     try trie.update(keys[0..cases.len], vals[0..cases.len]);
     const root = try trie.rootHash();
-    trie.deinit();
 
     var expected: [32]u8 = undefined;
     _ = std.fmt.hexToBytes(&expected, expected_hex) catch unreachable;
@@ -489,11 +561,7 @@ fn verifyCase(cases: []const struct { k: []const u8, v: []const u8 }, expected_h
 }
 
 test "empty trie" {
-    const buf = try std.testing.allocator.alloc(u8, 4096);
-    defer std.testing.allocator.free(buf);
-    var fba = std.heap.FixedBufferAllocator.init(buf);
-    var trie = try Trie.init(&fba);
-    defer trie.deinit();
+    var trie = try Trie.init(std.heap.c_allocator);
 
     const root = try trie.rootHash();
     try std.testing.expectEqualSlices(u8, &empty_root_hash, &root);
@@ -588,30 +656,21 @@ test "ext to branch short then long values" {
 }
 
 test "in-place leaf update" {
-    // Insert a key, then update it with a different value.
-    // The root hash must match inserting only the final value from scratch.
-    const buf = try std.testing.allocator.alloc(u8, 4 * 1024 * 1024);
-    defer std.testing.allocator.free(buf);
-
     var keys: [2][32]u8 = std.mem.zeroes([2][32]u8);
     _ = std.fmt.hexToBytes(&keys[0], "a0") catch unreachable;
     _ = std.fmt.hexToBytes(&keys[1], "a0") catch unreachable;
 
     // Trie built with two updates to the same key — second value wins.
-    var fba = std.heap.FixedBufferAllocator.init(buf);
     var vals = [_][]const u8{ "first", "second" };
-    var trie = try Trie.init(&fba);
+    var trie = try Trie.init(std.heap.c_allocator);
     try trie.update(&keys, &vals);
     const updated_root = try trie.rootHash();
-    trie.deinit();
 
     // Trie built with only the final value — must produce the same root.
-    fba.reset();
     var vals2 = [_][]const u8{"second"};
-    var trie2 = try Trie.init(&fba);
+    var trie2 = try Trie.init(std.heap.c_allocator);
     try trie2.update(keys[0..1], &vals2);
     const expected_root = try trie2.rootHash();
-    trie2.deinit();
 
     try std.testing.expectEqualSlices(u8, &expected_root, &updated_root);
 }
@@ -630,80 +689,57 @@ fn makeKey(hex: []const u8, out: *[32]u8) void {
 }
 
 test "delete sole leaf produces empty root" {
-    // Insert key then delete it in the same sorted batch → empty trie.
-    const buf = try std.testing.allocator.alloc(u8, 4 * 1024 * 1024);
-    defer std.testing.allocator.free(buf);
-    var fba = std.heap.FixedBufferAllocator.init(buf);
-
     var keys: [2][32]u8 = undefined;
     makeKey("ab", &keys[0]);
     makeKey("ab", &keys[1]); // same key, delete
     var vals = [_][]const u8{ "hello", "" };
 
-    var trie = try Trie.init(&fba);
+    var trie = try Trie.init(std.heap.c_allocator);
     try trie.update(&keys, &vals);
     const root = try trie.rootHash();
-    trie.deinit();
 
     try std.testing.expectEqualSlices(u8, &empty_root_hash, &root);
 }
 
 test "delete then insert different key in same batch" {
-    // [a0="val", a0="", b0="keep"] — a0 is inserted then deleted; only b0 survives.
-    // The result must match a fresh trie containing only b0.
-    const buf = try std.testing.allocator.alloc(u8, 4 * 1024 * 1024);
-    defer std.testing.allocator.free(buf);
-
     var keys3: [3][32]u8 = undefined;
     makeKey("a0", &keys3[0]);
     makeKey("a0", &keys3[1]);
     makeKey("b0", &keys3[2]);
     var vals3 = [_][]const u8{ "value_a", "", "value_b" };
 
-    var fba = std.heap.FixedBufferAllocator.init(buf);
-    var trie = try Trie.init(&fba);
+    var trie = try Trie.init(std.heap.c_allocator);
     try trie.update(&keys3, &vals3);
     const got = try trie.rootHash();
-    trie.deinit();
 
     // Expected: fresh trie with only b0.
-    fba.reset();
     var keys1: [1][32]u8 = undefined;
     makeKey("b0", &keys1[0]);
     var vals1 = [_][]const u8{"value_b"};
-    var trie2 = try Trie.init(&fba);
+    var trie2 = try Trie.init(std.heap.c_allocator);
     try trie2.update(&keys1, &vals1);
     const expected = try trie2.rootHash();
-    trie2.deinit();
 
     try std.testing.expectEqualSlices(u8, &expected, &got);
 }
 
 test "delete non-existent key is no-op" {
-    // Passing an empty value for a key that was never inserted must not change the root.
-    const buf = try std.testing.allocator.alloc(u8, 4 * 1024 * 1024);
-    defer std.testing.allocator.free(buf);
-    var fba = std.heap.FixedBufferAllocator.init(buf);
-
     // Build reference trie with one real key.
     var k: [1][32]u8 = undefined;
     makeKey("b0", &k[0]);
     var v = [_][]const u8{"value_b"};
-    var ref = try Trie.init(&fba);
+    var ref = try Trie.init(std.heap.c_allocator);
     try ref.update(&k, &v);
     const expected = try ref.rootHash();
-    ref.deinit();
 
     // Batch that also "deletes" a non-existent key a0 (comes before b0 in sort order).
-    fba.reset();
     var keys2: [2][32]u8 = undefined;
     makeKey("a0", &keys2[0]); // delete of non-existent key
     makeKey("b0", &keys2[1]);
     var vals2 = [_][]const u8{ "", "value_b" };
-    var trie = try Trie.init(&fba);
+    var trie = try Trie.init(std.heap.c_allocator);
     try trie.update(&keys2, &vals2);
     const got = try trie.rootHash();
-    trie.deinit();
 
     try std.testing.expectEqualSlices(u8, &expected, &got);
 }
