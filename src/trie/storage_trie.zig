@@ -5,12 +5,12 @@ const Trie = @import("trie.zig").Trie;
 pub const StorageTrie = struct {
     inner: Trie,
 
-    pub fn init(fba: *std.heap.FixedBufferAllocator) !@This() {
-        return .{ .inner = try Trie.init(fba) };
+    pub fn init(allocator: std.mem.Allocator) !@This() {
+        return .{ .inner = try Trie.init(allocator) };
     }
 
-    pub fn deinit(self: *@This()) void {
-        self.inner.deinit();
+    pub fn initFromTrie(inner: Trie) @This() {
+        return .{ .inner = inner };
     }
 
     pub fn insert(self: *@This(), keys: []const [32]u8, values: []const u256) !void {
