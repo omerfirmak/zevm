@@ -54,41 +54,13 @@ pub const Precompiles = enum(u9) {
 var kzg_setup: kzg.Settings = .{};
 var kzg_once: SpinLockOnce(loadKzgSetup) = .{};
 fn loadKzgSetup() void {
-    kzg_setup = parseAndLoadTrustedSetup(@import("trusted_setup").data);
-}
-
-const num_g1_points = 4096;
-const num_g2_points = 65;
-const g1_bytes = 48;
-const g2_bytes = 96;
-
-fn parseAndLoadTrustedSetup(data: []const u8) kzg.Settings {
-    var g1_lagrange: [num_g1_points * g1_bytes]u8 = undefined;
-    var g2_monomial: [num_g2_points * g2_bytes]u8 = undefined;
-    var g1_monomial: [num_g1_points * g1_bytes]u8 = undefined;
-
-    var pos: usize = 0;
-    // Skip header lines ("4096\n65\n").
-    var newlines: usize = 0;
-    while (newlines < 2) : (pos += 1) {
-        if (data[pos] == '\n') newlines += 1;
-    }
-    pos = decodeHexLines(data, pos, &g1_lagrange, num_g1_points, g1_bytes);
-    pos = decodeHexLines(data, pos, &g2_monomial, num_g2_points, g2_bytes);
-    _ = decodeHexLines(data, pos, &g1_monomial, num_g1_points, g1_bytes);
-
-    return kzg.Settings.loadTrustedSetup(&g1_monomial, &g1_lagrange, &g2_monomial, 0) catch unreachable;
-}
-
-fn decodeHexLines(data: []const u8, start: usize, out: []u8, num_lines: usize, bytes_per_line: usize) usize {
-    const hex_per_line = bytes_per_line * 2;
-    var pos = start;
-    for (0..num_lines) |i| {
-        _ = std.fmt.hexToBytes(out[i * bytes_per_line ..][0..bytes_per_line], data[pos..][0..hex_per_line]) catch unreachable;
-        pos += hex_per_line;
-        if (pos < data.len and data[pos] == '\n') pos += 1;
-    }
-    return pos;
+    const ts = @import("trusted_setup");
+    kzg_setup = kzg.Settings.loadTrustedSetup(
+        ts.g1_monomial_bytes,
+        ts.g1_lagrange_bytes,
+        ts.g2_monomial_bytes,
+        0,
+    ) catch unreachable;
 }
 
 var mcl_once: SpinLockOnce(mcl_init) = .{};
