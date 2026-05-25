@@ -14,6 +14,22 @@ pub const AccountTrie = struct {
         return .{ .inner = inner };
     }
 
+    pub fn get(self: *const @This(), key: [32]u8) !types.Account {
+        const trie_value = try self.inner.get(key);
+        if (trie_value) |buf| {
+            var account: types.Account = undefined;
+            _ = try rlp.deserialize(types.Account, undefined, buf, &account);
+            return account;
+        } else {
+            return .{
+                .balance = 0,
+                .nonce = 0,
+                .code_hash = types.empty_code_hash,
+                .storage_hash = types.empty_root_hash,
+            };
+        }
+    }
+
     pub fn insert(self: *@This(), keys: []const [32]u8, accounts: []const types.Account) !void {
         const val_slices = try self.inner.allocator.alloc([]const u8, accounts.len);
         for (accounts, val_slices) |account, *s| {
