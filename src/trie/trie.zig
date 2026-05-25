@@ -169,6 +169,34 @@ pub const Trie = struct {
         }
     }
 
+    pub fn get(self: *const Self, key: [32]u8) !?[]const u8 {
+        var key_buf: [64]u8 = undefined;
+
+        var key_nibbles = writeHexKey(&key, &key_buf);
+        var cur_node = self.root;
+        while (true) {
+            switch (cur_node.*) {
+                .empty => return null,
+                .branch => |*b| {
+                    cur_node = b.children[key_nibbles[0]] orelse return null;
+                    key_nibbles = key_nibbles[1..];
+                },
+                .ext => |*e| {
+                    const ek = e.key[0..e.key_len];
+                    if (!std.mem.startsWith(u8, key_nibbles, ek)) return null;
+
+                    cur_node = e.child;
+                    key_nibbles = key_nibbles[e.key_len..];
+                },
+                .leaf => |*l| {
+                    if (!std.mem.eql(u8, l.key[0..l.key_len], key_nibbles)) return null;
+                    return l.val;
+                },
+                .hashed => unreachable,
+            }
+        }
+    }
+
     pub fn update(self: *Self, keys: []const [32]u8, values: [][]const u8) !void {
         std.debug.assert(keys.len != 0);
         std.debug.assert(keys.len == values.len);

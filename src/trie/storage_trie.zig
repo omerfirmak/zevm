@@ -13,6 +13,17 @@ pub const StorageTrie = struct {
         return .{ .inner = inner };
     }
 
+    pub fn get(self: *const @This(), key: [32]u8) !u256 {
+        const trie_value = try self.inner.get(key);
+        if (trie_value) |buf| {
+            var value: u256 = undefined;
+            _ = try rlp.deserialize(u256, undefined, buf, &value);
+            return value;
+        } else {
+            return 0;
+        }
+    }
+
     pub fn insert(self: *@This(), keys: []const [32]u8, values: []const u256) !void {
         const val_slices = try self.inner.allocator.alloc([]const u8, values.len);
         for (values, val_slices) |value, *s| {
