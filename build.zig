@@ -99,15 +99,6 @@ pub fn build(b: *std.Build) void {
     });
     types_mod.addImport("rlp", rlp_dep.module("zig-rlp"));
 
-    // Embed trusted_setup.txt so precompile.init() doesn't need it at runtime.
-    const wf = b.addWriteFiles();
-    _ = wf.addCopyFile(ckzg4844_dep.path("src/trusted_setup.txt"), "trusted_setup.txt");
-    const trusted_setup_mod = b.createModule(.{
-        .root_source_file = wf.add("trusted_setup.zig",
-            \\pub const data = @embedFile("trusted_setup.txt");
-        ),
-    });
-
     const mcl_lib = buildMcl(b, mcl_dep, target);
 
     const deps = Deps{
@@ -120,7 +111,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
         .types_mod = types_mod,
-        .trusted_setup_mod = trusted_setup_mod,
+        .trusted_setup_mod = ckzg4844_dep.module("trusted_setup"),
         .mcl_lib = mcl_lib,
         .mcl_include = mcl_dep.path("include"),
         .rlp_mod = rlp_dep.module("zig-rlp"),
