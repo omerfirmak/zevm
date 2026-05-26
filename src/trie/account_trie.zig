@@ -1,6 +1,6 @@
 const std = @import("std");
 const rlp = @import("rlp");
-const types = @import("types");
+const types = @import("../types.zig");
 const Trie = @import("trie.zig").Trie;
 
 pub const AccountTrie = struct {

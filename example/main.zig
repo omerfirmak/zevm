@@ -10,8 +10,7 @@ pub fn main() !void {
     const fork = zevm.spec.Osaka;
 
     // Set up world state with enough capacity for this example.
-    const CommittedState = @import("committed_state").CommittedState;
-    const committed_state = CommittedState{};
+    const committed_state = zevm.CommittedState{};
     var state = try zevm.state.State.init(allocator, &committed_state, fork.stateCapacities(30_000_000));
     defer state.deinit(allocator);
 

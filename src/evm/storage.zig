@@ -1,7 +1,7 @@
 const std = @import("std");
-const types = @import("types");
+const types = @import("../types.zig");
 const Bytecode = @import("bytecode.zig").Bytecode;
-const CommittedState = @import("committed_state").CommittedState;
+const CommittedState = @import("committed_state.zig").CommittedState;
 
 pub fn SlotKeyedMap(comptime T: type) type {
     return std.HashMapUnmanaged(types.StorageLookup, T, struct {

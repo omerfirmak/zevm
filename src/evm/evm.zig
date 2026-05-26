@@ -1,6 +1,6 @@
 const std = @import("std");
 const ops = @import("ops.zig");
-const types = @import("types");
+const types = @import("../types.zig");
 const storage = @import("storage.zig");
 const rlp = @import("rlp");
 const precompile = @import("precompile.zig");
@@ -39,7 +39,7 @@ pub const Errors = error{
     EmptyAuthorizationList,
     CreateSetCodeTx,
     InvalidPrecompileInput,
-} || @import("committed_state").Errors;
+} || @import("committed_state.zig").Errors;
 
 pub const Context = struct {
     chainid: u64,

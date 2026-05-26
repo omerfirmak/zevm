@@ -9,8 +9,10 @@ pub const AccountTrie = @import("./trie/account_trie.zig").AccountTrie;
 pub const chainspec = @import("./processor/chainspec.zig");
 pub const processor = @import("./processor/processor.zig");
 
-pub const types = @import("types");
+pub const types = @import("types.zig");
 pub const Fork = @import("forks.zig").Fork;
 
 pub const blobBaseFee = @import("blob_fee.zig").blobBaseFee;
 pub const ecrecover = @import("curve.zig").ecrecover;
+
+pub const CommittedState = @import("./evm/committed_state.zig").CommittedState;

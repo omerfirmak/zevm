@@ -1,5 +1,5 @@
 const std = @import("std");
-const types = @import("types");
+const types = @import("../types.zig");
 const evm = @import("../evm/evm.zig");
 const rlp = @import("rlp");
 const EVM = evm.EVM;
