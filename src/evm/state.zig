@@ -1,10 +1,10 @@
 const std = @import("std");
-const types = @import("types");
+const types = @import("../types.zig");
 const storage = @import("storage.zig");
 const ops = @import("ops.zig");
 const Bytecode = @import("bytecode.zig").Bytecode;
 const Config = @import("config.zig").Config;
-pub const CommittedState = @import("committed_state").CommittedState;
+pub const CommittedState = @import("committed_state.zig").CommittedState;
 const Spec = @import("spec.zig").Spec;
 
 pub const Snapshot = struct {

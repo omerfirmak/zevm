@@ -1,13 +1,22 @@
-const types = @import("types");
+const types = @import("../types.zig");
+const build_options = @import("build_options");
 
-pub const Errors = error{
-    NotFound,
+pub const Errors = switch (build_options.state_impl) {
+    .empty => EmptyCommittedState.Errors,
+    .external => @import("committed_state").Errors,
+};
+
+pub const CommittedState = switch (build_options.state_impl) {
+    .empty => EmptyCommittedState,
+    .external => @import("committed_state").CommittedState,
 };
 
 // An empty committed state implementation.
 // Consumers can swap this file with their own via build.zig to back
 // account/storage reads with a real database.
-pub const CommittedState = struct {
+const EmptyCommittedState = struct {
+    pub const Errors = error{NotFound};
+
     pub fn account(_: *const @This(), _: u160) !types.Account {
         return .{
             .balance = 0,
@@ -22,6 +31,6 @@ pub const CommittedState = struct {
     }
 
     pub fn code(_: *const @This(), _: [32]u8) ![]const u8 {
-        return Errors.NotFound;
+        return @This().Errors.NotFound;
     }
 };

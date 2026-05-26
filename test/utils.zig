@@ -3,7 +3,7 @@ const zevm = @import("zevm");
 const evm = zevm.evm;
 const state_mod = zevm.state;
 const types = zevm.types;
-const CommittedState = @import("committed_state").CommittedState;
+const CommittedState = zevm.CommittedState;
 
 pub fn parseHex(comptime T: type, str: []const u8) !T {
     const hex = if (std.mem.startsWith(u8, str, "0x")) str[2..] else str;

@@ -1,5 +1,5 @@
 const std = @import("std");
-const types = @import("types");
+const types = @import("zevm").types;
 
 pub const Errors = error{
     NotFound,
