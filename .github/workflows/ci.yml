@@ -40,7 +40,7 @@ jobs:
           version: 0.16.0
 
       - name: Download and extract state test fixtures
-        run: curl -L https://github.com/ethereum/execution-specs/releases/download/tests-bal%40v7.1.1/fixtures_bal.tar.gz | tar -xz
+        run: curl -L https://github.com/ethereum/execution-specs/releases/download/tests-bal%40v7.2.0/fixtures_bal.tar.gz | tar -xz
 
       - name: Run blockchain tests
         run: zig build blockchain-tests -Doptimize=ReleaseSafe -Dfork=${{ matrix.fork }}
@@ -61,7 +61,7 @@ jobs:
           version: 0.16.0
 
       - name: Download and extract state test fixtures
-        run: curl -L https://github.com/ethereum/execution-specs/releases/download/tests-bal%40v7.1.1/fixtures_bal.tar.gz | tar -xz
+        run: curl -L https://github.com/ethereum/execution-specs/releases/download/tests-bal%40v7.2.0/fixtures_bal.tar.gz | tar -xz
 
       - name: Run state tests
         run: zig build state-tests -Doptimize=ReleaseSafe -Dfork=${{ matrix.fork }}
