@@ -60,25 +60,20 @@ fn createZevmModule(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
-    committed_state_path: ?std.Build.LazyPath,
+    committed_state_mod: ?*std.Build.Module,
     d: Deps,
 ) *std.Build.Module {
     const options = b.addOptions();
-    options.addOption(StateImpl, "state_impl", if (committed_state_path != null) .external else .empty);
+    options.addOption(StateImpl, "state_impl", if (committed_state_mod != null) .external else .empty);
 
-    const zevm_mod = b.addModule("zevm", .{
+    const zevm_mod = b.createModule(.{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
     });
     zevm_mod.addOptions("build_options", options);
     linkDeps(zevm_mod, d);
-    if (committed_state_path) |cs_path| {
-        const cs_mod = b.createModule(.{
-            .root_source_file = cs_path,
-            .target = target,
-            .optimize = optimize,
-        });
+    if (committed_state_mod) |cs_mod| {
         cs_mod.addImport("zevm", zevm_mod);
         zevm_mod.addImport("committed_state", cs_mod);
     }
@@ -117,20 +112,20 @@ pub fn build(b: *std.Build) void {
         .rlp_mod = rlp_dep.module("zig-rlp"),
     };
 
-    // Exported zevm module for 3rd-party consumers.
-    // Consumers override CommittedState by passing .committed_state in dependency args.
-    const committed_state_path = b.option(
-        std.Build.LazyPath,
-        "committed_state",
-        "Custom CommittedState implementation",
-    );
-    _ = createZevmModule(
-        b,
-        target,
-        optimize,
-        committed_state_path,
-        deps,
-    );
+    const committed_state_impl = b.option(
+        StateImpl,
+        "committed_state_impl",
+        "Custom CommittedState implementation enabler",
+    ) orelse .empty;
+    const options = b.addOptions();
+    options.addOption(StateImpl, "state_impl", committed_state_impl);
+    const zevm_mod = b.addModule("zevm", .{
+        .root_source_file = b.path("src/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    linkDeps(zevm_mod, deps);
+    zevm_mod.addOptions("build_options", options);
 
     const test_step = b.step("test", "Run unit tests");
     const unit_tests = b.addTest(.{
@@ -150,7 +145,11 @@ pub fn build(b: *std.Build) void {
         b,
         target,
         optimize,
-        b.path("example/committed_state.zig"),
+        b.createModule(.{
+            .root_source_file = b.path("example/committed_state.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
         deps,
     );
     const example = b.addExecutable(.{
@@ -184,7 +183,11 @@ pub fn build(b: *std.Build) void {
     bench_step.dependOn(&run_bench.step);
 
     // Shared modules for all integration test binaries.
-    const test_zevm_mod = createZevmModule(b, target, optimize, b.path("test/committed_state.zig"), deps);
+    const test_zevm_mod = createZevmModule(b, target, optimize, b.createModule(.{
+        .root_source_file = b.path("test/committed_state.zig"),
+        .target = target,
+        .optimize = optimize,
+    }), deps);
 
     const state_test_step = b.step("state-tests", "Run EVM state tests");
     const state_tests = b.addTest(.{
