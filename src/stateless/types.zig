@@ -92,7 +92,7 @@ pub const StatelessInput = struct {
     new_payload_request: NewPayloadRequest,
     witness: ExecutionWitness,
     chain_config: ChainConfig,
-    public_keys: [][48]u8,
+    public_keys: [][65]u8,
 };
 
 pub const StatelessValidationResult = struct {

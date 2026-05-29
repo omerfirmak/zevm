@@ -5,9 +5,16 @@ const zevm = @import("zevm");
 const types = @import("types.zig");
 const CommittedState = @import("committed_state").CommittedState;
 
+const STATELESS_INPUT_SCHEMA_ID: u16 = 0x0001;
+const STATELESS_INPUT_SCHEMA_ID_SIZE: usize = 2;
+
 pub fn verify_ssz(allocator: std.mem.Allocator, input_bytes: []const u8) ![]const u8 {
+    if (input_bytes.len < STATELESS_INPUT_SCHEMA_ID_SIZE) return error.UnsupportedSchemaId;
+    const schema_id = std.mem.readInt(u16, input_bytes[0..STATELESS_INPUT_SCHEMA_ID_SIZE], .big);
+    if (schema_id != STATELESS_INPUT_SCHEMA_ID) return error.UnsupportedSchemaId;
+
     var input: types.StatelessInput = undefined;
-    try ssz.deserialize(types.StatelessInput, input_bytes, &input, allocator);
+    try ssz.deserialize(types.StatelessInput, input_bytes[STATELESS_INPUT_SCHEMA_ID_SIZE..], &input, allocator);
 
     const res = try verify(allocator, input);
 
