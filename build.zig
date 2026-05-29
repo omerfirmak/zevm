@@ -114,6 +114,7 @@ pub fn build(b: *std.Build) void {
         .rlp_mod = rlp_dep.module("zig-rlp"),
     };
 
+    // Public surface
     const committed_state_impl = b.option(
         StateImpl,
         "committed_state_impl",
@@ -129,6 +130,7 @@ pub fn build(b: *std.Build) void {
     linkDeps(zevm_mod, deps);
     zevm_mod.addOptions("build_options", options);
 
+    // Tests
     const test_step = b.step("test", "Run unit tests");
     const unit_tests = b.addTest(.{
         .root_module = b.createModule(.{
@@ -142,6 +144,7 @@ pub fn build(b: *std.Build) void {
     linkDeps(unit_tests.root_module, deps);
     test_step.dependOn(&b.addRunArtifact(unit_tests).step);
 
+    // Example user
     const example_step = b.step("example", "Run the example program");
     const example_zevm_mod = createZevmModule(
         b,
@@ -167,6 +170,7 @@ pub fn build(b: *std.Build) void {
     example.root_module.addImport("zevm", example_zevm_mod);
     example_step.dependOn(&b.addRunArtifact(example).step);
 
+    // Benchmark
     const bench_step = b.step("bench", "Run EVM benchmarks");
     const bench = b.addExecutable(.{
         .name = "bench",
@@ -184,13 +188,13 @@ pub fn build(b: *std.Build) void {
     if (b.args) |bench_args| run_bench.addArgs(bench_args);
     bench_step.dependOn(&run_bench.step);
 
-    // Shared modules for all integration test binaries.
     const test_zevm_mod = createZevmModule(b, target, optimize, b.createModule(.{
         .root_source_file = b.path("test/committed_state.zig"),
         .target = target,
         .optimize = optimize,
     }), deps);
 
+    // State tests
     const state_test_step = b.step("state-tests", "Run EVM state tests");
     const state_tests = b.addTest(.{
         .name = "zevm-state-test",
@@ -220,6 +224,7 @@ pub fn build(b: *std.Build) void {
     }
     state_test_step.dependOn(&run_state_tests.step);
 
+    // Blockchain tests
     const blockchain_test_step = b.step("blockchain-tests", "Run EVM blockchain tests");
     const blockchain_tests = b.addTest(.{
         .name = "zevm-blockchain-test",
@@ -245,6 +250,7 @@ pub fn build(b: *std.Build) void {
     }
     blockchain_test_step.dependOn(&run_blockchain_tests.step);
 
+    // zkEVM tests
     const stateless_cs_mod = b.createModule(.{
         .root_source_file = b.path("src/stateless/committed_state.zig"),
         .target = target,
