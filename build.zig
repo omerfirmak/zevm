@@ -95,6 +95,8 @@ pub fn build(b: *std.Build) void {
     const clap_dep = b.dependency("clap", .{ .target = target, .optimize = optimize });
     const mcl_dep = b.dependency("mcl", .{});
     const rlp_dep = b.dependency("rlp", .{ .target = target, .optimize = optimize });
+    const ssz_dep = b.dependency("ssz", .{ .target = target, .optimize = optimize });
+
     const mcl_lib = buildMcl(b, mcl_dep, target);
 
     const deps = Deps{
@@ -242,4 +244,38 @@ pub fn build(b: *std.Build) void {
         run_blockchain_tests.setEnvironmentVariable("FORK", f);
     }
     blockchain_test_step.dependOn(&run_blockchain_tests.step);
+
+    const stateless_cs_mod = b.createModule(.{
+        .root_source_file = b.path("src/stateless/committed_state.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const stateless_zevm_mod = createZevmModule(b, target, optimize, stateless_cs_mod, deps);
+    const guest_mod = b.createModule(.{
+        .root_source_file = b.path("src/stateless/guest.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    guest_mod.addImport("zevm", stateless_zevm_mod);
+    guest_mod.addImport("committed_state", stateless_cs_mod);
+    guest_mod.addImport("rlp", rlp_dep.module("zig-rlp"));
+    guest_mod.addImport("ssz", ssz_dep.module("ssz.zig"));
+
+    const zkevm_test_step = b.step("zk-tests", "Run zkEVM blockchain tests");
+    const zkevm_tests = b.addTest(.{
+        .name = "zevm-zkevm-test",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test/zkevm_tests.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+        .use_llvm = true,
+    });
+    zkevm_tests.root_module.link_libcpp = true;
+    zkevm_tests.root_module.addImport("guest", guest_mod);
+    zkevm_tests.stack_size = 64 * 1024 * 1024;
+    b.installArtifact(zkevm_tests);
+    const run_zkevm_tests = b.addRunArtifact(zkevm_tests);
+    run_zkevm_tests.setCwd(b.path("."));
+    zkevm_test_step.dependOn(&run_zkevm_tests.step);
 }
