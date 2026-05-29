@@ -60,6 +60,10 @@
             .url = "git+https://github.com/gballet/zig-rlp.git#c44fed567c74b3469aff54e22bb8defcb1a59949",
             .hash = "rlp-0.1.0-7i0JtBOpAADgSLfDtWigMOhFs_KyRAaJq77w8nbpw-EV",
         },
+        .ssz = .{
+            .url = "git+https://github.com/blockblaz/ssz.zig.git#d91d0b90bb97a8985ecc883b31a7b17fda71801b",
+            .hash = "ssz-0.0.9-Lfwd6w4tAwD1bnU8XJMCT_Qt7gVJWJPdRAifwJLQhn4n",
+        },
     },
     .paths = .{
         "build.zig",
