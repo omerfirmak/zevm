@@ -65,3 +65,26 @@ jobs:
 
       - name: Run state tests
         run: zig build state-tests -Doptimize=ReleaseSafe -Dfork=${{ matrix.fork }}
+
+  zk-tests:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        fork: [Amsterdam]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Download and extract zkEVM test fixtures
+        run: |
+          curl -L https://github.com/ethereum/execution-specs/releases/download/tests-zkevm%40v0.4.1/fixtures_zkevm.tar.gz | tar -xz
+          mv fixtures zk_fixtures
+
+      - name: Run zkEVM tests
+        run: zig build zk-tests -Doptimize=ReleaseSafe -Dfork=${{ matrix.fork }}

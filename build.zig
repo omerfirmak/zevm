@@ -283,5 +283,11 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(zkevm_tests);
     const run_zkevm_tests = b.addRunArtifact(zkevm_tests);
     run_zkevm_tests.setCwd(b.path("."));
+    if (b.option([]const u8, "zk-test", "Path to a specific zkEVM blockchain test JSON file")) |path| {
+        run_zkevm_tests.setEnvironmentVariable("ZK_TEST", path);
+    }
+    if (fork_option) |f| {
+        run_zkevm_tests.setEnvironmentVariable("FORK", f);
+    }
     zkevm_test_step.dependOn(&run_zkevm_tests.step);
 }
