@@ -16,9 +16,11 @@ const ZkTest = struct {
 const ZkTestFile = std.json.ArrayHashMap(ZkTest);
 
 fn runZkTest(allocator: std.mem.Allocator, test_case: *const ZkTest) !void {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
     for (test_case.blocks, 0..) |block, idx| {
-        const got = try guest.verify_ssz(allocator, block.statelessInputBytes.value);
-        defer allocator.free(got);
+        const got = try guest.verify_ssz(arena.allocator(), block.statelessInputBytes.value);
         if (!std.mem.eql(u8, got, block.statelessOutputBytes.value)) {
             std.debug.print(
                 "block {d}: output mismatch (got {d} bytes, expected {d} bytes)\n",
