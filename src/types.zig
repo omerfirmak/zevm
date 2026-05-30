@@ -594,18 +594,33 @@ pub const AccountChanges = struct {
     nonce_changes: []NonceChange,
     code_changes: []CodeChange,
 
+    const Enc = struct {
+        address: [20]u8,
+        storage_changes: []SlotChanges,
+        storage_reads: []u256,
+        balance_changes: []BalanceChange,
+        nonce_changes: []NonceChange,
+        code_changes: []CodeChange,
+    };
+
+    pub fn decodeFromRLP(self: *AccountChanges, allocator: std.mem.Allocator, serialized: []const u8) !usize {
+        var enc: Enc = undefined;
+        const used = try rlp.deserialize(Enc, allocator, serialized, &enc);
+        self.* = .{
+            .addr = std.mem.readInt(u160, &enc.address, .big),
+            .storage_changes = enc.storage_changes,
+            .storage_reads = enc.storage_reads,
+            .balance_changes = enc.balance_changes,
+            .nonce_changes = enc.nonce_changes,
+            .code_changes = enc.code_changes,
+        };
+        return used;
+    }
+
     pub fn encodeToRLP(self: AccountChanges, allocator: std.mem.Allocator, list: *std.array_list.Managed(u8)) !void {
         var addr_bytes: [20]u8 = undefined;
         std.mem.writeInt(u160, &addr_bytes, self.addr, .big);
 
-        const Enc = struct {
-            address: [20]u8,
-            storage_changes: []SlotChanges,
-            storage_reads: []u256,
-            balance_changes: []BalanceChange,
-            nonce_changes: []NonceChange,
-            code_changes: []CodeChange,
-        };
         try rlp.serialize(Enc, allocator, .{
             .address = addr_bytes,
             .storage_changes = self.storage_changes,

@@ -35,7 +35,8 @@ pub fn verify(allocator: std.mem.Allocator, input: types.StatelessInput) !types.
     }
 
     const parent = &headers[headers.len - 1];
-    const bal: zevm.types.BlockAccessLists = undefined;
+    var bal: zevm.types.BlockAccessLists = undefined;
+    _ = try rlp.deserialize(zevm.types.BlockAccessLists, allocator, input.new_payload_request.execution_payload.block_access_list, &bal);
     _ = try CommittedState.init(
         allocator,
         parent.*.state_root,
