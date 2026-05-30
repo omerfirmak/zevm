@@ -192,7 +192,7 @@ pub const Trie = struct {
                     if (!std.mem.eql(u8, l.key[0..l.key_len], key_nibbles)) return null;
                     return l.val;
                 },
-                .hashed => unreachable,
+                .hashed => return error.SubTrieNotAvailable,
             }
         }
     }
@@ -355,7 +355,7 @@ pub const Trie = struct {
                 }
                 if (keys.*.len > 0) _ = writeHexKey(&keys.*[0], key_buf);
             },
-            .hashed => unreachable,
+            .hashed => return error.SubTrieNotAvailable,
         }
 
         return self.tailInsert(node, key, path, value, key_buf, keys, values);
