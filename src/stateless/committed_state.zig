@@ -57,17 +57,13 @@ pub const CommittedState = struct {
         };
     }
 
-    pub fn account(_: *const @This(), _: u160) !evm.types.Account {
-        return .{
-            .balance = 0,
-            .nonce = 0,
-            .code_hash = evm.types.empty_code_hash,
-            .storage_hash = evm.types.empty_root_hash,
-        };
+    pub fn account(self: *const @This(), addr: u160) !evm.types.Account {
+        return self.state_trie.get(keccakOfU160(addr));
     }
 
-    pub fn storage(_: *const @This(), _: evm.types.StorageLookup) !u256 {
-        return 0;
+    pub fn storage(self: *const @This(), lookup: evm.types.StorageLookup) !u256 {
+        const account_trie = self.account_tries.get(lookup.address) orelse return Errors.NotFound;
+        return account_trie.get(keccakOfU256(lookup.slot));
     }
 
     pub fn code(_: *const @This(), _: [32]u8) ![]const u8 {
