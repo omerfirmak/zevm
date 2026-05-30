@@ -22,7 +22,7 @@ pub const CommittedState = struct {
 
         for (bytecodes) |bytecode| {
             var code_hash: [32]u8 = undefined;
-            std.crypto.hash.sha2.Sha256.hash(bytecode, &code_hash, .{});
+            std.crypto.hash.sha3.Keccak256.hash(bytecode, &code_hash, .{});
             codes.putAssumeCapacity(code_hash, bytecode);
         }
 
@@ -32,7 +32,7 @@ pub const CommittedState = struct {
 
         for (state) |node| {
             var node_hash: [32]u8 = undefined;
-            std.crypto.hash.sha2.Sha256.hash(node, &node_hash, .{});
+            std.crypto.hash.sha3.Keccak256.hash(node, &node_hash, .{});
             nodes.putAssumeCapacity(node_hash, node);
         }
 
@@ -83,6 +83,6 @@ pub fn keccakOfU256(v: u256) [32]u8 {
     var buf: [32]u8 = undefined;
     std.mem.writeInt(u256, &buf, v, .big);
     var out: [32]u8 = undefined;
-    std.crypto.hash.sha23Keccak256.hash(&buf, &out, .{});
+    std.crypto.hash.sha3.Keccak256.hash(&buf, &out, .{});
     return out;
 }
