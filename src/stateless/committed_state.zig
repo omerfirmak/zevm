@@ -15,7 +15,7 @@ pub const CommittedState = struct {
         parent_state_root: [32]u8,
         state: [][]const u8,
         bytecodes: [][]const u8,
-        _: *const evm.types.BlockAccessLists,
+        bal: *const evm.types.BlockAccessLists,
     ) !CommittedState {
         var codes: std.AutoHashMapUnmanaged([32]u8, []const u8) = .empty;
         try codes.ensureTotalCapacity(allocator, @intCast(bytecodes.len));
@@ -40,10 +40,20 @@ pub const CommittedState = struct {
             try evm.Trie.initFromWitness(allocator, parent_state_root, &nodes),
         );
 
+        var account_tries: std.AutoHashMapUnmanaged(u160, evm.StorageTrie) = .empty;
+        try account_tries.ensureTotalCapacity(allocator, @intCast(bal.len));
+
+        for (bal.*) |entry| {
+            const storage_hash = (try state_trie.get(keccakOfU160(entry.addr))).storage_hash;
+            account_tries.putAssumeCapacity(entry.addr, evm.StorageTrie.initFromTrie(
+                try evm.Trie.initFromWitness(allocator, storage_hash, &nodes),
+            ));
+        }
+
         return .{
             .codes = codes,
             .state_trie = state_trie,
-            .account_tries = undefined,
+            .account_tries = account_tries,
         };
     }
 
@@ -64,3 +74,19 @@ pub const CommittedState = struct {
         return Errors.NotFound;
     }
 };
+
+pub fn keccakOfU160(v: u160) [32]u8 {
+    var buf: [20]u8 = undefined;
+    std.mem.writeInt(u160, &buf, v, .big);
+    var out: [32]u8 = undefined;
+    std.crypto.hash.sha3.Keccak256.hash(&buf, &out, .{});
+    return out;
+}
+
+pub fn keccakOfU256(v: u256) [32]u8 {
+    var buf: [32]u8 = undefined;
+    std.mem.writeInt(u256, &buf, v, .big);
+    var out: [32]u8 = undefined;
+    std.crypto.hash.sha23Keccak256.hash(&buf, &out, .{});
+    return out;
+}
