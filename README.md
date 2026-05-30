@@ -1,7 +1,7 @@
 <img width="282" height="94" alt="image" src="https://github.com/user-attachments/assets/6ab0982b-9470-4b53-9f0c-a5adaddf4e72" />
 
 
-An alpha EVM implementation in Zig, using threaded code dispatch for opcode execution. Osaka-compliant.
+An alpha EVM implementation in Zig, using threaded code dispatch for opcode execution.
 
 ## Requirements
 
