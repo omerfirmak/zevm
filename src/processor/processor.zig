@@ -122,7 +122,7 @@ pub fn processBlock(
     if (p_block.block.header.gas_used != block_gas_used) return Errors.MismatchedGasUsed;
     if (!std.mem.eql(u8, &p_block.block.header.logs_bloom, &computeLogsBloom(&logs))) return Errors.MismatchedLogsBloom;
 
-    const withdrawals_root = try computeWithdrawalsRoot(gpa, &p_block.block);
+    const withdrawals_root = try computeRoot(types.Withdrawal, gpa, p_block.block.withdrawals);
     if (!std.mem.eql(u8, &withdrawals_root, &p_block.block.header.withdrawals_root)) return Errors.MismatchedWithdrawalsRoot;
     try applyWithdrawals(&p_block.block, state);
 
@@ -214,8 +214,8 @@ fn hashSystemCall(
     }
 }
 
-fn computeWithdrawalsRoot(gpa: std.mem.Allocator, block: *const types.Block) ![32]u8 {
-    const n = block.withdrawals.len;
+fn computeRoot(comptime T: type, gpa: std.mem.Allocator, items: []const T) ![32]u8 {
+    const n = items.len;
     if (n == 0) return empty_root_hash;
     const fba_buf = try gpa.alloc(u8, 1024 * 1024);
     defer gpa.free(fba_buf);
@@ -231,7 +231,7 @@ fn computeWithdrawalsRoot(gpa: std.mem.Allocator, block: *const types.Block) ![3
             var key_list = std.array_list.Managed(u8).init(fba.allocator());
             try rlp.serialize(usize, fba.allocator(), i, &key_list);
             var val_list = std.array_list.Managed(u8).init(fba.allocator());
-            try rlp.serialize(types.Withdrawal, fba.allocator(), block.withdrawals[i], &val_list);
+            try rlp.serialize(types.Withdrawal, fba.allocator(), items[i], &val_list);
             try trie.put(key_list.items, val_list.items);
         }
     }
