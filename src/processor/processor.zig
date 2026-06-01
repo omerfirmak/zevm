@@ -63,7 +63,6 @@ pub const PreprocessedBlock = struct {
 
 pub fn processBlock(
     gpa: std.mem.Allocator,
-    logs_allocator: std.mem.Allocator,
     comptime spec: ChainSpec,
     p_block: *const PreprocessedBlock,
     parent: *const types.BlockHeader,
@@ -78,13 +77,11 @@ pub fn processBlock(
     if (evm_spec.isEnabled(.Amsterdam))
         prepared_bal = try bal.Prepared.init(gpa, &p_block.bal.?, p_block.block.header.gas_limit, evm_spec.bal_item_cost) orelse return Errors.InvalidBal;
 
-    var logs: std.DoublyLinkedList = .{};
-    defer freeLogs(&logs, logs_allocator);
     const num_logs_per_tx = try gpa.alloc(usize, p_block.block.transactions.len);
     defer gpa.free(num_logs_per_tx);
     var context = contextFromBlock(spec, &p_block.block, ancestors);
 
-    var vm = try evm.EVM.init(gpa, logs_allocator, &logs, &context, evm_spec.evmCapacities());
+    var vm = try evm.EVM.init(gpa, &context, evm_spec.evmCapacities());
 
     try applyEip4788(&p_block.block.header, state);
     try applyEip2935(&p_block.block.header, state);
@@ -120,13 +117,13 @@ pub fn processBlock(
     else
         context.block_regular_used;
     if (p_block.block.header.gas_used != block_gas_used) return Errors.MismatchedGasUsed;
-    if (!std.mem.eql(u8, &p_block.block.header.logs_bloom, &computeLogsBloom(&logs))) return Errors.MismatchedLogsBloom;
+    if (!std.mem.eql(u8, &p_block.block.header.logs_bloom, &computeLogsBloom(&vm.logs))) return Errors.MismatchedLogsBloom;
 
     const withdrawals_root = try computeRoot(types.Withdrawal, gpa, p_block.block.withdrawals);
     if (!std.mem.eql(u8, &withdrawals_root, &p_block.block.header.withdrawals_root)) return Errors.MismatchedWithdrawalsRoot;
     try applyWithdrawals(&p_block.block, state);
 
-    const requests_hash = try computeRequestsHash(&vm, spec, state, &logs);
+    const requests_hash = try computeRequestsHash(&vm, spec, state, &vm.logs);
     if (!std.mem.eql(u8, &requests_hash, &p_block.block.header.requests_hash)) return Errors.MismatchedRequestsHash;
 
     if (evm_spec.isEnabled(.Amsterdam))
@@ -145,9 +142,6 @@ fn computeRequestsHash(
 ) Errors![32]u8 {
     var outer = Sha256.init(.{});
     try hashDepositRequests(logs, &outer);
-
-    var dummy_logs: std.DoublyLinkedList = .{};
-    vm.logs = &dummy_logs;
 
     vm.reset();
     try hashSystemCall(vm, spec, WITHDRAWAL_REQUEST_PREDEPLOY_ADDRESS, 0x01, state, &outer);

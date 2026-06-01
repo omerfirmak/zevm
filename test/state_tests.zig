@@ -153,9 +153,6 @@ fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []con
     for (post_entries) |post_entry| {
         var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
         defer arena.deinit();
-        var logs_allocator = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-        defer logs_allocator.deinit();
-        var logs: std.DoublyLinkedList = .{};
 
         var committed = try utils.buildCommittedState(gpa, test_case.pre);
         defer committed.deinit();
@@ -192,7 +189,7 @@ fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []con
             state = try state_mod.State.init(arena_allocator, &committed, switch (fork_enum) {
                 inline else => |f| (comptime spec.specByFork(f)).stateCapacities(gas_limit),
             });
-            vm = try evm.EVM.init(arena_allocator, logs_allocator.allocator(), &logs, &context, switch (fork_enum) {
+            vm = try evm.EVM.init(arena_allocator, &context, switch (fork_enum) {
                 inline else => |f| (comptime spec.specByFork(f)).evmCapacities(),
             });
 
@@ -211,7 +208,7 @@ fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []con
         }
 
         if (post_entry.logs.value.len == 32 and !std.mem.allEqual(u8, post_entry.logs.value, 0)) {
-            const actual_logs_hash = try evm.computeLogsHash(gpa, &logs);
+            const actual_logs_hash = try evm.computeLogsHash(gpa, &vm.logs);
             if (!std.mem.eql(u8, &actual_logs_hash, post_entry.logs.value)) {
                 return error.LogsHashMismatch;
             }

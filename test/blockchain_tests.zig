@@ -185,7 +185,6 @@ fn runBlockchainTest(gpa: std.mem.Allocator, test_case: *const BlockchainTest, c
 
             const proc_err: ?anyerror = if (zevm.processor.processBlock(
                 arena.allocator(),
-                gpa,
                 chainspec,
                 &p,
                 &parent.header,
