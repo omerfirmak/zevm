@@ -2,7 +2,7 @@ const std = @import("std");
 const evm = @import("zevm");
 
 pub const Errors = error{
-    NotFound,
+    InvalidWitness,
 };
 
 pub const CommittedState = struct {
@@ -57,17 +57,17 @@ pub const CommittedState = struct {
         };
     }
 
-    pub fn account(self: *const @This(), addr: u160) !evm.types.Account {
-        return self.state_trie.get(keccakOfU160(addr));
+    pub fn account(self: *const @This(), addr: u160) Errors!evm.types.Account {
+        return self.state_trie.get(keccakOfU160(addr)) catch return Errors.InvalidWitness;
     }
 
-    pub fn storage(self: *const @This(), lookup: evm.types.StorageLookup) !u256 {
-        const account_trie = self.account_tries.get(lookup.address) orelse return Errors.NotFound;
-        return account_trie.get(keccakOfU256(lookup.slot));
+    pub fn storage(self: *const @This(), lookup: evm.types.StorageLookup) Errors!u256 {
+        const account_trie = self.account_tries.get(lookup.address) orelse return Errors.InvalidWitness;
+        return account_trie.get(keccakOfU256(lookup.slot)) catch Errors.InvalidWitness;
     }
 
-    pub fn code(_: *const @This(), _: [32]u8) ![]const u8 {
-        return Errors.NotFound;
+    pub fn code(self: *const @This(), hash: [32]u8) Errors![]const u8 {
+        return self.codes.get(hash) orelse return Errors.InvalidWitness;
     }
 };
 
