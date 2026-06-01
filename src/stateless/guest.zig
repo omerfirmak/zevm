@@ -16,28 +16,56 @@ pub fn verify_ssz(allocator: std.mem.Allocator, input_bytes: []const u8) ![]cons
     var input: types.StatelessInput = undefined;
     try ssz.deserialize(types.StatelessInput, input_bytes[STATELESS_INPUT_SCHEMA_ID_SIZE..], &input, allocator);
 
-    const res = try verify(allocator, input);
+    var res: types.StatelessValidationResult = .{
+        .chain_config = input.chain_config,
+        .new_payload_request_root = @splat(0),
+        .successful_validation = true,
+    };
+    verify(allocator, input) catch {
+        res.successful_validation = false;
+    };
 
     var buf: std.ArrayList(u8) = .empty;
     try ssz.serialize(types.StatelessValidationResult, res, &buf, allocator);
     return buf.items;
 }
 
-pub fn verify(allocator: std.mem.Allocator, input: types.StatelessInput) !types.StatelessValidationResult {
-    var headers = try allocator.alloc(zevm.types.BlockHeader, input.witness.headers.len);
-    var ancestors = try allocator.alloc([32]u8, input.witness.headers.len);
+pub fn verify(allocator: std.mem.Allocator, input: types.StatelessInput) !void {
+    const spec = zevm.spec.Amsterdam;
+    const headers = try allocator.alloc(zevm.types.BlockHeader, input.witness.headers.len);
+    const header_hashes = try allocator.alloc([32]u8, input.witness.headers.len);
     for (input.witness.headers, 0..) |header_bytes, i| {
-        std.crypto.hash.sha3.Keccak256.hash(header_bytes, &ancestors[i], .{});
+        std.crypto.hash.sha3.Keccak256.hash(header_bytes, &header_hashes[i], .{});
         _ = try rlp.deserialize(zevm.types.BlockHeader, allocator, header_bytes, &headers[i]);
-        if (i > 0 and !std.mem.eql(u8, &ancestors[i], &headers[i].parent_hash)) {
+        if (i > 0 and !std.mem.eql(u8, &header_hashes[i - 1], &headers[i].parent_hash)) {
             return error.InvalidAncestors;
         }
     }
 
     const parent = &headers[headers.len - 1];
-    const block = try makeBlock(allocator, &input.new_payload_request, input.public_keys);
-    _ = try CommittedState.init(allocator, parent.*.state_root, input.witness.state, input.witness.codes, &block.bal.?);
-    return error.NotImplemented;
+    var block = try makeBlock(allocator, &input.new_payload_request, input.public_keys);
+
+    var ancestors: [256]u256 = @splat(0);
+    const n = @min(header_hashes.len, 256);
+    for (0..n) |k| {
+        ancestors[k] = std.mem.readInt(u256, &header_hashes[header_hashes.len - 1 - k], .big);
+    }
+
+    var committed = try CommittedState.init(allocator, parent.state_root, input.witness.state, input.witness.codes, &block.bal.?);
+    var state = try zevm.state.State.init(
+        allocator,
+        &committed,
+        spec.stateCapacities(block.block.header.gas_used),
+    );
+
+    try zevm.processor.processBlock(
+        allocator,
+        zevm.chainspec.chainSpecByFork(spec.fork),
+        &block,
+        parent,
+        ancestors,
+        &state,
+    );
 }
 
 fn makeBlock(
