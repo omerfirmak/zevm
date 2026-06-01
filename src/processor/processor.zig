@@ -208,7 +208,7 @@ fn hashSystemCall(
     }
 }
 
-fn computeRoot(comptime T: type, gpa: std.mem.Allocator, items: []const T) ![32]u8 {
+pub fn computeRoot(comptime T: type, gpa: std.mem.Allocator, items: []const T) ![32]u8 {
     const n = items.len;
     if (n == 0) return empty_root_hash;
     var arena = std.heap.ArenaAllocator.init(gpa);
