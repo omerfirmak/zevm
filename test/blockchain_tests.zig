@@ -42,6 +42,11 @@ const AccountAccessList = struct {
 // Some fixture formats nest blockAccessList under rlp_decoded.
 const RlpDecoded = struct {
     blockAccessList: ?[]AccountAccessList = null,
+    transactions: ?[]Transaction = null,
+};
+
+const Transaction = struct {
+    sender: utils.HexInt(u160),
 };
 
 // One entry in the "blocks" array. Valid blocks have no expectException; invalid
@@ -49,6 +54,7 @@ const RlpDecoded = struct {
 const BlockEntry = struct {
     rlp: utils.HexBytes,
     expectException: ?[]const u8 = null,
+    transactions: ?[]Transaction = null,
     // Older fixture format: direct field.
     blockAccessList: ?[]AccountAccessList = null,
     // Newer fixture format: nested under rlp_decoded.
@@ -118,10 +124,15 @@ fn prepareBlock(
         break :blk result;
     };
 
+    const txns = if (block_entry.transactions) |ts| ts else block_entry.rlp_decoded.?.transactions.?;
+    var senders = try arena.alloc(u160, txns.len);
+    for (txns, 0..) |tx, i| senders[i] = tx.sender.value;
+
     return .{
         .block = block,
         .rlp_size = block_entry.rlp.value.len,
         .bal = bal,
+        .senders = senders,
     };
 }
 

@@ -58,6 +58,7 @@ pub const PreprocessedBlock = struct {
     block: types.Block,
     rlp_size: usize,
     bal: ?types.BlockAccessLists, // assumed to be pre-validated against the header
+    senders: []u160,
 };
 
 pub fn processBlock(
@@ -71,14 +72,6 @@ pub fn processBlock(
 ) !void {
     try validateBlock(spec, p_block, parent);
 
-    var senders = try gpa.alloc(u160, p_block.block.transactions.len);
-    var hashes = try gpa.alloc([32]u8, p_block.block.transactions.len);
-    for (p_block.block.transactions, 0..) |bt, index| {
-        hashes[index] = try bt.signingHash(gpa, spec.chain_id);
-        switch (bt) {
-            inline else => |t| senders[index] = try ecrecover(hashes[index], bt.recoveryId(), t.r, t.s),
-        }
-    }
     const evm_spec = comptime EvmSpec.specByFork(spec.fork);
 
     var prepared_bal: bal.Prepared = undefined;
@@ -100,7 +93,7 @@ pub fn processBlock(
     state.clearTxState();
 
     for (p_block.block.transactions, 0..) |*tx, index| {
-        const msg = try messageFromTx(gpa, tx, senders[index]);
+        const msg = try messageFromTx(gpa, tx, p_block.senders[index]);
         if (!evm_spec.isEnabled(.Amsterdam)) {
             if (msg.gas_limit > p_block.block.header.gas_limit - context.block_regular_used) return Errors.InsufficientGas;
         }
