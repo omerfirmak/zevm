@@ -131,6 +131,7 @@ pub const Spec = struct {
         warm_slots: u32,
         created: u32,
         return_buf: usize,
+        logs_buf: usize,
     };
 
     /// Derive tight State pre-allocation sizes from a transaction gas limit.
@@ -191,7 +192,14 @@ pub const Spec = struct {
         const quadratic_discriminant: u64 = 2_359_296 + 2048 * gas_limit;
         const mem_words: u64 = comptime (std.math.sqrt(quadratic_discriminant) -| 1536) / 2;
         const ret: usize = @intCast(mem_words * 32);
-        return .{ .pre_state = ps, .warm_accounts = wa, .warm_slots = ws, .created = ca, .return_buf = ret };
+        return .{
+            .pre_state = ps,
+            .warm_accounts = wa,
+            .warm_slots = ws,
+            .created = ca,
+            .return_buf = ret,
+            .logs_buf = 16 * 1024 * 1024,
+        };
     }
 
     pub inline fn constantGas(comptime self: Self, comptime op: Opcode) u32 {

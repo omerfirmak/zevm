@@ -149,7 +149,7 @@ fn runBenchmark(io: std.Io, allocator: std.mem.Allocator, bench_def: BenchmarkDe
         _ = vm_arena.reset(.retain_capacity);
         var logs: std.DoublyLinkedList = .{};
 
-        var vm = try evm.EVM.init(vm_arena.allocator(), vm_arena.allocator(), &logs, &context, bench_fork.fork.evmCapacities());
+        var vm = try evm.EVM.init(vm_arena.allocator(), &logs, &context, bench_fork.fork.evmCapacities());
         start = .zero;
         gas_used, state_gas_used = vm.process(bench_fork, &msg, &state) catch |err| {
             std.debug.print("error at iter {d}: {}\n", .{ i, err });

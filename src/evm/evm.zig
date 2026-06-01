@@ -224,8 +224,8 @@ pub const EVM = struct {
     context: *Context,
 
     // LOG handling
-    logs_allocator: std.mem.Allocator,
-    logs: *std.DoublyLinkedList,
+    logs_fba: std.heap.FixedBufferAllocator,
+    logs: std.DoublyLinkedList,
     num_logs: usize,
 
     // global return data buffer shared across all call frames; size tracks valid bytes
@@ -249,8 +249,6 @@ pub const EVM = struct {
 
     pub fn init(
         gpa: std.mem.Allocator,
-        logs_allocator: std.mem.Allocator,
-        logs: *std.DoublyLinkedList,
         context: *Context,
         caps: Spec.EvmCapacities,
     ) !Self {
@@ -258,6 +256,7 @@ pub const EVM = struct {
         const allocator = rounded_allocator.allocator();
         var pre_state: storage.SlotKeyedMap(u256) = .empty;
         try pre_state.ensureTotalCapacity(allocator, caps.pre_state);
+        const logs_buffer = try allocator.alloc(u8, caps.logs_buf);
         return Self{
             .rounded_allocator = rounded_allocator,
             .msg = undefined,
@@ -270,8 +269,8 @@ pub const EVM = struct {
             .gas_refund = 0,
             .effective_gas_price = undefined,
             .created_accounts = try storage.CreatedAccounts.init(allocator, caps.created, caps.created * 2, {}),
-            .logs_allocator = logs_allocator,
-            .logs = logs,
+            .logs_fba = std.heap.FixedBufferAllocator.init(logs_buffer),
+            .logs = .{},
             .num_logs = 0,
             .state_gas_reservoir = 0,
             .state_gas_refund = 0,
@@ -809,23 +808,25 @@ pub const EVM = struct {
     pub const LogNode = struct { log: Log, node: std.DoublyLinkedList.Node };
 
     pub fn pushLog(self: *Self, address: u160, topics: []const u256, data: []const u8) void {
-        const ln = self.logs_allocator.create(LogNode) catch unreachable;
+        const allocator = self.logs_fba.allocator();
+        const ln = allocator.create(LogNode) catch unreachable;
         ln.* = LogNode{ .log = .{
             .address = address,
-            .topics = self.logs_allocator.dupe(u256, topics) catch unreachable,
-            .data = self.logs_allocator.dupe(u8, data) catch unreachable,
+            .topics = allocator.dupe(u256, topics) catch unreachable,
+            .data = allocator.dupe(u8, data) catch unreachable,
         }, .node = .{} };
         self.logs.append(&ln.node);
         self.num_logs += 1;
     }
 
     pub fn popLog(self: *Self) void {
+        const allocator = self.logs_fba.allocator();
         if (self.logs.pop()) |node| {
             const ln: *LogNode = @alignCast(@fieldParentPtr("node", node));
             // make sure to free in the reverse of the order they were allocated
-            self.logs_allocator.free(ln.log.data);
-            self.logs_allocator.free(ln.log.topics);
-            self.logs_allocator.destroy(ln);
+            allocator.free(ln.log.data);
+            allocator.free(ln.log.topics);
+            allocator.destroy(ln);
             self.num_logs -= 1;
         }
     }

@@ -51,8 +51,7 @@ pub fn main() !void {
     defer vm_arena.deinit();
     const vm_alloc = vm_arena.allocator();
 
-    var logs: std.DoublyLinkedList = .{};
-    var vm = try zevm.evm.EVM.init(vm_alloc, vm_alloc, &logs, &context, fork.evmCapacities());
+    var vm = try zevm.evm.EVM.init(vm_alloc, &context, fork.evmCapacities());
 
     // process() returns an error only for invalid transactions (bad nonce, insufficient
     // funds, etc.). Reverts are NOT errors — check return data for revert payloads.
@@ -72,7 +71,7 @@ pub fn main() !void {
 
     // Print emitted logs.
     std.debug.print("{d} log(s) emitted:\n", .{vm.num_logs});
-    var node = logs.first;
+    var node = vm.logs.first;
     var i: usize = 0;
     while (node) |n| : (node = n.next) {
         const ln: *zevm.evm.EVM.LogNode = @alignCast(@fieldParentPtr("node", n));
