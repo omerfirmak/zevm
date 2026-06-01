@@ -101,19 +101,27 @@ fn makeBlock(
         .slot_number = payload.slot_number,
     };
 
-    const block: zevm.types.Block = .{
-        .header = header,
-        .transactions = txs,
-        .uncles = &.{},
-        .withdrawals = withdrawals,
-    };
-
     var encoded = std.array_list.Managed(u8).init(allocator);
     defer encoded.deinit();
-    try rlp.serialize(zevm.types.Block, allocator, block, &encoded);
+    try rlp.serialize(struct {
+        header: zevm.types.BlockHeader,
+        transactions: []rlp.RawValue,
+        uncles: []zevm.types.BlockHeader,
+        withdrawals: []zevm.types.Withdrawal,
+    }, allocator, .{
+        .header = header,
+        .transactions = raw_txs,
+        .uncles = &.{},
+        .withdrawals = withdrawals,
+    }, &encoded);
 
     return zevm.processor.PreprocessedBlock{
-        .block = block,
+        .block = .{
+            .header = header,
+            .transactions = txs,
+            .uncles = &.{},
+            .withdrawals = withdrawals,
+        },
         .rlp_size = encoded.items.len,
         .bal = bal,
         .senders = senders,
