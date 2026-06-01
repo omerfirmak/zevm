@@ -217,17 +217,20 @@ fn hashSystemCall(
 fn computeRoot(comptime T: type, gpa: std.mem.Allocator, items: []const T) ![32]u8 {
     const n = items.len;
     if (n == 0) return empty_root_hash;
-    var trie = try Trie.init(gpa);
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var trie = try Trie.init(allocator);
 
     // Insert in nibble-sorted key order
     const ranges = [3][2]usize{ .{ 1, @min(0x80, n) }, .{ 0, @min(1, n) }, .{ 0x80, n } };
     for (ranges) |range| {
         var i = range[0];
         while (i < range[1]) : (i += 1) {
-            var key_list = std.array_list.Managed(u8).init(gpa);
-            try rlp.serialize(usize, gpa, i, &key_list);
-            var val_list = std.array_list.Managed(u8).init(gpa);
-            try rlp.serialize(T, gpa, items[i], &val_list);
+            var key_list = std.array_list.Managed(u8).init(allocator);
+            try rlp.serialize(usize, allocator, i, &key_list);
+            var val_list = std.array_list.Managed(u8).init(allocator);
+            try rlp.serialize(T, allocator, items[i], &val_list);
             try trie.put(key_list.items, val_list.items);
         }
     }
