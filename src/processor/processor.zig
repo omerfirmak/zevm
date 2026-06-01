@@ -64,7 +64,7 @@ pub const PreprocessedBlock = struct {
 pub fn processBlock(
     gpa: std.mem.Allocator,
     comptime spec: ChainSpec,
-    p_block: *const PreprocessedBlock,
+    p_block: *PreprocessedBlock,
     parent: *const types.BlockHeader,
     ancestors: [256]u256,
     state: *State,
@@ -120,11 +120,18 @@ pub fn processBlock(
     if (!std.mem.eql(u8, &p_block.block.header.logs_bloom, &computeLogsBloom(&vm.logs))) return Errors.MismatchedLogsBloom;
 
     const withdrawals_root = try computeRoot(types.Withdrawal, gpa, p_block.block.withdrawals);
-    if (!std.mem.eql(u8, &withdrawals_root, &p_block.block.header.withdrawals_root)) return Errors.MismatchedWithdrawalsRoot;
+    if (std.mem.eql(u8, &p_block.block.header.withdrawals_root, &std.mem.zeroes([32]u8))) {
+        p_block.block.header.withdrawals_root = withdrawals_root;
+    } else if (!std.mem.eql(u8, &withdrawals_root, &p_block.block.header.withdrawals_root)) {
+        return Errors.MismatchedWithdrawalsRoot;
+    }
     try applyWithdrawals(&p_block.block, state);
 
     const requests_hash = try computeRequestsHash(&vm, spec, state, &vm.logs);
-    if (!std.mem.eql(u8, &requests_hash, &p_block.block.header.requests_hash)) return Errors.MismatchedRequestsHash;
+    if (std.mem.eql(u8, &p_block.block.header.requests_hash, &std.mem.zeroes([32]u8))) {
+        p_block.block.header.requests_hash = requests_hash;
+    } else if (!std.mem.eql(u8, &requests_hash, &p_block.block.header.requests_hash))
+        return Errors.MismatchedRequestsHash;
 
     if (evm_spec.isEnabled(.Amsterdam))
         prepared_bal.validateWrites(@as(u32, @intCast(p_block.block.transactions.len)) + 1, state, &vm.pre_state);
