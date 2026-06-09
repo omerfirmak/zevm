@@ -60,6 +60,10 @@ pub fn verify(allocator: std.mem.Allocator, input: types.StatelessInput) !void {
         stateCapacities(spec, block.bal.?, block.block.header.gas_used),
     );
 
+    // processBlock doesn't touch the code of these contracts, assert they exist in the witness here
+    try assertAccountCodeIsInWitness(&committed, zevm.processor.HISTORY_CONTRACT);
+    try assertAccountCodeIsInWitness(&committed, zevm.processor.BEACON_ROOTS_ADDRESS);
+
     try zevm.processor.processBlock(
         allocator,
         zevm.chainspec.chainSpecByFork(spec.fork),
@@ -68,6 +72,11 @@ pub fn verify(allocator: std.mem.Allocator, input: types.StatelessInput) !void {
         ancestors,
         &state,
     );
+}
+
+fn assertAccountCodeIsInWitness(committed: *const CommittedState, addr: u160) !void {
+    const acc = try committed.account(addr);
+    _ = try committed.code(acc.code_hash);
 }
 
 fn makeBlock(
