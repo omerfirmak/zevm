@@ -249,7 +249,7 @@ pub fn computeStateRoot(
         var storage_trie = try zevm.StorageTrie.init(gpa);
         if (slot_list.items.len > 0) {
             const storage_keys = try gpa.alloc([32]u8, slot_list.items.len);
-            const storage_vals = try gpa.alloc(u256, slot_list.items.len);
+            const storage_vals = try gpa.alloc(?u256, slot_list.items.len);
             for (slot_list.items, storage_keys, storage_vals) |se, *k, *v| {
                 k.* = se.key;
                 v.* = se.value;
@@ -262,7 +262,7 @@ pub fn computeStateRoot(
     // Second pass: batch-insert all accounts into the account trie.
     const acct_keys = try gpa.alloc([32]u8, acct_list.items.len);
     defer gpa.free(acct_keys);
-    const accounts = try gpa.alloc(types.Account, acct_list.items.len);
+    const accounts = try gpa.alloc(?types.Account, acct_list.items.len);
     defer gpa.free(accounts);
     for (acct_list.items, acct_keys, accounts) |ae, *k, *a| {
         k.* = ae.key;

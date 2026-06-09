@@ -3,7 +3,8 @@ const ssz = @import("ssz");
 const rlp = @import("rlp");
 const zevm = @import("zevm");
 const types = @import("types.zig");
-const CommittedState = @import("committed_state").CommittedState;
+const committed_state = @import("committed_state");
+const CommittedState = committed_state.CommittedState;
 const Spec = zevm.spec.Spec;
 
 const STATELESS_INPUT_SCHEMA_ID: u16 = 0x0001;
@@ -72,6 +73,17 @@ pub fn verify(allocator: std.mem.Allocator, input: types.StatelessInput) !void {
         ancestors,
         &state,
     );
+
+    const computed_state_root = try calculateStateRoot(
+        allocator,
+        &committed.state_trie,
+        &committed.account_tries,
+        &state,
+        &block.bal.?,
+    );
+    if (!std.mem.eql(u8, &computed_state_root, &block.block.header.state_root)) {
+        return error.MismatchedStateRoot;
+    }
 }
 
 fn assertAccountCodeIsInWitness(committed: *const CommittedState, addr: u160) !void {
@@ -178,4 +190,70 @@ fn stateCapacities(comptime spec: Spec, bal: zevm.types.BlockAccessLists, gas_li
     caps.contract_dirties = @intCast(slots_num + 128);
     caps.account_dirties = @intCast(bal.len + 16);
     return caps;
+}
+
+fn sortPairsByKey(comptime V: type, keys: [][32]u8, values: []V) void {
+    const Ctx = struct {
+        keys: [][32]u8,
+        values: []V,
+        pub fn lessThan(self: @This(), a: usize, b: usize) bool {
+            return std.mem.order(u8, &self.keys[a], &self.keys[b]) == .lt;
+        }
+        pub fn swap(self: @This(), a: usize, b: usize) void {
+            std.mem.swap([32]u8, &self.keys[a], &self.keys[b]);
+            std.mem.swap(V, &self.values[a], &self.values[b]);
+        }
+    };
+    std.sort.pdqContext(0, keys.len, Ctx{ .keys = keys, .values = values });
+}
+
+fn calculateStateRoot(
+    allocator: std.mem.Allocator,
+    state_trie: *zevm.AccountTrie,
+    account_tries: *std.AutoHashMapUnmanaged(u160, zevm.StorageTrie),
+    state: *zevm.state.State,
+    bal: *const zevm.types.BlockAccessLists,
+) ![32]u8 {
+    const state_keys = try allocator.alloc([32]u8, bal.len);
+    defer allocator.free(state_keys);
+    const state_accounts = try allocator.alloc(?zevm.types.Account, bal.len);
+    defer allocator.free(state_accounts);
+
+    var n_dirty: usize = 0;
+    for (bal.*) |*acc_change_entry| {
+        const dirty_storage = acc_change_entry.storage_changes.len != 0;
+        const dirty = dirty_storage or
+            acc_change_entry.balance_changes.len != 0 or
+            acc_change_entry.nonce_changes.len != 0 or
+            acc_change_entry.code_changes.len != 0;
+        if (!dirty) continue;
+
+        var post_acc = try state.accounts.read(acc_change_entry.addr);
+
+        if (dirty_storage) {
+            const storage_trie = account_tries.getPtr(acc_change_entry.addr) orelse return error.MissingStorageTrie;
+            const keys = try allocator.alloc([32]u8, acc_change_entry.storage_changes.len);
+            defer allocator.free(keys);
+            const values = try allocator.alloc(?u256, acc_change_entry.storage_changes.len);
+            defer allocator.free(values);
+            for (acc_change_entry.storage_changes, keys, values) |slot_change, *k, *v| {
+                k.* = committed_state.keccakOfU256(slot_change.key);
+                const post_value = try state.contract_state.read(.{ .address = acc_change_entry.addr, .slot = slot_change.key });
+                v.* = if (post_value == 0) null else post_value;
+            }
+            sortPairsByKey(?u256, keys, values);
+            try storage_trie.insert(keys, values);
+            post_acc.storage_hash = try storage_trie.rootHash();
+        }
+
+        state_keys[n_dirty] = committed_state.keccakOfU160(acc_change_entry.addr);
+        state_accounts[n_dirty] = if (post_acc.isEmptyAccount()) null else post_acc;
+        n_dirty += 1;
+    }
+
+    if (n_dirty > 0) {
+        sortPairsByKey(?zevm.types.Account, state_keys[0..n_dirty], state_accounts[0..n_dirty]);
+        try state_trie.insert(state_keys[0..n_dirty], state_accounts[0..n_dirty]);
+    }
+    return state_trie.rootHash();
 }
