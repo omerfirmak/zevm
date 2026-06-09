@@ -545,6 +545,7 @@ pub fn Ops(comptime cfg: Config) type {
                 args[0] = 0;
             } else {
                 args[0] = frame.evm.context.ancestors[current - @as(u64, @truncate(requested)) - 1];
+                if (args[0] == 0) return evm.Errors.MissingAncestorHash;
             }
             return next(next_ip, gas, fork.constantGas(.BLOCKHASH), new_stack_head, frame);
         }
