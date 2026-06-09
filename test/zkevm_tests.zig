@@ -18,11 +18,11 @@ const ZkTest = struct {
 const ZkTestFile = std.json.ArrayHashMap(ZkTest);
 
 fn runZkTest(allocator: std.mem.Allocator, test_case: *const ZkTest) !void {
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
-
     const successful_validation_offset = 32;
     for (test_case.blocks) |block| {
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+
         const input = block.statelessInputBytes orelse continue;
         const output = block.statelessOutputBytes orelse continue;
         const got = try guest.verify_ssz(arena.allocator(), input.value);
