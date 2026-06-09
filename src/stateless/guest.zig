@@ -43,6 +43,7 @@ pub fn verify(allocator: std.mem.Allocator, input: types.StatelessInput) !void {
         }
     }
 
+    if (headers.len == 0) return error.MissingParentHeader;
     const parent = &headers[headers.len - 1];
     var block = try makeBlock(allocator, &input.new_payload_request, input.public_keys);
 
