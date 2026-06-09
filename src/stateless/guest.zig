@@ -4,6 +4,7 @@ const rlp = @import("rlp");
 const zevm = @import("zevm");
 const types = @import("types.zig");
 const CommittedState = @import("committed_state").CommittedState;
+const Spec = zevm.spec.Spec;
 
 const STATELESS_INPUT_SCHEMA_ID: u16 = 0x0001;
 const STATELESS_INPUT_SCHEMA_ID_SIZE: usize = 2;
@@ -55,7 +56,7 @@ pub fn verify(allocator: std.mem.Allocator, input: types.StatelessInput) !void {
     var state = try zevm.state.State.init(
         allocator,
         &committed,
-        spec.stateCapacities(block.block.header.gas_used),
+        stateCapacities(spec, block.bal.?, block.block.header.gas_used),
     );
 
     try zevm.processor.processBlock(
@@ -154,4 +155,17 @@ fn makeBlock(
         .bal = bal,
         .senders = senders,
     };
+}
+
+fn stateCapacities(comptime spec: Spec, bal: zevm.types.BlockAccessLists, gas_limit: u64) Spec.StateCapacities {
+    var caps = spec.stateCapacities(gas_limit);
+
+    var slots_num: usize = 0;
+    for (bal) |acc| {
+        slots_num += acc.storage_reads.len + acc.storage_changes.len;
+    }
+
+    caps.contract_dirties = @intCast(slots_num + 128);
+    caps.account_dirties = @intCast(bal.len + 16);
+    return caps;
 }
