@@ -3,9 +3,11 @@ const guest = @import("guest");
 const utils = @import("utils.zig");
 
 // Only the two fields we care about per block — everything else is ignored at parse time.
+// Fields are optional: "expected invalid" sibling blocks in multi-test fixtures lack these
+// (they only carry `rlp` + `blockHeader`), so we skip those blocks rather than failing to parse.
 const BlockEntry = struct {
-    statelessInputBytes: utils.HexBytes,
-    statelessOutputBytes: utils.HexBytes,
+    statelessInputBytes: ?utils.HexBytes = null,
+    statelessOutputBytes: ?utils.HexBytes = null,
 };
 
 const ZkTest = struct {
@@ -21,8 +23,10 @@ fn runZkTest(allocator: std.mem.Allocator, test_case: *const ZkTest) !void {
 
     const successful_validation_offset = 32;
     for (test_case.blocks) |block| {
-        const got = try guest.verify_ssz(arena.allocator(), block.statelessInputBytes.value);
-        const expected = block.statelessOutputBytes.value;
+        const input = block.statelessInputBytes orelse continue;
+        const output = block.statelessOutputBytes orelse continue;
+        const got = try guest.verify_ssz(arena.allocator(), input.value);
+        const expected = output.value;
         if (got[successful_validation_offset] != expected[successful_validation_offset]) {
             return error.OutputMismatch;
         }
