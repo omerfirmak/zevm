@@ -44,6 +44,7 @@ pub const Errors = error{
     EmptyAuthorizationList,
     CreateSetCodeTx,
     InvalidPrecompileInput,
+    MissingAncestorHash,
 } || @import("committed_state.zig").Errors;
 
 pub const Context = struct {
