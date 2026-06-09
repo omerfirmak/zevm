@@ -30,12 +30,16 @@ pub const AccountTrie = struct {
         }
     }
 
-    pub fn insert(self: *@This(), keys: []const [32]u8, accounts: []const types.Account) !void {
+    pub fn insert(self: *@This(), keys: []const [32]u8, accounts: []const ?types.Account) !void {
         const val_slices = try self.inner.allocator.alloc([]const u8, accounts.len);
-        for (accounts, val_slices) |account, *s| {
-            var buf = std.array_list.Managed(u8).init(self.inner.allocator);
-            try rlp.serialize(types.Account, self.inner.allocator, account, &buf);
-            s.* = buf.items;
+        for (accounts, val_slices) |account_opt, *s| {
+            if (account_opt) |account| {
+                var buf = std.array_list.Managed(u8).init(self.inner.allocator);
+                try rlp.serialize(types.Account, self.inner.allocator, account, &buf);
+                s.* = buf.items;
+            } else {
+                s.* = &.{};
+            }
         }
         try self.inner.update(keys, val_slices);
     }

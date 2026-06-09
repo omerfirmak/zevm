@@ -281,23 +281,39 @@ pub const Trie = struct {
                 if (diff_idx == ext.key_len) {
                     // Full match — recurse into child.
                     try self.insert(ext.child, key[diff_idx..], path.appendSlice(key[0..diff_idx]), value, key_buf, keys, values);
-                    if (ext.child.* == .empty) node.* = .empty;
+                    // If a deletion collapsed our child into a leaf/ext, merge this ext's key
+                    // into the child's key — adjacent ext+leaf or ext+ext is not a valid MPT shape.
+                    switch (ext.child.*) {
+                        .empty => node.* = .empty,
+                        .leaf => |child_leaf| {
+                            var new_key: [65]u8 = undefined;
+                            @memcpy(new_key[0..ext.key_len], ext.key[0..ext.key_len]);
+                            @memcpy(new_key[ext.key_len..][0..child_leaf.key_len], child_leaf.key[0..child_leaf.key_len]);
+                            node.* = Node.Leaf.init(new_key[0 .. ext.key_len + child_leaf.key_len], child_leaf.val);
+                        },
+                        .ext => |child_ext| {
+                            var new_key: [65]u8 = undefined;
+                            @memcpy(new_key[0..ext.key_len], ext.key[0..ext.key_len]);
+                            @memcpy(new_key[ext.key_len..][0..child_ext.key_len], child_ext.key[0..child_ext.key_len]);
+                            node.* = Node.Extension.init(new_key[0 .. ext.key_len + child_ext.key_len], child_ext.child);
+                        },
+                        .branch, .hashed => {},
+                    }
                 } else if (value.len == 0) {
                     // Key not present — deletion is a no-op.
                     if (keys.*.len > 0) _ = writeHexKey(&keys.*[0], key_buf);
                 } else {
-                    // Keys diverge at diff_idx. Save the original subtree,
-                    // hashing it immediately since no more keys will enter it.
+                    const new_idx = key[diff_idx];
                     var n: *Node = undefined;
                     if (diff_idx < ext.key_len - 1) {
                         // Break before the last byte: wrap in intermediate extension.
                         n = try self.allocator.create(Node);
                         n.* = Node.Extension.init(ext.key[diff_idx + 1 .. ext.key_len], ext.child);
-                        try self.hash(n, path.appendSlice(ext.key[0 .. diff_idx + 1]));
+                        if (orig_idx < new_idx) try self.hash(n, path.appendSlice(ext.key[0 .. diff_idx + 1]));
                     } else {
                         // Break at the last byte: reuse child directly.
                         n = ext.child;
-                        try self.hash(n, path.appendSlice(ext.key[0..ext.key_len]));
+                        if (orig_idx < new_idx) try self.hash(n, path.appendSlice(ext.key[0..ext.key_len]));
                     }
 
                     // Create the branch that represents the divergence point.
@@ -315,7 +331,6 @@ pub const Trie = struct {
                     }
 
                     const o = try self.createLeaf(key[diff_idx + 1 ..], value);
-                    const new_idx = key[diff_idx];
                     p.children[orig_idx] = n;
                     p.children[new_idx] = o;
                     if (keys.*.len > 0) _ = writeHexKey(&keys.*[0], key_buf);
@@ -344,13 +359,12 @@ pub const Trie = struct {
                         p = &child.branch;
                     }
 
-                    // Move original value into a new child leaf and hash it immediately.
                     const orig_idx = leaf.key[diff_idx];
+                    const new_idx = key[diff_idx];
                     p.children[orig_idx] = try self.createLeaf(leaf.key[diff_idx + 1 .. leaf.key_len], leaf.val);
-                    try self.hash(p.children[orig_idx].?, path.appendSlice(leaf.key[0 .. diff_idx + 1]));
+                    if (orig_idx < new_idx) try self.hash(p.children[orig_idx].?, path.appendSlice(leaf.key[0 .. diff_idx + 1]));
 
                     // Insert the new value.
-                    const new_idx = key[diff_idx];
                     p.children[new_idx] = try self.createLeaf(key[diff_idx + 1 ..], value);
                 }
                 if (keys.*.len > 0) _ = writeHexKey(&keys.*[0], key_buf);
@@ -424,11 +438,11 @@ pub const Trie = struct {
                 @memcpy(new_key[1..][0..ext.key_len], ext.key[0..ext.key_len]);
                 node.* = Node.Extension.init(new_key[0 .. ext.key_len + 1], ext.child);
             },
-            .branch => {
+            .branch, .hashed => {
                 const new_key: [1]u8 = .{remaining_nibble};
                 node.* = Node.Extension.init(&new_key, remaining_child);
             },
-            .hashed, .empty => unreachable,
+            .empty => unreachable,
         }
     }
 

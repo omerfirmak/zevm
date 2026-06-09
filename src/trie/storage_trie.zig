@@ -24,12 +24,16 @@ pub const StorageTrie = struct {
         }
     }
 
-    pub fn insert(self: *@This(), keys: []const [32]u8, values: []const u256) !void {
+    pub fn insert(self: *@This(), keys: []const [32]u8, values: []const ?u256) !void {
         const val_slices = try self.inner.allocator.alloc([]const u8, values.len);
-        for (values, val_slices) |value, *s| {
-            var buf = std.array_list.Managed(u8).init(self.inner.allocator);
-            try rlp.serialize(u256, self.inner.allocator, value, &buf);
-            s.* = buf.items;
+        for (values, val_slices) |value_opt, *s| {
+            if (value_opt) |value| {
+                var buf = std.array_list.Managed(u8).init(self.inner.allocator);
+                try rlp.serialize(u256, self.inner.allocator, value, &buf);
+                s.* = buf.items;
+            } else {
+                s.* = &.{};
+            }
         }
         try self.inner.update(keys, val_slices);
     }
