@@ -8,12 +8,12 @@ fn atIndex(slice: anytype, index: u32) bool {
 }
 
 const AccountEntry = struct {
-    changes: *types.AccountChanges,
+    changes: types.AccountChanges,
     last_seen_index: u32 = 0,
 };
 
 const SlotEntry = struct {
-    slot_changes: *types.SlotChanges,
+    slot_changes: types.SlotChanges,
     last_seen_index: u32 = 0,
 };
 
@@ -38,13 +38,13 @@ pub const Prepared = struct {
         try self.slot_map.ensureTotalCapacity(gpa, total_slots);
 
         var prev_addr: ?u160 = null;
-        for (bal.*) |*account| {
+        for (bal.*) |account| {
             if (prev_addr) |prev| if (account.addr <= prev) return null;
             prev_addr = account.addr;
             self.map.putAssumeCapacity(account.addr, .{ .changes = account });
 
             var prev_key: ?u256 = null;
-            for (account.storage_changes) |*sc| {
+            for (account.storage_changes) |sc| {
                 if (prev_key) |prev| if (sc.key <= prev) return null;
                 prev_key = sc.key;
                 const lookup: types.StorageLookup = .{ .address = account.addr, .slot = sc.key };
@@ -62,14 +62,14 @@ pub const Prepared = struct {
             const map_entry, const old = dirty;
             const new = map_entry.value_ptr;
 
-            const entry = self.map.getEntry(map_entry.key_ptr.*) orelse {
+            var entry = self.map.getEntry(map_entry.key_ptr.*) orelse {
                 self.valid = false;
                 continue;
             };
             if (entry.value_ptr.last_seen_index > index) continue;
             entry.value_ptr.last_seen_index = index + 1;
 
-            const exp = entry.value_ptr.changes;
+            const exp = &entry.value_ptr.changes;
 
             const expect_nonce = atIndex(exp.nonce_changes, index);
             if (expect_nonce != (old.nonce != new.nonce)) self.valid = false;
@@ -104,7 +104,7 @@ pub const Prepared = struct {
             // syscalls don't populate pre_state, so we need to fallback to journaled old value here
             const pre_tx = pre_state.get(lookup) orelse old_value.*;
 
-            const map_entry = self.slot_map.getEntry(lookup) orelse {
+            var map_entry = self.slot_map.getEntry(lookup) orelse {
                 if (pre_tx != new_value) self.valid = false;
                 continue;
             };
@@ -113,7 +113,7 @@ pub const Prepared = struct {
 
             if (pre_tx == new_value) continue;
 
-            const sc = map_entry.value_ptr.slot_changes;
+            const sc = &map_entry.value_ptr.slot_changes;
             const expect_change = atIndex(sc.changes, index);
             if (!expect_change) self.valid = false;
             if (expect_change) {
