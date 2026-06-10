@@ -1,5 +1,11 @@
 const std = @import("std");
 const evm = @import("zevm");
+const List = @import("ssz").utils.List;
+
+const MAX_BYTES_PER_WITNESS_NODE = 1 << 20;
+const MAX_WITNESS_NODES = 1 << 20;
+const MAX_BYTES_PER_CODE = 1 << 24;
+const MAX_WITNESS_CODES = 1 << 16;
 
 pub const Errors = error{
     InvalidWitness,
@@ -13,27 +19,27 @@ pub const CommittedState = struct {
     pub fn init(
         allocator: std.mem.Allocator,
         parent_state_root: [32]u8,
-        state: [][]const u8,
-        bytecodes: [][]const u8,
+        state: List(List(u8, MAX_BYTES_PER_WITNESS_NODE), MAX_WITNESS_NODES),
+        bytecodes: List(List(u8, MAX_BYTES_PER_CODE), MAX_WITNESS_CODES),
         bal: *const evm.types.BlockAccessLists,
     ) !CommittedState {
         var codes: std.AutoHashMapUnmanaged([32]u8, []const u8) = .empty;
-        try codes.ensureTotalCapacity(allocator, @intCast(bytecodes.len));
+        try codes.ensureTotalCapacity(allocator, @intCast(bytecodes.len()));
 
-        for (bytecodes) |bytecode| {
+        for (bytecodes.constSlice()) |*bytecode| {
             var code_hash: [32]u8 = undefined;
-            std.crypto.hash.sha3.Keccak256.hash(bytecode, &code_hash, .{});
-            codes.putAssumeCapacity(code_hash, bytecode);
+            std.crypto.hash.sha3.Keccak256.hash(bytecode.constSlice(), &code_hash, .{});
+            codes.putAssumeCapacity(code_hash, bytecode.constSlice());
         }
 
         var nodes: std.AutoArrayHashMapUnmanaged([32]u8, []const u8) = .empty;
-        try nodes.ensureTotalCapacity(allocator, @intCast(state.len));
+        try nodes.ensureTotalCapacity(allocator, @intCast(state.len()));
         defer nodes.deinit(allocator);
 
-        for (state) |node| {
+        for (state.constSlice()) |*node| {
             var node_hash: [32]u8 = undefined;
-            std.crypto.hash.sha3.Keccak256.hash(node, &node_hash, .{});
-            nodes.putAssumeCapacity(node_hash, node);
+            std.crypto.hash.sha3.Keccak256.hash(node.constSlice(), &node_hash, .{});
+            nodes.putAssumeCapacity(node_hash, node.constSlice());
         }
 
         const state_trie = evm.AccountTrie.initFromTrie(
