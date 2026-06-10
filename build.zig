@@ -256,6 +256,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    stateless_cs_mod.addImport("ssz", ssz_dep.module("ssz.zig"));
     const stateless_zevm_mod = createZevmModule(b, target, optimize, stateless_cs_mod, deps);
     const guest_mod = b.createModule(.{
         .root_source_file = b.path("src/stateless/guest.zig"),
