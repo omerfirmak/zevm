@@ -33,9 +33,13 @@ fn buildMcl(b: *std.Build, mcl_dep: *std.Build.Dependency, target: std.Build.Res
         .use_llvm = true,
     });
 
+    const is_64 = target.result.ptrBitWidth() == 64;
+    const base_ll = if (is_64) "src/base64.ll" else "src/base32.ll";
+    const bint_ll = if (is_64) "src/bint64.ll" else "src/bint32.ll";
+
     lib.root_module.addCSourceFiles(.{
         .root = mcl_dep.path("."),
-        .files = &.{ "src/fp.cpp", "src/base64.ll", "src/bint64.ll" },
+        .files = &.{ "src/fp.cpp", base_ll, bint_ll },
         .flags = &.{
             "-DMCL_FP_BIT=256",
             "-DMCL_FR_BIT=256",
