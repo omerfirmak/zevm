@@ -1,6 +1,6 @@
 const std = @import("std");
 const secp256k1 = @import("zig-eth-secp256k1");
-const SpinLockOnce = @import("sync.zig").SpinLockOnce;
+const SpinLockOnce = @import("../sync.zig").SpinLockOnce;
 
 var curve_ctx: secp256k1.Secp256k1 = undefined;
 var curve_once: SpinLockOnce(initCtx) = .{};

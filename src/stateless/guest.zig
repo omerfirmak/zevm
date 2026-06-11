@@ -41,7 +41,7 @@ pub fn verify(allocator: std.mem.Allocator, input: types.StatelessInput) !void {
     const headers = try allocator.alloc(zevm.types.BlockHeader, input.witness.headers.len());
     const header_hashes = try allocator.alloc([32]u8, input.witness.headers.len());
     for (input.witness.headers.constSlice(), 0..) |*header_bytes, i| {
-        header_hashes[i] = zevm.hash.keccak256(header_bytes.constSlice());
+        header_hashes[i] = zevm.crypto.hash.keccak256(header_bytes.constSlice());
         _ = try rlp.deserialize(zevm.types.BlockHeader, allocator, header_bytes.constSlice(), &headers[i]);
         if (i > 0 and !std.mem.eql(u8, &header_hashes[i - 1], &headers[i].parent_hash)) {
             return error.InvalidAncestors;
@@ -111,7 +111,7 @@ fn makeBlock(
     }
 
     const senders = try allocator.alloc(u160, payload.transactions.len());
-    for (public_keys, 0..) |pk, i| senders[i] = zevm.curve.addressFromPubkey(pk);
+    for (public_keys, 0..) |pk, i| senders[i] = zevm.crypto.curve.addressFromPubkey(pk);
 
     const withdrawals = try allocator.alloc(zevm.types.Withdrawal, payload.withdrawals.len());
     for (payload.withdrawals.constSlice(), withdrawals) |*src, *dst| {
@@ -127,7 +127,7 @@ fn makeBlock(
 
     var bal: zevm.types.BlockAccessLists = undefined;
     _ = try rlp.deserialize(zevm.types.BlockAccessLists, allocator, request.execution_payload.block_access_list.constSlice(), &bal);
-    const bal_hash = zevm.hash.keccak256(request.execution_payload.block_access_list.constSlice());
+    const bal_hash = zevm.crypto.hash.keccak256(request.execution_payload.block_access_list.constSlice());
     const header = zevm.types.BlockHeader{
         .parent_hash = payload.parent_hash,
         .ommers_hash = zevm.types.empty_ommers_hash,

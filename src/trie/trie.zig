@@ -1,6 +1,6 @@
 const std = @import("std");
 const rlp = @import("rlp");
-const keccak256 = @import("../hash.zig").keccak256;
+const keccak256 = @import("../evm/crypto/hash.zig").keccak256;
 
 pub const empty_root_hash: [32]u8 = .{
     0x56, 0xe8, 0x1f, 0x17, 0x1b, 0xcc, 0x55, 0xa6,

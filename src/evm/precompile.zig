@@ -2,7 +2,7 @@ const std = @import("std");
 const evm = @import("evm.zig");
 const mem = @import("memory.zig");
 const secp256k1 = @import("zig-eth-secp256k1");
-const SpinLockOnce = @import("../sync.zig").SpinLockOnce;
+const SpinLockOnce = @import("sync.zig").SpinLockOnce;
 const bls12 = @import("crypto/blst.zig");
 const kzg = @import("ckzg");
 const mcl = @import("../c.zig").mcl;
@@ -233,7 +233,7 @@ pub fn Handlers(comptime fork: Spec) type {
             const cost = mem.toWordSize(calldata.len) * fork.sha2256_per_word_gas + fork.sha2256_base_gas;
             if (gas < cost) return out_of_gas;
 
-            @memcpy(return_buffer[0..32], &@import("../hash.zig").sha256(calldata));
+            @memcpy(return_buffer[0..32], &@import("crypto/hash.zig").sha256(calldata));
             return .{ .return_size = 32, .remaining_gas = gas - cost };
         }
 
@@ -275,7 +275,7 @@ pub fn Handlers(comptime fork: Spec) type {
             const pubkey = secp256k1_ctx.recoverPubkey(padded[0..32].*, sig) catch return bail;
 
             // Keccak256 of uncompressed pubkey (skip 0x04 prefix), take last 20 bytes as address
-            const pubkey_hash = @import("../hash.zig").keccak256(pubkey[1..65]);
+            const pubkey_hash = @import("crypto/hash.zig").keccak256(pubkey[1..65]);
             @memset(return_buffer[0..12], 0);
             @memcpy(return_buffer[12..32], pubkey_hash[12..32]);
 
@@ -665,7 +665,7 @@ pub fn Handlers(comptime fork: Spec) type {
 
             if (versioned_hash[0] != 1) return invalid_input;
 
-            var commitment_hash = @import("../hash.zig").sha256(commitment);
+            var commitment_hash = @import("crypto/hash.zig").sha256(commitment);
             commitment_hash[0] = 1;
 
             if (!std.mem.eql(u8, versioned_hash, &commitment_hash)) return invalid_input;

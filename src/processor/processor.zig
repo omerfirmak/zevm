@@ -8,14 +8,14 @@ const EvmSpec = @import("../evm/spec.zig");
 const State = @import("../evm/state.zig").State;
 const ChainSpec = @import("chainspec.zig").ChainSpec;
 const secp256k1 = @import("zig-eth-secp256k1");
-const keccak256 = @import("../hash.zig").keccak256;
-const sha256 = @import("../hash.zig").sha256;
-const Sha256Hasher = @import("../hash.zig").Sha256Hasher;
+const keccak256 = @import("../evm/crypto/hash.zig").keccak256;
+const sha256 = @import("../evm/crypto/hash.zig").sha256;
+const Sha256Hasher = @import("../evm/crypto/hash.zig").Sha256Hasher;
 const blobBaseFee = @import("../blob_fee.zig").blobBaseFee;
-const ecrecover = @import("../curve.zig").ecrecover;
+const ecrecover = @import("../evm/crypto/curve.zig").ecrecover;
 const Trie = @import("../trie/trie.zig").Trie;
 const empty_root_hash = @import("../trie/trie.zig").empty_root_hash;
-const bal = @import("./bal.zig");
+const bal = @import("bal.zig");
 
 pub const Errors = error{
     GasLimitTooHigh,

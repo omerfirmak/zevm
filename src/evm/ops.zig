@@ -526,7 +526,7 @@ pub fn Ops(comptime cfg: Config) type {
             const available_gas = try frame.memory.growToFit(args[1], args[0], gas);
             const dynamic_gas = mem.toWordSize(args[0]) * fork.keccak_word_gas;
             const data = frame.memory.slice(@truncate(args[1]), @intCast(args[0]));
-            const hash = @import("../hash.zig").keccak256(data);
+            const hash = @import("crypto/hash.zig").keccak256(data);
             args[0] = std.mem.readInt(u256, &hash, .big);
             return next(next_ip, available_gas, fork.constantGas(.KECCAK256) + dynamic_gas, new_stack_head, frame);
         }
