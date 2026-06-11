@@ -25,7 +25,6 @@ pub fn ecrecover(
 }
 
 pub fn addressFromPubkey(pubkey: [65]u8) u160 {
-    var h: [32]u8 = undefined;
-    std.crypto.hash.sha3.Keccak256.hash(pubkey[1..65], &h, .{});
+    const h = @import("hash.zig").keccak256(pubkey[1..65]);
     return std.mem.readInt(u160, h[12..32], .big);
 }

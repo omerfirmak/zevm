@@ -27,8 +27,7 @@ pub const CommittedState = struct {
         try codes.ensureTotalCapacity(allocator, @intCast(bytecodes.len()));
 
         for (bytecodes.constSlice()) |*bytecode| {
-            var code_hash: [32]u8 = undefined;
-            std.crypto.hash.sha3.Keccak256.hash(bytecode.constSlice(), &code_hash, .{});
+            const code_hash = evm.hash.keccak256(bytecode.constSlice());
             codes.putAssumeCapacity(code_hash, bytecode.constSlice());
         }
 
@@ -37,8 +36,7 @@ pub const CommittedState = struct {
         defer nodes.deinit(allocator);
 
         for (state.constSlice()) |*node| {
-            var node_hash: [32]u8 = undefined;
-            std.crypto.hash.sha3.Keccak256.hash(node.constSlice(), &node_hash, .{});
+            const node_hash = evm.hash.keccak256(node.constSlice());
             nodes.putAssumeCapacity(node_hash, node.constSlice());
         }
 
@@ -80,15 +78,11 @@ pub const CommittedState = struct {
 pub fn keccakOfU160(v: u160) [32]u8 {
     var buf: [20]u8 = undefined;
     std.mem.writeInt(u160, &buf, v, .big);
-    var out: [32]u8 = undefined;
-    std.crypto.hash.sha3.Keccak256.hash(&buf, &out, .{});
-    return out;
+    return evm.hash.keccak256(&buf);
 }
 
 pub fn keccakOfU256(v: u256) [32]u8 {
     var buf: [32]u8 = undefined;
     std.mem.writeInt(u256, &buf, v, .big);
-    var out: [32]u8 = undefined;
-    std.crypto.hash.sha3.Keccak256.hash(&buf, &out, .{});
-    return out;
+    return evm.hash.keccak256(&buf);
 }

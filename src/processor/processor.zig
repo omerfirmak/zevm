@@ -8,8 +8,9 @@ const EvmSpec = @import("../evm/spec.zig");
 const State = @import("../evm/state.zig").State;
 const ChainSpec = @import("chainspec.zig").ChainSpec;
 const secp256k1 = @import("zig-eth-secp256k1");
-const Keccak256 = std.crypto.hash.sha3.Keccak256;
-const Sha256 = std.crypto.hash.sha2.Sha256;
+const keccak256 = @import("../hash.zig").keccak256;
+const sha256 = @import("../hash.zig").sha256;
+const Sha256Hasher = @import("../hash.zig").Sha256Hasher;
 const blobBaseFee = @import("../blob_fee.zig").blobBaseFee;
 const ecrecover = @import("../curve.zig").ecrecover;
 const Trie = @import("../trie/trie.zig").Trie;
@@ -147,7 +148,7 @@ fn computeRequestsHash(
     state: *State,
     logs: *const std.DoublyLinkedList,
 ) Errors![32]u8 {
-    var outer = Sha256.init(.{});
+    var outer = Sha256Hasher.init(.{});
     try hashDepositRequests(logs, &outer);
 
     vm.reset();
@@ -158,8 +159,8 @@ fn computeRequestsHash(
     return outer.finalResult();
 }
 
-fn hashDepositRequests(logs: *const std.DoublyLinkedList, outer: *Sha256) Errors!void {
-    var inner = Sha256.init(.{});
+fn hashDepositRequests(logs: *const std.DoublyLinkedList, outer: *Sha256Hasher) Errors!void {
+    var inner = Sha256Hasher.init(.{});
     var count: usize = 0;
     inner.update(&[_]u8{0x00});
     var node = logs.first;
@@ -168,7 +169,7 @@ fn hashDepositRequests(logs: *const std.DoublyLinkedList, outer: *Sha256) Errors
         if (ln.log.address == DEPOSIT_CONTRACT and
             ln.log.topics.len > 0 and ln.log.topics[0] == DEPOSIT_EVENT_TOPIC)
         {
-            if (!hashDepositLog(&inner, ln.log.data)) return Errors.MismatchedRequestsHash;
+            if (!try hashDepositLog(&inner, ln.log.data)) return Errors.MismatchedRequestsHash;
             count += 1;
         }
         node = n.next;
@@ -176,7 +177,7 @@ fn hashDepositRequests(logs: *const std.DoublyLinkedList, outer: *Sha256) Errors
     if (count > 0) outer.update(&inner.finalResult());
 }
 
-fn hashDepositLog(inner: *Sha256, data: []const u8) bool {
+fn hashDepositLog(inner: *Sha256Hasher, data: []const u8) !bool {
     if (data.len < 576) return false;
     const field_sizes = [_]usize{ 48, 32, 8, 96, 8 };
     var fields: [5][]const u8 = undefined;
@@ -197,7 +198,7 @@ fn hashSystemCall(
     target: u160,
     type_byte: u8,
     state: *State,
-    outer: *Sha256,
+    outer: *Sha256Hasher,
 ) !void {
     const calldata: []u8 = &.{};
     const evm_spec = comptime EvmSpec.specByFork(spec.fork);
@@ -208,7 +209,7 @@ fn hashSystemCall(
     if (call_err) |_| return Errors.SyscallRevert;
     const ret = vm.return_buffer[0..vm.return_data_size];
     if (ret.len > 0) {
-        var inner = Sha256.init(.{});
+        var inner = Sha256Hasher.init(.{});
         inner.update(&[_]u8{type_byte});
         inner.update(ret);
         outer.update(&inner.finalResult());
@@ -410,8 +411,7 @@ fn recoverEip7702Authority(allocator: std.mem.Allocator, auth: types.Authorizati
     var msg: [257]u8 = undefined;
     msg[0] = 0x05;
     @memcpy(msg[1..][0..encoded.items.len], encoded.items);
-    var hash: [32]u8 = undefined;
-    Keccak256.hash(msg[0 .. 1 + encoded.items.len], &hash, .{});
+    const hash = keccak256(msg[0 .. 1 + encoded.items.len]);
 
     return ecrecover(hash, auth.v, auth.r, auth.s);
 }
@@ -435,8 +435,7 @@ pub fn computeLogsBloom(logs: *const std.DoublyLinkedList) [256]u8 {
 }
 
 fn bloomAdd(bloom: *[256]u8, item: []const u8) void {
-    var hash: [32]u8 = undefined;
-    Keccak256.hash(item, &hash, .{});
+    const hash = keccak256(item);
     for (0..3) |i| {
         const bit: u11 = @truncate(std.mem.readInt(u16, hash[2 * i ..][0..2], .big));
         bloom[255 - bit / 8] |= @as(u8, 1) << @intCast(bit % 8);

@@ -15,5 +15,6 @@ pub const Fork = @import("forks.zig").Fork;
 
 pub const blobBaseFee = @import("blob_fee.zig").blobBaseFee;
 pub const curve = @import("curve.zig");
+pub const hash = @import("hash.zig");
 
 pub const CommittedState = @import("./evm/committed_state.zig").CommittedState;
