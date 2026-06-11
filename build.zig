@@ -7,13 +7,13 @@ const Deps = struct {
     ckzg4844_mod: *std.Build.Module,
     trusted_setup_mod: *std.Build.Module,
     mcl_lib: *std.Build.Step.Compile,
-    mcl_include: std.Build.LazyPath,
+    mcl_mod: *std.Build.Module,
     rlp_mod: *std.Build.Module,
 };
 
 fn linkDeps(mod: *std.Build.Module, d: Deps) void {
-    mod.addIncludePath(d.mcl_include);
     mod.linkLibrary(d.mcl_lib);
+    mod.addImport("mcl", d.mcl_mod);
     mod.addImport("zig-eth-secp256k1", d.secp256k1_mod);
     mod.linkLibrary(d.secp256k1_lib);
     mod.addImport("blst", d.blst_mod);
@@ -102,6 +102,12 @@ pub fn build(b: *std.Build) void {
     const ssz_dep = b.dependency("ssz", .{ .target = target, .optimize = optimize });
 
     const mcl_lib = buildMcl(b, mcl_dep, target);
+    const mcl = b.addTranslateC(.{
+        .root_source_file = mcl_dep.path("include/mcl/bn_c256.h"),
+        .target = target,
+        .optimize = optimize,
+    });
+    mcl.addIncludePath(mcl_dep.path("include"));
 
     const deps = Deps{
         .secp256k1_mod = secp256k1_dep.module("zig-eth-secp256k1"),
@@ -114,7 +120,7 @@ pub fn build(b: *std.Build) void {
         }),
         .trusted_setup_mod = ckzg4844_dep.module("trusted_setup"),
         .mcl_lib = mcl_lib,
-        .mcl_include = mcl_dep.path("include"),
+        .mcl_mod = mcl.createModule(),
         .rlp_mod = rlp_dep.module("zig-rlp"),
     };
 
