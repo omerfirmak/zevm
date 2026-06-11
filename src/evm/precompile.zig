@@ -235,9 +235,8 @@ pub fn Handlers(comptime fork: Spec) type {
             const cost = mem.toWordSize(calldata.len) * fork.sha2256_per_word_gas + fork.sha2256_base_gas;
             if (gas < cost) return out_of_gas;
 
-            const digest_length = std.crypto.hash.sha2.Sha256.digest_length;
-            std.crypto.hash.sha2.Sha256.hash(calldata, return_buffer[0..digest_length], .{});
-            return .{ .return_size = digest_length, .remaining_gas = gas - cost };
+            @memcpy(return_buffer[0..32], &@import("../hash.zig").sha256(calldata));
+            return .{ .return_size = 32, .remaining_gas = gas - cost };
         }
 
         pub fn ripemd_160(
@@ -278,8 +277,7 @@ pub fn Handlers(comptime fork: Spec) type {
             const pubkey = secp256k1_ctx.recoverPubkey(padded[0..32].*, sig) catch return bail;
 
             // Keccak256 of uncompressed pubkey (skip 0x04 prefix), take last 20 bytes as address
-            var pubkey_hash: [32]u8 = undefined;
-            std.crypto.hash.sha3.Keccak256.hash(pubkey[1..65], &pubkey_hash, .{});
+            const pubkey_hash = @import("../hash.zig").keccak256(pubkey[1..65]);
             @memset(return_buffer[0..12], 0);
             @memcpy(return_buffer[12..32], pubkey_hash[12..32]);
 
@@ -669,8 +667,7 @@ pub fn Handlers(comptime fork: Spec) type {
 
             if (versioned_hash[0] != 1) return invalid_input;
 
-            var commitment_hash: [32]u8 = undefined;
-            std.crypto.hash.sha2.Sha256.hash(commitment, &commitment_hash, .{});
+            var commitment_hash = @import("../hash.zig").sha256(commitment);
             commitment_hash[0] = 1;
 
             if (!std.mem.eql(u8, versioned_hash, &commitment_hash)) return invalid_input;

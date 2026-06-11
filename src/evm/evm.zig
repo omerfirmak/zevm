@@ -5,6 +5,7 @@ const storage = @import("storage.zig");
 const rlp = @import("rlp");
 const mem = @import("memory.zig");
 const precompile = @import("precompile.zig");
+const keccak256 = @import("../hash.zig").keccak256;
 const Bytecode = @import("bytecode.zig").Bytecode;
 const Memory = @import("memory.zig").Memory;
 const State = @import("state.zig").State;
@@ -798,7 +799,7 @@ pub const EVM = struct {
         // Store deployed code and update account code hash
         var code_hash: [32]u8 = types.empty_code_hash;
         if (deployed_len > 0) {
-            std.crypto.hash.sha3.Keccak256.hash(deployed_code, &code_hash, .{});
+            code_hash = keccak256(deployed_code);
             state.deploy_code(code_hash, deployed_code, cfg);
         }
         (try state.accounts.update(new_addr)).code_hash = code_hash;
@@ -998,8 +999,7 @@ fn createAddress(creator: u160, nonce: u64) u160 {
 
     buf[0] = @intCast(0xc0 + (pos - 1)); // list prefix: 0xc0 + payload_len
 
-    var hash: [32]u8 = undefined;
-    std.crypto.hash.sha3.Keccak256.hash(buf[0..pos], &hash, .{});
+    const hash = keccak256(buf[0..pos]);
     return std.mem.readInt(u160, hash[12..32], .big);
 }
 
@@ -1009,9 +1009,8 @@ fn create2Address(creator: u160, salt: u256, initcode: []const u8) u160 {
     buf[0] = 0xff;
     std.mem.writeInt(u160, buf[1..21], creator, .big);
     std.mem.writeInt(u256, buf[21..53], salt, .big);
-    std.crypto.hash.sha3.Keccak256.hash(initcode, buf[53..85], .{});
-    var hash: [32]u8 = undefined;
-    std.crypto.hash.sha3.Keccak256.hash(&buf, &hash, .{});
+    @memcpy(buf[53..85], &keccak256(initcode));
+    const hash = keccak256(&buf);
     return std.mem.readInt(u160, hash[12..32], .big);
 }
 
@@ -1076,9 +1075,7 @@ fn delegationCode(address: u160) [23]u8 {
 
 fn delegationCodeHash(address: u160) [32]u8 {
     const code = delegationCode(address);
-    var hash: [32]u8 = undefined;
-    std.crypto.hash.sha3.Keccak256.hash(&code, &hash, .{});
-    return hash;
+    return keccak256(&code);
 }
 
 pub fn computeLogsHash(allocator: std.mem.Allocator, logs: *const std.DoublyLinkedList) ![32]u8 {
@@ -1100,7 +1097,5 @@ pub fn computeLogsHash(allocator: std.mem.Allocator, logs: *const std.DoublyLink
     defer encoded.deinit();
     try rlp.serialize([]Log, allocator, log_list, &encoded);
 
-    var hash: [32]u8 = undefined;
-    std.crypto.hash.sha3.Keccak256.hash(encoded.items, &hash, .{});
-    return hash;
+    return keccak256(encoded.items);
 }

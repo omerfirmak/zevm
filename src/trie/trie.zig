@@ -1,6 +1,6 @@
 const std = @import("std");
 const rlp = @import("rlp");
-const Keccak256 = std.crypto.hash.sha3.Keccak256;
+const keccak256 = @import("../hash.zig").keccak256;
 
 pub const empty_root_hash: [32]u8 = .{
     0x56, 0xe8, 0x1f, 0x17, 0x1b, 0xcc, 0x55, 0xa6,
@@ -510,8 +510,7 @@ pub const Trie = struct {
         if (list.items.len < 32 and path.len > 0) {
             node.* = Node.Hashed.init(list.items);
         } else {
-            var h: [32]u8 = undefined;
-            Keccak256.hash(list.items, &h, .{});
+            const h = keccak256(list.items);
             node.* = Node.Hashed.init(&h);
         }
     }
