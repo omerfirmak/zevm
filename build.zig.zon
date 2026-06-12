@@ -64,6 +64,10 @@
             .url = "git+https://github.com/omerfirmak/ssz.zig.git?ref=empty-list#5ceddcec7f84b21ff8a71813216d0441e46477a1",
             .hash = "ssz-0.0.9-Lfwd61O-AwB0lcKewyjmUs64s6cbflC4KWhFPkOvUoqD",
         },
+        .zisk = .{
+            .url = "git+https://github.com/0xPolygonHermez/zisk?ref=v0.18.0#790f9e28a6d1d8575e38dc77f2af4966b8659722",
+            .hash = "N-V-__8AAGB5DQJ5KEFFOdiJi_B93jMZlF-OwIPORP3pF2NI",
+        },
     },
     .paths = .{
         "build.zig",

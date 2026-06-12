@@ -1,4 +1,5 @@
 const std = @import("std");
+const build_options = @import("build_options");
 const evm = @import("evm.zig");
 const mem = @import("memory.zig");
 const secp256k1 = @import("zig-eth-secp256k1");
@@ -6,6 +7,7 @@ const SpinLockOnce = @import("sync.zig").SpinLockOnce;
 const bls12 = @import("crypto/blst.zig");
 const kzg = @import("ckzg");
 const mcl = @import("mcl");
+const zkvm = @import("zkvm");
 const Ripemd160 = @import("crypto/ripemd160.zig").Ripemd160;
 const Spec = @import("spec.zig").Spec;
 const BigInt = std.math.big.int;
@@ -23,6 +25,7 @@ const out_of_gas: Result = .{ .err = evm.Errors.OutOfGas };
 const invalid_input: Result = .{ .err = evm.Errors.InvalidPrecompileInput };
 
 pub const Handler = *const fn (
+    allocator: std.mem.Allocator,
     gas: u32,
     calldata: []const u8,
     return_buffer: []u8,
@@ -172,6 +175,17 @@ fn modexpMulMod(
     modexpReduce(out, product.toConst(), modulus, quotient, remainder, div_buffer);
 }
 
+fn zkvmStripBlsFp(out: *[48]u8, in: *const [64]u8) bool {
+    for (in[0..16]) |b| if (b != 0) return false;
+    @memcpy(out, in[16..64]);
+    return true;
+}
+
+fn zkvmPadBlsFp(out: *[64]u8, in: *const [48]u8) void {
+    @memset(out[0..16], 0);
+    @memcpy(out[16..64], in);
+}
+
 fn blake2bMix(v: *[16]u64, m: *const [16]u64, s: [16]u8, a: usize, b: usize, c: usize, d: usize, x: usize, y: usize) void {
     v[a] = v[a] +% v[b] +% m[s[x]];
     v[d] = std.math.rotr(u64, v[d] ^ v[a], 32);
@@ -215,6 +229,7 @@ fn blake2bCompress(h: *[8]u64, m: *const [16]u64, t0: u64, t1: u64, final: bool,
 pub fn Handlers(comptime fork: Spec) type {
     return struct {
         pub fn identity(
+            _: std.mem.Allocator,
             gas: u32,
             calldata: []const u8,
             return_buffer: []u8,
@@ -226,6 +241,7 @@ pub fn Handlers(comptime fork: Spec) type {
         }
 
         pub fn sha2_256(
+            _: std.mem.Allocator,
             gas: u32,
             calldata: []const u8,
             return_buffer: []u8,
@@ -238,6 +254,7 @@ pub fn Handlers(comptime fork: Spec) type {
         }
 
         pub fn ripemd_160(
+            _: std.mem.Allocator,
             gas: u32,
             calldata: []const u8,
             return_buffer: []u8,
@@ -245,12 +262,21 @@ pub fn Handlers(comptime fork: Spec) type {
             const cost = mem.toWordSize(calldata.len) * fork.ripemd160_per_word_gas + fork.ripemd160_base_gas;
             if (gas < cost) return out_of_gas;
 
-            @memset(return_buffer[0..12], 0);
-            Ripemd160.hash(calldata, return_buffer[12 .. 12 + Ripemd160.digest_length], .{});
+            if (build_options.platform == .zkvm) {
+                var out: zkvm.zkvm_ripemd160_hash align(8) = undefined;
+                if (zkvm.zkvm_ripemd160(calldata.ptr, calldata.len, &out) != zkvm.ZKVM_EOK) {
+                    return .{ .err = evm.Errors.InvalidPrecompileInput };
+                }
+                @memcpy(return_buffer[0..32], &out.data);
+            } else {
+                @memset(return_buffer[0..12], 0);
+                Ripemd160.hash(calldata, return_buffer[12 .. 12 + Ripemd160.digest_length], .{});
+            }
             return .{ .return_size = 32, .remaining_gas = gas - cost };
         }
 
         pub fn ecrecover(
+            _: std.mem.Allocator,
             gas: u32,
             calldata: []const u8,
             return_buffer: []u8,
@@ -259,7 +285,7 @@ pub fn Handlers(comptime fork: Spec) type {
             const remaining_gas = gas - fork.ecrecover_gas;
             const bail: Result = .{ .remaining_gas = remaining_gas };
 
-            var padded = [_]u8{0} ** 128;
+            var padded: [128]u8 align(8) = [_]u8{0} ** 128;
             @memcpy(padded[0..@min(calldata.len, 128)], calldata[0..@min(calldata.len, 128)]);
 
             // v is a big-endian u256 at bytes 32..64; high 31 bytes must be zero, low byte is 27 or 28
@@ -267,15 +293,24 @@ pub fn Handlers(comptime fork: Spec) type {
             const v = padded[63];
             if (v != 27 and v != 28) return bail;
 
-            secp256k1_once.call();
-            var sig: secp256k1.Signature = [_]u8{0} ** 65;
-            @memcpy(sig[0..64], padded[64..128]);
-            sig[64] = v - 27;
+            var pubkey: [64]u8 align(8) = undefined;
+            if (build_options.platform == .zkvm) {
+                if (zkvm.zkvm_secp256k1_ecrecover(
+                    @ptrCast(padded[0..32]),
+                    @ptrCast(padded[64..128]),
+                    v - 27,
+                    @ptrCast(&pubkey),
+                ) != zkvm.ZKVM_EOK) return bail;
+            } else {
+                secp256k1_once.call();
+                var sig: secp256k1.Signature = [_]u8{0} ** 65;
+                @memcpy(sig[0..64], padded[64..128]);
+                sig[64] = v - 27;
+                const native_pubkey = secp256k1_ctx.recoverPubkey(padded[0..32].*, sig) catch return bail;
+                @memcpy(&pubkey, native_pubkey[1..65]);
+            }
 
-            const pubkey = secp256k1_ctx.recoverPubkey(padded[0..32].*, sig) catch return bail;
-
-            // Keccak256 of uncompressed pubkey (skip 0x04 prefix), take last 20 bytes as address
-            const pubkey_hash = @import("crypto/hash.zig").keccak256(pubkey[1..65]);
+            const pubkey_hash = @import("crypto/hash.zig").keccak256(&pubkey);
             @memset(return_buffer[0..12], 0);
             @memcpy(return_buffer[12..32], pubkey_hash[12..32]);
 
@@ -283,6 +318,7 @@ pub fn Handlers(comptime fork: Spec) type {
         }
 
         pub fn p256verify(
+            _: std.mem.Allocator,
             gas: u32,
             calldata: []const u8,
             return_buffer: []u8,
@@ -293,6 +329,21 @@ pub fn Handlers(comptime fork: Spec) type {
 
             // Input must be exactly 160 bytes: hash(32) || r(32) || s(32) || qx(32) || qy(32)
             if (calldata.len != 160) return bail;
+
+            if (build_options.platform == .zkvm) {
+                var msg: zkvm.zkvm_secp256r1_hash align(8) = undefined;
+                @memcpy(&msg.data, calldata[0..32]);
+                var sig: zkvm.zkvm_secp256r1_signature align(8) = undefined;
+                @memcpy(&sig.data, calldata[32..96]);
+                var pk: zkvm.zkvm_secp256r1_pubkey align(8) = undefined;
+                @memcpy(&pk.data, calldata[96..160]);
+                var verified: bool = false;
+                if (zkvm.zkvm_secp256r1_verify(&msg, &sig, &pk, &verified) != zkvm.ZKVM_EOK) return bail;
+                if (!verified) return bail;
+                @memset(return_buffer[0..31], 0);
+                return_buffer[31] = 1;
+                return .{ .return_size = 32, .remaining_gas = remaining_gas };
+            }
 
             const P256 = std.crypto.ecc.P256;
             const Scalar = P256.scalar.Scalar;
@@ -339,6 +390,7 @@ pub fn Handlers(comptime fork: Spec) type {
         }
 
         pub fn blake2f(
+            _: std.mem.Allocator,
             gas: u32,
             calldata: []const u8,
             return_buffer: []u8,
@@ -351,6 +403,20 @@ pub fn Handlers(comptime fork: Spec) type {
 
             const final_flag = calldata[212];
             if (final_flag != 0 and final_flag != 1) return invalid_input;
+
+            if (build_options.platform == .zkvm) {
+                var h_state: zkvm.zkvm_blake2f_state align(8) = undefined;
+                @memcpy(&h_state.data, calldata[4..68]);
+                var m_block: zkvm.zkvm_blake2f_message align(8) = undefined;
+                @memcpy(&m_block.data, calldata[68..196]);
+                var t_offset: zkvm.zkvm_blake2f_offset align(8) = undefined;
+                @memcpy(&t_offset.data, calldata[196..212]);
+                if (zkvm.zkvm_blake2f(rounds, &h_state, &m_block, &t_offset, final_flag) != zkvm.ZKVM_EOK) {
+                    return invalid_input;
+                }
+                @memcpy(return_buffer[0..64], &h_state.data);
+                return .{ .return_size = 64, .remaining_gas = gas - cost };
+            }
 
             var h: [8]u64 = undefined;
             for (0..8) |i| {
@@ -397,6 +463,7 @@ pub fn Handlers(comptime fork: Spec) type {
         }
 
         pub fn modexp(
+            _: std.mem.Allocator,
             gas: u32,
             calldata: []const u8,
             return_buffer: []u8,
@@ -425,6 +492,19 @@ pub fn Handlers(comptime fork: Spec) type {
             copyPadded(exp_buf[0..exp_len], calldata, exp_offset);
             var mod_buf: [modexp_max_length]u8 = undefined;
             copyPadded(mod_buf[0..mod_len], calldata, mod_offset);
+
+            if (build_options.platform == .zkvm) {
+                if (zkvm.zkvm_modexp(
+                    base_buf[0..base_len].ptr,
+                    base_len,
+                    exp_buf[0..exp_len].ptr,
+                    exp_len,
+                    mod_buf[0..mod_len].ptr,
+                    mod_len,
+                    return_buffer[0..mod_len].ptr,
+                ) != zkvm.ZKVM_EOK) return invalid_input;
+                return .{ .return_size = mod_len, .remaining_gas = gas - cost };
+            }
 
             var base_storage: [modexp_value_limbs]BigIntLimb = undefined;
             var base = BigIntMutable.init(&base_storage, 0);
@@ -491,12 +571,28 @@ pub fn Handlers(comptime fork: Spec) type {
         }
 
         pub fn bls12G1add(
+            _: std.mem.Allocator,
             gas: u32,
             calldata: []const u8,
             return_buffer: []u8,
         ) Result {
             if (gas < fork.bls12_g1add_gas) return out_of_gas;
             if (calldata.len != bls12.g1_input_size * 2) return invalid_input;
+
+            if (build_options.platform == .zkvm) {
+                var p1: zkvm.zkvm_bls12_381_g1_point align(8) = undefined;
+                var p2: zkvm.zkvm_bls12_381_g1_point align(8) = undefined;
+                if (!zkvmStripBlsFp(p1.data[0..48], calldata[0..64])) return invalid_input;
+                if (!zkvmStripBlsFp(p1.data[48..96], calldata[64..128])) return invalid_input;
+                if (!zkvmStripBlsFp(p2.data[0..48], calldata[128..192])) return invalid_input;
+                if (!zkvmStripBlsFp(p2.data[48..96], calldata[192..256])) return invalid_input;
+                var result: zkvm.zkvm_bls12_381_g1_point align(8) = undefined;
+                if (zkvm.zkvm_bls12_g1_add(&p1, &p2, &result) != zkvm.ZKVM_EOK) return invalid_input;
+                zkvmPadBlsFp(return_buffer[0..64], result.data[0..48]);
+                zkvmPadBlsFp(return_buffer[64..128], result.data[48..96]);
+                return .{ .return_size = bls12.g1_input_size, .remaining_gas = gas - fork.bls12_g1add_gas };
+            }
+
             const a = bls12.decodeG1Affine(calldata[0..bls12.g1_input_size], false) orelse
                 return invalid_input;
             const b = bls12.decodeG1Affine(calldata[bls12.g1_input_size .. bls12.g1_input_size * 2], false) orelse
@@ -516,6 +612,7 @@ pub fn Handlers(comptime fork: Spec) type {
         }
 
         pub fn bls12G1msm(
+            allocator: std.mem.Allocator,
             gas: u32,
             calldata: []const u8,
             return_buffer: []u8,
@@ -525,6 +622,23 @@ pub fn Handlers(comptime fork: Spec) type {
             if (calldata.len == 0 or calldata.len % bls12.g1_msm_pair_size != 0) return invalid_input;
 
             const k = calldata.len / bls12.g1_msm_pair_size;
+
+            if (build_options.platform == .zkvm) {
+                const pairs = allocator.alloc(zkvm.zkvm_bls12_381_g1_msm_pair, k) catch return invalid_input;
+                defer allocator.free(pairs);
+                for (0..k) |i| {
+                    const offset = i * bls12.g1_msm_pair_size;
+                    if (!zkvmStripBlsFp(pairs[i].point.data[0..48], calldata[offset..][0..64])) return invalid_input;
+                    if (!zkvmStripBlsFp(pairs[i].point.data[48..96], calldata[offset + 64 ..][0..64])) return invalid_input;
+                    @memcpy(&pairs[i].scalar.data, calldata[offset + bls12.g1_input_size ..][0..32]);
+                }
+                var result: zkvm.zkvm_bls12_381_g1_point align(8) = undefined;
+                if (zkvm.zkvm_bls12_g1_msm(pairs.ptr, k, &result) != zkvm.ZKVM_EOK) return invalid_input;
+                zkvmPadBlsFp(return_buffer[0..64], result.data[0..48]);
+                zkvmPadBlsFp(return_buffer[64..128], result.data[48..96]);
+                return .{ .return_size = bls12.g1_input_size, .remaining_gas = gas - cost };
+            }
+
             var acc: bls12.G1Affine = undefined;
             var first = true;
             for (0..k) |i| {
@@ -541,12 +655,29 @@ pub fn Handlers(comptime fork: Spec) type {
         }
 
         pub fn bls12G2add(
+            _: std.mem.Allocator,
             gas: u32,
             calldata: []const u8,
             return_buffer: []u8,
         ) Result {
             if (gas < fork.bls12_g2add_gas) return out_of_gas;
             if (calldata.len != bls12.g2_input_size * 2) return invalid_input;
+
+            if (build_options.platform == .zkvm) {
+                var p1: zkvm.zkvm_bls12_381_g2_point align(8) = undefined;
+                var p2: zkvm.zkvm_bls12_381_g2_point align(8) = undefined;
+                inline for (.{ 0, 1, 2, 3 }) |i| {
+                    if (!zkvmStripBlsFp(p1.data[i * 48 ..][0..48], calldata[i * 64 ..][0..64])) return invalid_input;
+                    if (!zkvmStripBlsFp(p2.data[i * 48 ..][0..48], calldata[bls12.g2_input_size + i * 64 ..][0..64])) return invalid_input;
+                }
+                var result: zkvm.zkvm_bls12_381_g2_point align(8) = undefined;
+                if (zkvm.zkvm_bls12_g2_add(&p1, &p2, &result) != zkvm.ZKVM_EOK) return invalid_input;
+                inline for (.{ 0, 1, 2, 3 }) |i| {
+                    zkvmPadBlsFp(return_buffer[i * 64 ..][0..64], result.data[i * 48 ..][0..48]);
+                }
+                return .{ .return_size = bls12.g2_input_size, .remaining_gas = gas - fork.bls12_g2add_gas };
+            }
+
             const a = bls12.decodeG2Affine(calldata[0..bls12.g2_input_size], false) orelse
                 return invalid_input;
             const b = bls12.decodeG2Affine(calldata[bls12.g2_input_size .. bls12.g2_input_size * 2], false) orelse
@@ -558,6 +689,7 @@ pub fn Handlers(comptime fork: Spec) type {
         }
 
         pub fn bls12G2msm(
+            allocator: std.mem.Allocator,
             gas: u32,
             calldata: []const u8,
             return_buffer: []u8,
@@ -567,6 +699,25 @@ pub fn Handlers(comptime fork: Spec) type {
             if (calldata.len == 0 or calldata.len % bls12.g2_msm_pair_size != 0) return invalid_input;
 
             const k = calldata.len / bls12.g2_msm_pair_size;
+
+            if (build_options.platform == .zkvm) {
+                const pairs = allocator.alloc(zkvm.zkvm_bls12_381_g2_msm_pair, k) catch return invalid_input;
+                defer allocator.free(pairs);
+                for (0..k) |i| {
+                    const offset = i * bls12.g2_msm_pair_size;
+                    inline for (.{ 0, 1, 2, 3 }) |j| {
+                        if (!zkvmStripBlsFp(pairs[i].point.data[j * 48 ..][0..48], calldata[offset + j * 64 ..][0..64])) return invalid_input;
+                    }
+                    @memcpy(&pairs[i].scalar.data, calldata[offset + bls12.g2_input_size ..][0..32]);
+                }
+                var result: zkvm.zkvm_bls12_381_g2_point align(8) = undefined;
+                if (zkvm.zkvm_bls12_g2_msm(pairs.ptr, k, &result) != zkvm.ZKVM_EOK) return invalid_input;
+                inline for (.{ 0, 1, 2, 3 }) |i| {
+                    zkvmPadBlsFp(return_buffer[i * 64 ..][0..64], result.data[i * 48 ..][0..48]);
+                }
+                return .{ .return_size = bls12.g2_input_size, .remaining_gas = gas - cost };
+            }
+
             var acc: bls12.G2Affine = undefined;
             var first = true;
             for (0..k) |i| {
@@ -589,6 +740,7 @@ pub fn Handlers(comptime fork: Spec) type {
         }
 
         pub fn bls12PairingCheck(
+            allocator: std.mem.Allocator,
             gas: u32,
             calldata: []const u8,
             return_buffer: []u8,
@@ -603,6 +755,25 @@ pub fn Handlers(comptime fork: Spec) type {
             if (calldata.len == 0 or calldata.len % bls12.pairing_pair_size != 0) return invalid_input;
 
             const k = calldata.len / bls12.pairing_pair_size;
+
+            if (build_options.platform == .zkvm) {
+                const pairs = allocator.alloc(zkvm.zkvm_bls12_381_pairing_pair, k) catch return invalid_input;
+                defer allocator.free(pairs);
+                for (0..k) |i| {
+                    const offset = i * bls12.pairing_pair_size;
+                    if (!zkvmStripBlsFp(pairs[i].g1.data[0..48], calldata[offset..][0..64])) return invalid_input;
+                    if (!zkvmStripBlsFp(pairs[i].g1.data[48..96], calldata[offset + 64 ..][0..64])) return invalid_input;
+                    inline for (.{ 0, 1, 2, 3 }) |j| {
+                        if (!zkvmStripBlsFp(pairs[i].g2.data[j * 48 ..][0..48], calldata[offset + bls12.g1_input_size + j * 64 ..][0..64])) return invalid_input;
+                    }
+                }
+                var verified: bool = false;
+                if (zkvm.zkvm_bls12_pairing(pairs.ptr, k, &verified) != zkvm.ZKVM_EOK) return invalid_input;
+                @memset(return_buffer[0..31], 0);
+                return_buffer[31] = @intFromBool(verified);
+                return .{ .return_size = 32, .remaining_gas = gas - cost };
+            }
+
             var product: bls12.PairingProduct = std.mem.zeroes(bls12.PairingProduct);
             var first = true;
             for (0..k) |i| {
@@ -620,12 +791,24 @@ pub fn Handlers(comptime fork: Spec) type {
         }
 
         pub fn bls12MapFpToG1(
+            _: std.mem.Allocator,
             gas: u32,
             calldata: []const u8,
             return_buffer: []u8,
         ) Result {
             if (gas < fork.bls12_map_fp_to_g1_gas) return out_of_gas;
             if (calldata.len != 64) return invalid_input;
+
+            if (build_options.platform == .zkvm) {
+                var fp: zkvm.zkvm_bls12_381_fp align(8) = undefined;
+                if (!zkvmStripBlsFp(&fp.data, calldata[0..64])) return invalid_input;
+                var result: zkvm.zkvm_bls12_381_g1_point align(8) = undefined;
+                if (zkvm.zkvm_bls12_map_fp_to_g1(&fp, &result) != zkvm.ZKVM_EOK) return invalid_input;
+                zkvmPadBlsFp(return_buffer[0..64], result.data[0..48]);
+                zkvmPadBlsFp(return_buffer[64..128], result.data[48..96]);
+                return .{ .return_size = bls12.g1_input_size, .remaining_gas = gas - fork.bls12_map_fp_to_g1_gas };
+            }
+
             const fp = bls12.decodeFp(calldata) orelse
                 return invalid_input;
             var out: bls12.G1Affine = undefined;
@@ -635,12 +818,26 @@ pub fn Handlers(comptime fork: Spec) type {
         }
 
         pub fn bls12MapFp2ToG2(
+            _: std.mem.Allocator,
             gas: u32,
             calldata: []const u8,
             return_buffer: []u8,
         ) Result {
             if (gas < fork.bls12_map_fp2_to_g2_gas) return out_of_gas;
             if (calldata.len != 128) return invalid_input;
+
+            if (build_options.platform == .zkvm) {
+                var fp2: zkvm.zkvm_bls12_381_fp2 align(8) = undefined;
+                if (!zkvmStripBlsFp(fp2.data[0..48], calldata[0..64])) return invalid_input;
+                if (!zkvmStripBlsFp(fp2.data[48..96], calldata[64..128])) return invalid_input;
+                var result: zkvm.zkvm_bls12_381_g2_point align(8) = undefined;
+                if (zkvm.zkvm_bls12_map_fp2_to_g2(&fp2, &result) != zkvm.ZKVM_EOK) return invalid_input;
+                inline for (.{ 0, 1, 2, 3 }) |i| {
+                    zkvmPadBlsFp(return_buffer[i * 64 ..][0..64], result.data[i * 48 ..][0..48]);
+                }
+                return .{ .return_size = bls12.g2_input_size, .remaining_gas = gas - fork.bls12_map_fp2_to_g2_gas };
+            }
+
             const fp2 = bls12.decodeFp2(calldata) orelse
                 return invalid_input;
             var out: bls12.G2Affine = undefined;
@@ -650,6 +847,7 @@ pub fn Handlers(comptime fork: Spec) type {
         }
 
         pub fn point_eval(
+            _: std.mem.Allocator,
             gas: u32,
             calldata: []const u8,
             return_buffer: []u8,
@@ -670,14 +868,30 @@ pub fn Handlers(comptime fork: Spec) type {
 
             if (!std.mem.eql(u8, versioned_hash, &commitment_hash)) return invalid_input;
 
-            const c_commitment: *const kzg.KzgCommitment = @ptrCast(commitment.ptr);
-            const c_proof: *const kzg.KzgProof = @ptrCast(proof.ptr);
-            const c_z: *const kzg.Bytes32 = @ptrCast(z[0..32]);
-            const c_y: *const kzg.Bytes32 = @ptrCast(y[0..32]);
+            if (build_options.platform == .zkvm) {
+                var c_commit: zkvm.zkvm_kzg_commitment align(8) = undefined;
+                @memcpy(&c_commit.data, commitment);
+                var c_proof: zkvm.zkvm_kzg_proof align(8) = undefined;
+                @memcpy(&c_proof.data, proof);
+                var c_z: zkvm.zkvm_kzg_field_element align(8) = undefined;
+                @memcpy(&c_z.data, z);
+                var c_y: zkvm.zkvm_kzg_field_element align(8) = undefined;
+                @memcpy(&c_y.data, y);
+                var verified: bool = false;
+                if (zkvm.zkvm_kzg_point_eval(&c_commit, &c_z, &c_y, &c_proof, &verified) != zkvm.ZKVM_EOK) {
+                    return invalid_input;
+                }
+                if (!verified) return invalid_input;
+            } else {
+                const c_commitment: *const kzg.KzgCommitment = @ptrCast(commitment.ptr);
+                const c_proof: *const kzg.KzgProof = @ptrCast(proof.ptr);
+                const c_z: *const kzg.Bytes32 = @ptrCast(z[0..32]);
+                const c_y: *const kzg.Bytes32 = @ptrCast(y[0..32]);
 
-            kzg_once.call();
-            const valid = kzg_setup.verifyKzgProof(c_commitment, c_z, c_y, c_proof) catch return invalid_input;
-            if (!valid) return invalid_input;
+                kzg_once.call();
+                const valid = kzg_setup.verifyKzgProof(c_commitment, c_z, c_y, c_proof) catch return invalid_input;
+                if (!valid) return invalid_input;
+            }
 
             const field_elements_per_blob = 4096;
             const bls_modulus = 52435875175126190479447740508185965837690552500527637822603658699938581184513;
@@ -764,15 +978,28 @@ pub fn Handlers(comptime fork: Spec) type {
         }
 
         pub fn ecadd(
+            _: std.mem.Allocator,
             gas: u32,
             calldata: []const u8,
             return_buffer: []u8,
         ) Result {
             if (gas < fork.ecadd_gas) return out_of_gas;
-            mcl_once.call();
 
-            var padded = [_]u8{0} ** 128;
+            var padded: [128]u8 align(8) = [_]u8{0} ** 128;
             @memcpy(padded[0..@min(calldata.len, 128)], calldata[0..@min(calldata.len, 128)]);
+
+            if (build_options.platform == .zkvm) {
+                var result: zkvm.zkvm_bn254_g1_point align(8) = undefined;
+                if (zkvm.zkvm_bn254_g1_add(
+                    @ptrCast(padded[0..64]),
+                    @ptrCast(padded[64..128]),
+                    &result,
+                ) != zkvm.ZKVM_EOK) return invalid_input;
+                @memcpy(return_buffer[0..64], &result.data);
+                return .{ .return_size = 64, .remaining_gas = gas - fork.ecadd_gas };
+            }
+
+            mcl_once.call();
 
             var p1: mcl.mclBnG1 = undefined;
             var p2: mcl.mclBnG1 = undefined;
@@ -789,15 +1016,28 @@ pub fn Handlers(comptime fork: Spec) type {
         }
 
         pub fn ecmul(
+            _: std.mem.Allocator,
             gas: u32,
             calldata: []const u8,
             return_buffer: []u8,
         ) Result {
             if (gas < fork.ecmul_gas) return out_of_gas;
-            mcl_once.call();
 
-            var padded = [_]u8{0} ** 96;
+            var padded: [96]u8 align(8) = [_]u8{0} ** 96;
             @memcpy(padded[0..@min(calldata.len, 96)], calldata[0..@min(calldata.len, 96)]);
+
+            if (build_options.platform == .zkvm) {
+                var result: zkvm.zkvm_bn254_g1_point align(8) = undefined;
+                if (zkvm.zkvm_bn254_g1_mul(
+                    @ptrCast(padded[0..64]),
+                    @ptrCast(padded[64..96]),
+                    &result,
+                ) != zkvm.ZKVM_EOK) return invalid_input;
+                @memcpy(return_buffer[0..64], &result.data);
+                return .{ .return_size = 64, .remaining_gas = gas - fork.ecmul_gas };
+            }
+
+            mcl_once.call();
 
             var p: mcl.mclBnG1 = undefined;
             loadG1(&p, padded[0..64]) catch return invalid_input;
@@ -815,18 +1055,33 @@ pub fn Handlers(comptime fork: Spec) type {
         }
 
         pub fn ecpairing(
+            allocator: std.mem.Allocator,
             gas: u32,
             calldata: []const u8,
             return_buffer: []u8,
         ) Result {
             if (calldata.len % 192 != 0) return invalid_input;
-            mcl_once.call();
 
             const pair_len = calldata.len / 192;
             const cost = fork.ecpairing_gas +
                 @as(u32, @intCast(pair_len)) * fork.ecpairing_per_pair_gas;
 
             if (gas < cost) return out_of_gas;
+
+            if (build_options.platform == .zkvm) {
+                const pairs = allocator.alloc(zkvm.zkvm_bn254_pairing_pair, pair_len) catch return invalid_input;
+                defer allocator.free(pairs);
+                @memcpy(std.mem.sliceAsBytes(pairs), calldata);
+                var verified: bool = false;
+                if (zkvm.zkvm_bn254_pairing(pairs.ptr, pair_len, &verified) != zkvm.ZKVM_EOK) {
+                    return invalid_input;
+                }
+                @memset(return_buffer[0..31], 0);
+                return_buffer[31] = @intFromBool(verified);
+                return .{ .return_size = 32, .remaining_gas = gas - cost };
+            }
+
+            mcl_once.call();
 
             var acc: mcl.mclBnGT = undefined;
             var has_acc = false;

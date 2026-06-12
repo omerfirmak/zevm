@@ -671,7 +671,7 @@ pub const EVM = struct {
         calldata: []u8,
         return_buffer: []u8,
     ) struct { u32, ?Errors } {
-        const result = handler(initial_gas, calldata, self.return_buffer);
+        const result = handler(self.rounded_allocator.allocator(), initial_gas, calldata, self.return_buffer);
         self.return_data_size = result.return_size;
         if (result.return_size > 0) {
             const copy_len = @min(result.return_size, return_buffer.len);

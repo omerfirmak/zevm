@@ -8,18 +8,26 @@ const Deps = struct {
     trusted_setup_mod: *std.Build.Module,
     mcl_lib: *std.Build.Step.Compile,
     mcl_mod: *std.Build.Module,
+    zkvm_mod: *std.Build.Module,
     rlp_mod: *std.Build.Module,
 };
 
-fn linkDeps(mod: *std.Build.Module, d: Deps) void {
-    mod.linkLibrary(d.mcl_lib);
-    mod.addImport("mcl", d.mcl_mod);
-    mod.addImport("zig-eth-secp256k1", d.secp256k1_mod);
-    mod.linkLibrary(d.secp256k1_lib);
-    mod.addImport("blst", d.blst_mod);
-    mod.addImport("ckzg", d.ckzg4844_mod);
-    mod.addImport("trusted_setup", d.trusted_setup_mod);
+fn linkDeps(mod: *std.Build.Module, d: Deps, platform: Platform) void {
     mod.addImport("rlp", d.rlp_mod);
+    switch (platform) {
+        .native => {
+            mod.linkLibrary(d.mcl_lib);
+            mod.addImport("mcl", d.mcl_mod);
+            mod.linkLibrary(d.secp256k1_lib);
+            mod.addImport("zig-eth-secp256k1", d.secp256k1_mod);
+            mod.addImport("blst", d.blst_mod);
+            mod.addImport("ckzg", d.ckzg4844_mod);
+            mod.addImport("trusted_setup", d.trusted_setup_mod);
+        },
+        .zkvm => {
+            mod.addImport("zkvm", d.zkvm_mod);
+        },
+    }
 }
 
 fn buildMcl(b: *std.Build, mcl_dep: *std.Build.Dependency, target: std.Build.ResolvedTarget) *std.Build.Step.Compile {
@@ -65,10 +73,12 @@ fn createZevmModule(
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
     committed_state_mod: ?*std.Build.Module,
+    platform: Platform,
     d: Deps,
 ) *std.Build.Module {
     const options = b.addOptions();
-    options.addOption(StateImpl, "state_impl", if (committed_state_mod != null) .external else .empty);
+    options.addOption(State, "state", if (committed_state_mod != null) .external else .empty);
+    options.addOption(Platform, "platform", platform);
 
     const zevm_mod = b.createModule(.{
         .root_source_file = b.path("src/root.zig"),
@@ -76,7 +86,7 @@ fn createZevmModule(
         .optimize = optimize,
     });
     zevm_mod.addOptions("build_options", options);
-    linkDeps(zevm_mod, d);
+    linkDeps(zevm_mod, d, platform);
     if (committed_state_mod) |cs_mod| {
         cs_mod.addImport("zevm", zevm_mod);
         zevm_mod.addImport("committed_state", cs_mod);
@@ -84,9 +94,14 @@ fn createZevmModule(
     return zevm_mod;
 }
 
-pub const StateImpl = enum {
+pub const State = enum {
     empty,
     external,
+};
+
+pub const Platform = enum {
+    native,
+    zkvm,
 };
 
 pub fn build(b: *std.Build) void {
@@ -100,6 +115,7 @@ pub fn build(b: *std.Build) void {
     const mcl_dep = b.dependency("mcl", .{});
     const rlp_dep = b.dependency("rlp", .{ .target = target, .optimize = optimize });
     const ssz_dep = b.dependency("ssz", .{ .target = target, .optimize = optimize });
+    const zisk_dep = b.dependency("zisk", .{});
 
     const mcl_lib = buildMcl(b, mcl_dep, target);
     const mcl = b.addTranslateC(.{
@@ -108,6 +124,13 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     mcl.addIncludePath(mcl_dep.path("include"));
+
+    const zkvm = b.addTranslateC(.{
+        .root_source_file = b.path("zkvm/zkvm.h"),
+        .target = target,
+        .optimize = optimize,
+    });
+    zkvm.addIncludePath(zisk_dep.path("zkvm-interface"));
 
     const deps = Deps{
         .secp256k1_mod = secp256k1_dep.module("zig-eth-secp256k1"),
@@ -121,23 +144,29 @@ pub fn build(b: *std.Build) void {
         .trusted_setup_mod = ckzg4844_dep.module("trusted_setup"),
         .mcl_lib = mcl_lib,
         .mcl_mod = mcl.createModule(),
+        .zkvm_mod = zkvm.createModule(),
         .rlp_mod = rlp_dep.module("zig-rlp"),
     };
 
     // Public surface
-    const committed_state_impl = b.option(
-        StateImpl,
-        "committed_state_impl",
-        "Custom CommittedState implementation enabler",
-    ) orelse .empty;
     const options = b.addOptions();
-    options.addOption(StateImpl, "state_impl", committed_state_impl);
+    options.addOption(State, "state", b.option(
+        State,
+        "committed_state",
+        "Custom CommittedState implementation enabler",
+    ) orelse .empty);
+    const public_platform: Platform = b.option(
+        Platform,
+        "platform",
+        "Platform selector",
+    ) orelse .native;
+    options.addOption(Platform, "platform", public_platform);
     const zevm_mod = b.addModule("zevm", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
     });
-    linkDeps(zevm_mod, deps);
+    linkDeps(zevm_mod, deps, public_platform);
     zevm_mod.addOptions("build_options", options);
 
     // Tests
@@ -151,7 +180,11 @@ pub fn build(b: *std.Build) void {
         .use_llvm = true,
     });
     unit_tests.root_module.link_libcpp = true;
-    linkDeps(unit_tests.root_module, deps);
+    const native_opts = b.addOptions();
+    native_opts.addOption(State, "state", .empty);
+    native_opts.addOption(Platform, "platform", .native);
+    unit_tests.root_module.addOptions("build_options", native_opts);
+    linkDeps(unit_tests.root_module, deps, .native);
     test_step.dependOn(&b.addRunArtifact(unit_tests).step);
 
     // Example user
@@ -165,6 +198,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
         }),
+        .native,
         deps,
     );
     const example = b.addExecutable(.{
@@ -192,7 +226,7 @@ pub fn build(b: *std.Build) void {
         .use_llvm = true,
     });
     bench.root_module.link_libcpp = true;
-    linkDeps(bench.root_module, deps);
+    linkDeps(bench.root_module, deps, .native);
     bench.root_module.addImport("clap", clap_dep.module("clap"));
     const run_bench = b.addRunArtifact(bench);
     if (b.args) |bench_args| run_bench.addArgs(bench_args);
@@ -202,7 +236,7 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("test/committed_state.zig"),
         .target = target,
         .optimize = optimize,
-    }), deps);
+    }), .native, deps);
 
     // State tests
     const state_test_step = b.step("state-tests", "Run EVM state tests");
@@ -267,7 +301,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     stateless_cs_mod.addImport("ssz", ssz_dep.module("ssz.zig"));
-    const stateless_zevm_mod = createZevmModule(b, target, optimize, stateless_cs_mod, deps);
+    const stateless_zevm_mod = createZevmModule(b, target, optimize, stateless_cs_mod, .native, deps);
     const guest_mod = b.createModule(.{
         .root_source_file = b.path("src/stateless/guest.zig"),
         .target = target,
