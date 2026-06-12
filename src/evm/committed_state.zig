@@ -1,12 +1,12 @@
 const types = @import("../types.zig");
 const build_options = @import("build_options");
 
-pub const Errors = switch (build_options.state_impl) {
+pub const Errors = switch (build_options.state) {
     .empty => EmptyCommittedState.Errors,
     .external => @import("committed_state").Errors,
 };
 
-pub const CommittedState = switch (build_options.state_impl) {
+pub const CommittedState = switch (build_options.state) {
     .empty => EmptyCommittedState,
     .external => @import("committed_state").CommittedState,
 };
