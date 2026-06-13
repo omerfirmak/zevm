@@ -128,7 +128,7 @@ pub fn processBlock(
     }
     try applyWithdrawals(&p_block.block, state);
 
-    const requests_hash = try computeRequestsHash(&vm, spec, state, &vm.logs);
+    const requests_hash = try computeRequestsHash(gpa, &vm, spec, state, &vm.logs);
     if (std.mem.eql(u8, &p_block.block.header.requests_hash, &std.mem.zeroes([32]u8))) {
         p_block.block.header.requests_hash = requests_hash;
     } else if (!std.mem.eql(u8, &requests_hash, &p_block.block.header.requests_hash))
@@ -143,18 +143,33 @@ pub fn processBlock(
 }
 
 fn computeRequestsHash(
+    allocator: std.mem.Allocator,
     vm: *evm.EVM,
     comptime spec: ChainSpec,
     state: *State,
     logs: *const std.DoublyLinkedList,
-) Errors![32]u8 {
+) ![32]u8 {
     var outer = Sha256Hasher.init(.{});
     try hashDepositRequests(logs, &outer);
 
     vm.reset();
-    try hashSystemCall(vm, spec, WITHDRAWAL_REQUEST_PREDEPLOY_ADDRESS, 0x01, state, &outer);
+    if (try hashSystemCall(
+        allocator,
+        vm,
+        spec,
+        WITHDRAWAL_REQUEST_PREDEPLOY_ADDRESS,
+        0x01,
+        state,
+    )) |h| outer.update(&h);
     vm.reset();
-    try hashSystemCall(vm, spec, CONSOLIDATION_REQUEST_PREDEPLOY_ADDRESS, 0x02, state, &outer);
+    if (try hashSystemCall(
+        allocator,
+        vm,
+        spec,
+        CONSOLIDATION_REQUEST_PREDEPLOY_ADDRESS,
+        0x02,
+        state,
+    )) |h| outer.update(&h);
 
     return outer.finalResult();
 }
@@ -193,27 +208,43 @@ fn hashDepositLog(inner: *Sha256Hasher, data: []const u8) !bool {
 }
 
 fn hashSystemCall(
+    allocator: std.mem.Allocator,
     vm: *evm.EVM,
     comptime spec: ChainSpec,
     target: u160,
     type_byte: u8,
     state: *State,
-    outer: *Sha256Hasher,
-) !void {
+) !?[32]u8 {
     const calldata: []u8 = &.{};
     const evm_spec = comptime EvmSpec.specByFork(spec.fork);
     vm.state_gas_reservoir = evm.STATE_BYTES_PER_STORAGE_SLOT * evm_spec.cpsb * SYSTEM_MAX_SSTORES_PER_CALL;
-    _, _, const call_err = vm.call(.{
-        .fork = evm_spec,
-    }, state, SYSTEM_ADDRESS, target, target, SYSTEM_CALL_GAS, calldata, 0, 0, &.{}, true, false) catch return;
+    _, _, const call_err = vm.call(
+        .{
+            .fork = evm_spec,
+        },
+        state,
+        SYSTEM_ADDRESS,
+        target,
+        target,
+        SYSTEM_CALL_GAS,
+        calldata,
+        0,
+        0,
+        &.{},
+        true,
+        false,
+    ) catch return Errors.SyscallRevert;
     if (call_err) |_| return Errors.SyscallRevert;
     const ret = vm.return_buffer[0..vm.return_data_size];
-    if (ret.len > 0) {
-        var inner = Sha256Hasher.init(.{});
-        inner.update(&[_]u8{type_byte});
-        inner.update(ret);
-        outer.update(&inner.finalResult());
+    if (ret.len == 0) {
+        return null;
     }
+
+    const buf = try allocator.alloc(u8, ret.len + 1);
+    defer allocator.free(buf);
+    buf[0] = type_byte;
+    @memcpy(buf[1..], ret);
+    return sha256(buf);
 }
 
 pub fn computeRoot(comptime T: type, gpa: std.mem.Allocator, items: []const T) ![32]u8 {
