@@ -149,8 +149,12 @@ fn computeRequestsHash(
     state: *State,
     logs: *const std.DoublyLinkedList,
 ) ![32]u8 {
-    var outer = Sha256Hasher.init(.{});
-    if (try hashDepositRequests(allocator, logs)) |h| outer.update(&h);
+    var buf: [96]u8 = undefined;
+    var size: usize = 0;
+    if (try hashDepositRequests(allocator, logs)) |h| {
+        @memcpy(buf[size .. size + 32], &h);
+        size += 32;
+    }
 
     vm.reset();
     if (try hashSystemCall(
@@ -160,7 +164,10 @@ fn computeRequestsHash(
         WITHDRAWAL_REQUEST_PREDEPLOY_ADDRESS,
         0x01,
         state,
-    )) |h| outer.update(&h);
+    )) |h| {
+        @memcpy(buf[size .. size + 32], &h);
+        size += 32;
+    }
     vm.reset();
     if (try hashSystemCall(
         allocator,
@@ -169,9 +176,12 @@ fn computeRequestsHash(
         CONSOLIDATION_REQUEST_PREDEPLOY_ADDRESS,
         0x02,
         state,
-    )) |h| outer.update(&h);
+    )) |h| {
+        @memcpy(buf[size .. size + 32], &h);
+        size += 32;
+    }
 
-    return outer.finalResult();
+    return sha256(buf[0..size]);
 }
 
 fn hashDepositRequests(allocator: std.mem.Allocator, logs: *const std.DoublyLinkedList) !?[32]u8 {
