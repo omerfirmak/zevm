@@ -150,7 +150,7 @@ fn computeRequestsHash(
     logs: *const std.DoublyLinkedList,
 ) ![32]u8 {
     var outer = Sha256Hasher.init(.{});
-    try hashDepositRequests(logs, &outer);
+    if (try hashDepositRequests(allocator, logs)) |h| outer.update(&h);
 
     vm.reset();
     if (try hashSystemCall(
@@ -174,36 +174,41 @@ fn computeRequestsHash(
     return outer.finalResult();
 }
 
-fn hashDepositRequests(logs: *const std.DoublyLinkedList, outer: *Sha256Hasher) Errors!void {
-    var inner = Sha256Hasher.init(.{});
-    var count: usize = 0;
-    inner.update(&[_]u8{0x00});
+fn hashDepositRequests(allocator: std.mem.Allocator, logs: *const std.DoublyLinkedList) !?[32]u8 {
+    var buf = try allocator.alloc(u8, 1);
+    defer allocator.free(buf);
+    buf[0] = 0;
+
     var node = logs.first;
     while (node) |n| {
         const ln: *const evm.EVM.LogNode = @alignCast(@fieldParentPtr("node", n));
         if (ln.log.address == DEPOSIT_CONTRACT and
             ln.log.topics.len > 0 and ln.log.topics[0] == DEPOSIT_EVENT_TOPIC)
         {
-            if (!try hashDepositLog(&inner, ln.log.data)) return Errors.MismatchedRequestsHash;
-            count += 1;
+            const len = buf.len;
+            buf = try allocator.realloc(buf, len + 192);
+            if (!try serializeDepositLog(buf[len .. len + 192], ln.log.data)) return Errors.MismatchedRequestsHash;
         }
         node = n.next;
     }
-    if (count > 0) outer.update(&inner.finalResult());
+
+    if (buf.len == 1) return null;
+    return sha256(buf);
 }
 
-fn hashDepositLog(inner: *Sha256Hasher, data: []const u8) !bool {
+fn serializeDepositLog(buf: []u8, data: []const u8) !bool {
     if (data.len < 576) return false;
     const field_sizes = [_]usize{ 48, 32, 8, 96, 8 };
-    var fields: [5][]const u8 = undefined;
+    var start: usize = 0;
     for (field_sizes, 0..) |size, i| {
         const off = std.math.cast(usize, std.mem.readInt(u256, data[i * 32 ..][0..32], .big)) orelse return false;
         if (off + 32 + size > data.len) return false;
         const length = std.math.cast(usize, std.mem.readInt(u256, data[off..][0..32], .big)) orelse return false;
         if (length != size) return false;
-        fields[i] = data[off + 32 .. off + 32 + size];
+
+        @memcpy(buf[start .. start + size], data[off + 32 .. off + 32 + size]);
+        start += size;
     }
-    for (fields) |f| inner.update(f);
     return true;
 }
 
