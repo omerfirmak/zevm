@@ -25,5 +25,3 @@ pub fn sha256(data: []const u8) [32]u8 {
     std.crypto.hash.sha2.Sha256.hash(data, &h, .{});
     return h;
 }
-
-pub const Sha256Hasher = std.crypto.hash.sha2.Sha256;

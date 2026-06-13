@@ -10,7 +10,6 @@ const ChainSpec = @import("chainspec.zig").ChainSpec;
 const secp256k1 = @import("zig-eth-secp256k1");
 const keccak256 = @import("../evm/crypto/hash.zig").keccak256;
 const sha256 = @import("../evm/crypto/hash.zig").sha256;
-const Sha256Hasher = @import("../evm/crypto/hash.zig").Sha256Hasher;
 const blobBaseFee = @import("../blob_fee.zig").blobBaseFee;
 const ecrecover = @import("../evm/crypto/curve.zig").ecrecover;
 const Trie = @import("../trie/trie.zig").Trie;
