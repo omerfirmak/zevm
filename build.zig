@@ -396,7 +396,7 @@ pub fn build(b: *std.Build) void {
     });
 
     const zisk_exe = b.addExecutable(.{
-        .name = "zisk-guest",
+        .name = "zevm-zisk-guest",
         .root_module = guest_lib_mod,
         .use_llvm = true,
     });
