@@ -12,6 +12,7 @@ pub const Errors = error{
 };
 
 pub const CommittedState = struct {
+    nodes: std.AutoArrayHashMapUnmanaged([32]u8, []const u8),
     codes: std.AutoHashMapUnmanaged([32]u8, []const u8),
     state_trie: evm.AccountTrie,
     account_tries: std.AutoHashMapUnmanaged(u160, evm.StorageTrie),
@@ -33,7 +34,6 @@ pub const CommittedState = struct {
 
         var nodes: std.AutoArrayHashMapUnmanaged([32]u8, []const u8) = .empty;
         try nodes.ensureTotalCapacity(allocator, @intCast(state.len()));
-        defer nodes.deinit(allocator);
 
         for (state.constSlice()) |*node| {
             const node_hash = evm.crypto.hash.keccak256(node.constSlice());
@@ -55,6 +55,7 @@ pub const CommittedState = struct {
         }
 
         return .{
+            .nodes = nodes,
             .codes = codes,
             .state_trie = state_trie,
             .account_tries = account_tries,

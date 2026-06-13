@@ -12,6 +12,7 @@ pub const empty_root_hash: [32]u8 = .{
 const Node = union(enum) {
     const Branch = struct {
         children: [16]?*Node = [_]?*Node{null} ** 16,
+        hash: ?*[32]u8 = null,
 
         pub fn init() Node {
             return Node{ .branch = .{} };
@@ -21,6 +22,7 @@ const Node = union(enum) {
         key: [65]u8,
         key_len: u8,
         child: *Node,
+        hash: ?*[32]u8 = null,
 
         pub fn init(key: []const u8, child: *Node) Node {
             var n = Node{ .ext = .{
@@ -36,6 +38,7 @@ const Node = union(enum) {
         key: [65]u8,
         key_len: u8,
         val: []const u8,
+        hash: ?*[32]u8 = null,
 
         pub fn init(key: []const u8, val: []const u8) Node {
             var n = Node{ .leaf = .{
@@ -124,13 +127,13 @@ pub const Trie = struct {
     ) anyerror!*Node {
         const child = try self.allocator.create(Node);
         if (payload.len == 32) {
-            if (nodes.get(payload[0..32].*)) |raw| {
-                try self.recursiveResolve(child, raw, nodes);
+            if (nodes.getEntry(payload[0..32].*)) |entry| {
+                try self.recursiveResolve(child, entry.value_ptr.*, entry.key_ptr, nodes);
             } else {
                 child.* = Node.Hashed.init(payload);
             }
         } else {
-            try self.recursiveResolve(child, (payload.ptr - 1)[0 .. payload.len + 1], nodes);
+            try self.recursiveResolve(child, (payload.ptr - 1)[0 .. payload.len + 1], null, nodes);
         }
         return child;
     }
@@ -139,6 +142,7 @@ pub const Trie = struct {
         self: *Self,
         root: *Node,
         root_rlp: []const u8,
+        root_hash: ?*[32]u8,
         nodes: *const std.AutoArrayHashMapUnmanaged([32]u8, []const u8),
     ) anyerror!void {
         var items: [][]const u8 = undefined;
@@ -147,6 +151,7 @@ pub const Trie = struct {
 
         if (items.len == 17) {
             root.* = Node.Branch.init();
+            root.branch.hash = root_hash;
             for (items[0..16], 0..) |child_payload, i| {
                 if (child_payload.len == 0) continue;
                 root.branch.children[i] = try self.resolveSubTrie(child_payload, nodes);
@@ -160,9 +165,11 @@ pub const Trie = struct {
 
             if (decoded.is_leaf) {
                 root.* = Node.Leaf.init(decoded.nibbles, value_payload);
+                root.leaf.hash = root_hash;
             } else {
                 if (value_payload.len == 0) return error.MalformedTrieNode;
                 root.* = Node.Extension.init(decoded.nibbles, try self.resolveSubTrie(value_payload, nodes));
+                root.ext.hash = root_hash;
             }
         } else {
             return error.MalformedTrieNode;
@@ -273,6 +280,7 @@ pub const Trie = struct {
                         collapseBranch(node, branch);
                     }
                 }
+                branch.hash = null;
             },
             .ext => |*ext| {
                 const diff_idx = getDiffIndex(ext.key[0..ext.key_len], key);
@@ -297,7 +305,7 @@ pub const Trie = struct {
                             @memcpy(new_key[ext.key_len..][0..child_ext.key_len], child_ext.key[0..child_ext.key_len]);
                             node.* = Node.Extension.init(new_key[0 .. ext.key_len + child_ext.key_len], child_ext.child);
                         },
-                        .branch, .hashed => {},
+                        .branch, .hashed => ext.hash = null,
                     }
                 } else if (value.len == 0) {
                     // Key not present — deletion is a no-op.
@@ -328,6 +336,7 @@ pub const Trie = struct {
                         ext.child.* = Node.Branch.init();
                         p = &ext.child.branch;
                         ext.key_len = @intCast(diff_idx);
+                        ext.hash = null;
                     }
 
                     const o = try self.createLeaf(key[diff_idx + 1 ..], value);
@@ -344,6 +353,7 @@ pub const Trie = struct {
                         node.* = .empty;
                     } else {
                         node.leaf.val = value;
+                        node.leaf.hash = null;
                     }
                 } else if (value.len != 0) {
                     var p: *Node.Branch = undefined;
@@ -472,6 +482,10 @@ pub const Trie = struct {
                 return;
             },
             .branch => |*branch| {
+                if (branch.hash) |cached| {
+                    node.* = Node.Hashed.init(cached);
+                    return;
+                }
                 var children: [17]ChildRef = undefined;
                 for (branch.children, 0..) |child, i| {
                     if (child) |c| {
@@ -487,6 +501,10 @@ pub const Trie = struct {
                 try rlp.serialize([17]ChildRef, self.allocator, children, &list);
             },
             .ext => |*ext| {
+                if (ext.hash) |cached| {
+                    node.* = Node.Hashed.init(cached);
+                    return;
+                }
                 try self.hash(ext.child, path.appendSlice(ext.key[0..ext.key_len]));
 
                 const child_h = ext.child.hashed;
@@ -497,6 +515,10 @@ pub const Trie = struct {
                 }, &list);
             },
             .leaf => |*leaf| {
+                if (leaf.hash) |cached| {
+                    node.* = Node.Hashed.init(cached);
+                    return;
+                }
                 leaf.key[leaf.key_len] = 16;
                 const encoder = struct { key: []const u8, value: []const u8 };
                 try rlp.serialize(encoder, self.allocator, .{
