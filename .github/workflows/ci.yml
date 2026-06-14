@@ -123,3 +123,40 @@ jobs:
           name: zevm-zisk-guest-${{ github.event.pull_request.head.sha || github.sha }}
           path: zig-out/bin/zevm-zisk-guest
           if-no-files-found: error
+
+  zisk-tests:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        fork: [Amsterdam]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Rust toolchain (rustup)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install zisk
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            xz-utils jq curl build-essential qemu-system libomp-dev libgmp-dev \
+            nlohmann-json3-dev protobuf-compiler uuid-dev libgrpc++-dev \
+            libsecp256k1-dev libsodium-dev libpqxx-dev nasm libopenmpi-dev \
+            openmpi-bin openmpi-common libclang-dev clang gcc-riscv64-unknown-elf
+          curl -L https://raw.githubusercontent.com/0xPolygonHermez/zisk/main/ziskup/install.sh | bash -s -- --cpu --nokey --version 0.18.0
+          echo "${XDG_CONFIG_HOME:-$HOME}/.zisk/bin" >> $GITHUB_PATH
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Download and extract zkEVM test fixtures
+        run: |
+          curl -L https://github.com/ethereum/execution-specs/releases/download/tests-zkevm%40v0.4.1/fixtures_zkevm.tar.gz | tar -xz
+          mv fixtures zk_fixtures
+
+      - name: Run zkEVM fixtures through ziskemu
+        run: zig build zk-tests -Doptimize=ReleaseFast -Dfork=${{ matrix.fork }} -Dziskemu-guest

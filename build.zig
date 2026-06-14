@@ -335,6 +335,7 @@ pub fn build(b: *std.Build) void {
     if (fork_option) |f| {
         run_zkevm_tests.setEnvironmentVariable("FORK", f);
     }
+    const ziskemu_guest_opt = b.option(bool, "ziskemu-guest", "Run zk-tests through ziskemu against the zisk-guest ELF") orelse false;
     zkevm_test_step.dependOn(&run_zkevm_tests.step);
 
     // Zisk
@@ -406,6 +407,12 @@ pub fn build(b: *std.Build) void {
     zisk_exe.setLinkerScript(b.path("zkvm/zisk/link.ld"));
     zisk_exe.root_module.addObjectFile(b.path(".zig-cache/ziskos-cargo-target/riscv64ima-zisk-zkvm-elf/release/libziskos_staticlib.a"));
     zisk_exe.step.dependOn(&ziskos_build.step);
+    const zisk_install = b.addInstallArtifact(zisk_exe, .{});
     const guest_step = b.step("zisk", "Build src/stateless/main.zig as the zisk guest executable");
-    guest_step.dependOn(&b.addInstallArtifact(zisk_exe, .{}).step);
+    guest_step.dependOn(&zisk_install.step);
+
+    if (ziskemu_guest_opt) {
+        run_zkevm_tests.step.dependOn(&zisk_install.step);
+        run_zkevm_tests.setEnvironmentVariable("ZISKEMU_GUEST", "1");
+    }
 }
