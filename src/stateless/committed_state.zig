@@ -1,5 +1,6 @@
 const std = @import("std");
 const evm = @import("zevm");
+const stateless_trie = @import("trie.zig");
 const List = @import("ssz").utils.List;
 
 const MAX_BYTES_PER_WITNESS_NODE = 1 << 20;
@@ -12,8 +13,8 @@ pub const Errors = error{
 };
 
 pub const CommittedState = struct {
-    nodes: std.AutoArrayHashMapUnmanaged([32]u8, []const u8),
-    codes: std.AutoHashMapUnmanaged([32]u8, []const u8),
+    nodes: stateless_trie.HashMap,
+    codes: stateless_trie.HashMap,
     state_trie: evm.AccountTrie,
     account_tries: std.AutoHashMapUnmanaged(u160, evm.StorageTrie),
 
@@ -24,24 +25,24 @@ pub const CommittedState = struct {
         bytecodes: List(List(u8, MAX_BYTES_PER_CODE), MAX_WITNESS_CODES),
         bal: *const evm.types.BlockAccessLists,
     ) !CommittedState {
-        var codes: std.AutoHashMapUnmanaged([32]u8, []const u8) = .empty;
-        try codes.ensureTotalCapacity(allocator, @intCast(bytecodes.len()));
+        var codes: stateless_trie.HashMap = .empty;
+        try codes.ensureTotalCapacityContext(allocator, @intCast(bytecodes.len()), .{});
 
         for (bytecodes.constSlice()) |*bytecode| {
             const code_hash = evm.crypto.hash.keccak256(bytecode.constSlice());
-            codes.putAssumeCapacity(code_hash, bytecode.constSlice());
+            codes.putAssumeCapacityContext(code_hash, bytecode.constSlice(), .{});
         }
 
-        var nodes: std.AutoArrayHashMapUnmanaged([32]u8, []const u8) = .empty;
-        try nodes.ensureTotalCapacity(allocator, @intCast(state.len()));
+        var nodes: stateless_trie.HashMap = .empty;
+        try nodes.ensureTotalCapacityContext(allocator, @intCast(state.len()), .{});
 
         for (state.constSlice()) |*node| {
             const node_hash = evm.crypto.hash.keccak256(node.constSlice());
-            nodes.putAssumeCapacity(node_hash, node.constSlice());
+            nodes.putAssumeCapacityContext(node_hash, node.constSlice(), .{});
         }
 
         const state_trie = evm.AccountTrie.initFromTrie(
-            try evm.Trie.initFromWitness(allocator, parent_state_root, &nodes),
+            try stateless_trie.initFromWitness(allocator, parent_state_root, &nodes),
         );
 
         var account_tries: std.AutoHashMapUnmanaged(u160, evm.StorageTrie) = .empty;
@@ -50,7 +51,7 @@ pub const CommittedState = struct {
         for (bal.*) |entry| {
             const storage_hash = (try state_trie.get(keccakOfU160(entry.addr))).storage_hash;
             account_tries.putAssumeCapacity(entry.addr, evm.StorageTrie.initFromTrie(
-                try evm.Trie.initFromWitness(allocator, storage_hash, &nodes),
+                try stateless_trie.initFromWitness(allocator, storage_hash, &nodes),
             ));
         }
 

@@ -302,6 +302,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     stateless_cs_mod.addImport("ssz", ssz_dep.module("ssz.zig"));
+    stateless_cs_mod.addImport("rlp", rlp_dep.module("zig-rlp"));
     const stateless_zevm_mod = createZevmModule(b, target, optimize, stateless_cs_mod, .native, deps);
     const guest_mod = b.createModule(.{
         .root_source_file = b.path("src/stateless/guest.zig"),
@@ -371,6 +372,7 @@ pub fn build(b: *std.Build) void {
         .single_threaded = true,
     });
     guest_cs_mod.addImport("ssz", ssz_dep.module("ssz.zig"));
+    guest_cs_mod.addImport("rlp", rlp_dep.module("zig-rlp"));
     const guest_zkvm_zevm_mod = createZevmModule(b, guest_target, optimize, guest_cs_mod, .zkvm, deps);
     guest_zkvm_zevm_mod.link_libc = false;
     guest_zkvm_zevm_mod.single_threaded = true;

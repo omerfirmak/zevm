@@ -9,8 +9,8 @@ pub const empty_root_hash: [32]u8 = .{
     0x01, 0x62, 0x2f, 0xb5, 0xe3, 0x63, 0xb4, 0x21,
 }; // 0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421
 
-const Node = union(enum) {
-    const Branch = struct {
+pub const Node = union(enum) {
+    pub const Branch = struct {
         children: [16]?*Node = [_]?*Node{null} ** 16,
         hash: ?*[32]u8 = null,
 
@@ -18,7 +18,7 @@ const Node = union(enum) {
             return Node{ .branch = .{} };
         }
     };
-    const Extension = struct {
+    pub const Extension = struct {
         key: [65]u8,
         key_len: u8,
         child: *Node,
@@ -34,7 +34,7 @@ const Node = union(enum) {
             return n;
         }
     };
-    const Leaf = struct {
+    pub const Leaf = struct {
         key: [65]u8,
         key_len: u8,
         val: []const u8,
@@ -50,7 +50,7 @@ const Node = union(enum) {
             return n;
         }
     };
-    const Hashed = struct {
+    pub const Hashed = struct {
         data: [32]u8,
         len: u8,
 
@@ -104,76 +104,6 @@ pub const Trie = struct {
             .root = root,
             .allocator = allocator,
         };
-    }
-
-    pub fn initFromWitness(
-        allocator: std.mem.Allocator,
-        root: [32]u8,
-        nodes: *const std.AutoArrayHashMapUnmanaged([32]u8, []const u8),
-    ) !Self {
-        if (std.mem.eql(u8, &empty_root_hash, &root)) return Self.init(allocator);
-        var t = Self{
-            .root = undefined,
-            .allocator = allocator,
-        };
-        t.root = try t.resolveSubTrie(&root, nodes);
-        return t;
-    }
-
-    fn resolveSubTrie(
-        self: *Self,
-        payload: []const u8,
-        nodes: *const std.AutoArrayHashMapUnmanaged([32]u8, []const u8),
-    ) anyerror!*Node {
-        const child = try self.allocator.create(Node);
-        if (payload.len == 32) {
-            if (nodes.getEntry(payload[0..32].*)) |entry| {
-                try self.recursiveResolve(child, entry.value_ptr.*, entry.key_ptr, nodes);
-            } else {
-                child.* = Node.Hashed.init(payload);
-            }
-        } else {
-            try self.recursiveResolve(child, (payload.ptr - 1)[0 .. payload.len + 1], null, nodes);
-        }
-        return child;
-    }
-
-    fn recursiveResolve(
-        self: *Self,
-        root: *Node,
-        root_rlp: []const u8,
-        root_hash: ?*[32]u8,
-        nodes: *const std.AutoArrayHashMapUnmanaged([32]u8, []const u8),
-    ) anyerror!void {
-        var items: [][]const u8 = undefined;
-        _ = try rlp.deserialize([][]const u8, self.allocator, root_rlp, &items);
-        defer self.allocator.free(items);
-
-        if (items.len == 17) {
-            root.* = Node.Branch.init();
-            root.branch.hash = root_hash;
-            for (items[0..16], 0..) |child_payload, i| {
-                if (child_payload.len == 0) continue;
-                root.branch.children[i] = try self.resolveSubTrie(child_payload, nodes);
-            }
-        } else if (items.len == 2) {
-            const key_payload = items[0];
-            const value_payload = items[1];
-
-            var key_buf: [65]u8 = undefined;
-            const decoded = compactToHex(key_payload, &key_buf);
-
-            if (decoded.is_leaf) {
-                root.* = Node.Leaf.init(decoded.nibbles, value_payload);
-                root.leaf.hash = root_hash;
-            } else {
-                if (value_payload.len == 0) return error.MalformedTrieNode;
-                root.* = Node.Extension.init(decoded.nibbles, try self.resolveSubTrie(value_payload, nodes));
-                root.ext.hash = root_hash;
-            }
-        } else {
-            return error.MalformedTrieNode;
-        }
     }
 
     pub fn get(self: *const Self, key: [32]u8) !?[]const u8 {
@@ -585,25 +515,6 @@ fn hexToCompact(hex: []u8) []u8 {
 
     hex[0] = first_byte;
     return hex[0..bin_len];
-}
-
-fn compactToHex(compact: []const u8, out_buf: *[65]u8) struct { is_leaf: bool, nibbles: []u8 } {
-    const flags = compact[0] >> 4;
-    const is_leaf = (flags & 0x2) != 0;
-    const odd = (flags & 0x1) != 0;
-
-    var i: usize = 0;
-    if (odd) {
-        out_buf[i] = compact[0] & 0x0F;
-        i += 1;
-    }
-    var j: usize = 1;
-    while (j < compact.len) : (j += 1) {
-        out_buf[i] = compact[j] >> 4;
-        out_buf[i + 1] = compact[j] & 0x0F;
-        i += 2;
-    }
-    return .{ .is_leaf = is_leaf, .nibbles = out_buf[0..i] };
 }
 
 fn verifyCase(cases: []const struct { k: []const u8, v: []const u8 }, expected_hex: *const [64]u8) !void {
