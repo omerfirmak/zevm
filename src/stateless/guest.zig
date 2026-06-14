@@ -20,7 +20,7 @@ pub fn verify_ssz(allocator: std.mem.Allocator, input_bytes: []const u8) ![]cons
     try ssz.deserialize(types.StatelessInput, input_bytes[STATELESS_INPUT_SCHEMA_ID_SIZE..], &input, allocator);
 
     var new_payload_request_root: [32]u8 = undefined;
-    try ssz.hashTreeRoot(std.crypto.hash.sha2.Sha256, types.NewPayloadRequest, input.new_payload_request, &new_payload_request_root, allocator);
+    try ssz.hashTreeRoot(zevm.crypto.hash.Sha256, types.NewPayloadRequest, input.new_payload_request, &new_payload_request_root, allocator);
 
     var res: types.StatelessValidationResult = .{
         .chain_config = input.chain_config,
