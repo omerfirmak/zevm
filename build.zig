@@ -1,8 +1,6 @@
 const std = @import("std");
 
 const Deps = struct {
-    secp256k1_mod: *std.Build.Module,
-    secp256k1_lib: *std.Build.Step.Compile,
     blst_mod: *std.Build.Module,
     ckzg4844_mod: *std.Build.Module,
     trusted_setup_mod: *std.Build.Module,
@@ -18,8 +16,6 @@ fn linkDeps(mod: *std.Build.Module, d: Deps, platform: Platform) void {
         .native => {
             mod.linkLibrary(d.mcl_lib);
             mod.addImport("mcl", d.mcl_mod);
-            mod.linkLibrary(d.secp256k1_lib);
-            mod.addImport("zig-eth-secp256k1", d.secp256k1_mod);
             mod.addImport("blst", d.blst_mod);
             mod.addImport("ckzg", d.ckzg4844_mod);
             mod.addImport("trusted_setup", d.trusted_setup_mod);
@@ -108,7 +104,6 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const secp256k1_dep = b.dependency("zig_eth_secp256k1", .{ .target = target, .optimize = optimize });
     const ckzg4844_dep = b.dependency("ckzg_4844", .{ .target = target, .optimize = optimize });
     const blst_dep = b.dependency("blst", .{ .target = target, .optimize = optimize });
     const clap_dep = b.dependency("clap", .{ .target = target, .optimize = optimize });
@@ -134,8 +129,6 @@ pub fn build(b: *std.Build) void {
     zkvm.addIncludePath(zisk_dep.path("zkvm-interface"));
 
     const deps = Deps{
-        .secp256k1_mod = secp256k1_dep.module("zig-eth-secp256k1"),
-        .secp256k1_lib = secp256k1_dep.artifact("secp256k1"),
         .ckzg4844_mod = ckzg4844_dep.module("ckzg"),
         .blst_mod = b.createModule(.{
             .root_source_file = blst_dep.path("bindings/zig/blst.zig"),
