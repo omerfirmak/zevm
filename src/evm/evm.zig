@@ -400,7 +400,7 @@ pub const EVM = struct {
         }
 
         if (cfg.fork.isEnabled(.Amsterdam)) {
-            if (total_regular_intrinsic > cfg.fork.max_tx_gas) return Errors.OutOfGas;
+            if (@max(total_regular_intrinsic, floor_cost) > cfg.fork.max_tx_gas) return Errors.OutOfGas;
             const worst_case_regular = @min(cfg.fork.max_tx_gas, msg.gas_limit - total_state_intrinsic);
             const worst_case_state = msg.gas_limit - total_regular_intrinsic;
             if (worst_case_regular > self.context.gas_limit - self.context.block_regular_used) return Errors.GasOverflow;
