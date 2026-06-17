@@ -1,14 +1,10 @@
 const std = @import("std");
 const build_options = @import("build_options");
-const secp256k1 = @import("zig-eth-secp256k1");
 const zkvm = @import("zkvm");
-const SpinLockOnce = @import("../sync.zig").SpinLockOnce;
 
-var curve_ctx: secp256k1.Secp256k1 = undefined;
-var curve_once: SpinLockOnce(initCtx) = .{};
-fn initCtx() void {
-    curve_ctx = secp256k1.Secp256k1.init() catch @panic("secp256k1 init failed");
-}
+const Curve = std.crypto.ecc.Secp256k1;
+const Scalar = Curve.scalar.Scalar;
+const Fe = Curve.Fe;
 
 pub fn ecrecover(
     hash: [32]u8,
@@ -30,14 +26,37 @@ pub fn ecrecover(
         return std.mem.readInt(u160, h[12..32], .big);
     }
 
-    curve_once.call();
-    var sig: secp256k1.Signature = [_]u8{0} ** 65;
-    std.mem.writeInt(u256, sig[0..32], r, .big);
-    std.mem.writeInt(u256, sig[32..64], s, .big);
-    sig[64] = @intCast(v & 1);
-    const pubkey = try curve_ctx.recoverPubkey(hash, sig);
+    var r_bytes: [32]u8 = undefined;
+    var s_bytes: [32]u8 = undefined;
+    std.mem.writeInt(u256, &r_bytes, r, .big);
+    std.mem.writeInt(u256, &s_bytes, s, .big);
 
-    return addressFromPubkey(pubkey);
+    // Reconstruct R: the curve point whose x-coordinate is r and whose
+    // y-coordinate has parity matching the low bit of v.
+    const r_fe = try Fe.fromBytes(r_bytes, .big);
+    const r_y = try Curve.recoverY(r_fe, (v & 1) == 1);
+    const R = try Curve.fromAffineCoordinates(.{ .x = r_fe, .y = r_y });
+
+    // r and s must be in [1, n-1]
+    const r_scalar = try Scalar.fromBytes(r_bytes, .big);
+    const s_scalar = try Scalar.fromBytes(s_bytes, .big);
+    if (r_scalar.isZero() or s_scalar.isZero()) return error.InvalidSignature;
+
+    // hash is reduced mod n (EVM allows hash >= n, treating it as hash mod n)
+    var hash_padded: [64]u8 = [_]u8{0} ** 64;
+    @memcpy(hash_padded[32..64], &hash);
+    const hash_scalar = Scalar.fromBytes64(hash_padded, .big);
+
+    // r_inv = r^{-1} mod n
+    const r_inv = r_scalar.invert();
+    const u1_bytes = r_inv.mul(s_scalar).toBytes(.big);
+    const u2_bytes = r_inv.mul(hash_scalar.neg()).toBytes(.big);
+
+    // pubkey_point = u1*R + u2*G
+    const pubkey_point = try Curve.mulDoubleBasePublic(R, u1_bytes, Curve.basePoint, u2_bytes, .big);
+    try pubkey_point.rejectIdentity();
+
+    return addressFromPubkey(pubkey_point.toUncompressedSec1());
 }
 
 pub fn addressFromPubkey(pubkey: [65]u8) u160 {

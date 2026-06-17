@@ -2,7 +2,7 @@ const std = @import("std");
 const build_options = @import("build_options");
 const evm = @import("evm.zig");
 const mem = @import("memory.zig");
-const secp256k1 = @import("zig-eth-secp256k1");
+const curve = @import("crypto/curve.zig");
 const SpinLockOnce = @import("sync.zig").SpinLockOnce;
 const bls12 = @import("crypto/blst.zig");
 const kzg = @import("ckzg");
@@ -69,11 +69,6 @@ fn mcl_init() void {
     if (mcl.mclBn_init(mcl.mclBn_CurveSNARK1, mcl.MCLBN_COMPILED_TIME_VAR) != 0) unreachable;
 }
 
-var secp256k1_ctx: secp256k1.Secp256k1 = undefined;
-var secp256k1_once: SpinLockOnce(secp256k1_init) = .{};
-fn secp256k1_init() void {
-    secp256k1_ctx = secp256k1.Secp256k1.init() catch @panic("secp256k1 init failed");
-}
 
 const bls12_g1_discounts = [_]u16{
     0,   1000, 949, 848, 797, 764, 750, 738, 728, 719, 712, 705, 698, 692, 687, 682, 677, 673, 669, 665, 661, 658, 654,
@@ -293,26 +288,11 @@ pub fn Handlers(comptime fork: Spec) type {
             const v = padded[63];
             if (v != 27 and v != 28) return bail;
 
-            var pubkey: [64]u8 align(8) = undefined;
-            if (build_options.platform == .zkvm) {
-                if (zkvm.zkvm_secp256k1_ecrecover(
-                    @ptrCast(padded[0..32]),
-                    @ptrCast(padded[64..128]),
-                    v - 27,
-                    @ptrCast(&pubkey),
-                ) != zkvm.ZKVM_EOK) return bail;
-            } else {
-                secp256k1_once.call();
-                var sig: secp256k1.Signature = [_]u8{0} ** 65;
-                @memcpy(sig[0..64], padded[64..128]);
-                sig[64] = v - 27;
-                const native_pubkey = secp256k1_ctx.recoverPubkey(padded[0..32].*, sig) catch return bail;
-                @memcpy(&pubkey, native_pubkey[1..65]);
-            }
-
-            const pubkey_hash = @import("crypto/hash.zig").keccak256(&pubkey);
+            const r = std.mem.readInt(u256, padded[64..96], .big);
+            const s = std.mem.readInt(u256, padded[96..128], .big);
+            const address = curve.ecrecover(padded[0..32].*, v - 27, r, s) catch return bail;
             @memset(return_buffer[0..12], 0);
-            @memcpy(return_buffer[12..32], pubkey_hash[12..32]);
+            std.mem.writeInt(u160, return_buffer[12..32], address, .big);
 
             return .{ .return_size = 32, .remaining_gas = remaining_gas };
         }
