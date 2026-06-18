@@ -18,11 +18,13 @@ pub const ChainSpec = struct {
     blob_base_fee_update_fraction: u64,
 };
 
-pub fn chainSpecByFork(fork: Fork) ChainSpec {
-    return switch (fork) {
+pub fn chainSpecByFork(fork: Fork, comptime chain_id: u64) ChainSpec {
+    return override(switch (fork) {
         .Osaka => Osaka,
         .Amsterdam => Amsterdam,
-    };
+    }, .{
+        .chain_id = chain_id,
+    });
 }
 
 pub const Osaka: ChainSpec = .{

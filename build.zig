@@ -107,7 +107,11 @@ fn createGuestModule(
     platform: Platform,
     d: Deps,
     main: std.Build.LazyPath,
+    chain_id: u64,
 ) *std.Build.Module {
+    const options = b.addOptions();
+    options.addOption(u64, "chain_id", chain_id);
+
     const ssz_dep = b.dependency("ssz", .{ .target = target, .optimize = optimize });
 
     const guest_cs_mod = b.createModule(
@@ -119,7 +123,7 @@ fn createGuestModule(
     const guest_zkvm_zevm_mod = createZevmModule(b, target, optimize, guest_cs_mod, platform, d);
     guest_zkvm_zevm_mod.link_libc = false;
     guest_zkvm_zevm_mod.single_threaded = true;
-    return b.createModule(.{
+    var guest_mod = b.createModule(.{
         .root_source_file = main,
         .target = target,
         .optimize = optimize,
@@ -133,6 +137,9 @@ fn createGuestModule(
             .{ .name = "ssz", .module = ssz_dep.module("ssz.zig") },
         },
     });
+    guest_mod.addOptions("build_options", options);
+
+    return guest_mod;
 }
 
 pub fn build(b: *std.Build) void {
@@ -324,6 +331,9 @@ pub fn build(b: *std.Build) void {
     blockchain_test_step.dependOn(&run_blockchain_tests.step);
 
     // zkEVM tests
+    const guest_options = b.addOptions();
+    guest_options.addOption(u64, "chain_id", 1);
+
     const stateless_cs_mod = b.createModule(.{
         .root_source_file = b.path("src/stateless/committed_state.zig"),
         .target = target,
@@ -341,6 +351,7 @@ pub fn build(b: *std.Build) void {
     guest_mod.addImport("committed_state", stateless_cs_mod);
     guest_mod.addImport("rlp", rlp_dep.module("zig-rlp"));
     guest_mod.addImport("ssz", ssz_dep.module("ssz.zig"));
+    guest_mod.addOptions("build_options", guest_options);
 
     const zkevm_test_step = b.step("zk-tests", "Run zkEVM blockchain tests");
     const zkevm_tests = b.addTest(.{
@@ -366,6 +377,7 @@ pub fn build(b: *std.Build) void {
     }
     zkevm_test_step.dependOn(&run_zkevm_tests.step);
 
+    const chain_id = b.option(u64, "chainid", "Chain ID") orelse 1;
     // Native guest
     const guest_exe = b.addExecutable(.{
         .name = "zevm-guest",
@@ -376,6 +388,7 @@ pub fn build(b: *std.Build) void {
             .native,
             deps,
             b.path("src/stateless/main.zig"),
+            chain_id,
         ),
         .use_llvm = true,
     });
@@ -417,6 +430,7 @@ pub fn build(b: *std.Build) void {
             .zkvm,
             deps,
             b.path("src/stateless/zk_main.zig"),
+            chain_id,
         ),
         .use_llvm = true,
     });

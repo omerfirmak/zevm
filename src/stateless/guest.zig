@@ -19,6 +19,8 @@ pub fn verify_ssz(allocator: std.mem.Allocator, input_bytes: []const u8) ![]cons
     var input: types.StatelessInput = undefined;
     try ssz.deserialize(types.StatelessInput, input_bytes[STATELESS_INPUT_SCHEMA_ID_SIZE..], &input, allocator);
 
+    if (input.chain_config.chain_id != @import("build_options").chain_id) return error.UnexpectedChainid;
+
     var new_payload_request_root: [32]u8 = undefined;
     try ssz.hashTreeRoot(zevm.crypto.hash.Sha256, types.NewPayloadRequest, input.new_payload_request, &new_payload_request_root, allocator);
 
@@ -71,7 +73,7 @@ pub fn verify(allocator: std.mem.Allocator, input: types.StatelessInput) !void {
 
     try zevm.processor.processBlock(
         allocator,
-        zevm.chainspec.chainSpecByFork(spec.fork),
+        zevm.chainspec.chainSpecByFork(spec.fork, @import("build_options").chain_id),
         &block,
         parent,
         ancestors,
