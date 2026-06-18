@@ -256,7 +256,7 @@ fn runBlockchainTestFile(io: std.Io, allocator: std.mem.Allocator, dir: std.Io.D
 
         switch (fork_enum) {
             inline else => |f| {
-                runBlockchainTest(allocator, &test_case, zevm.chainspec.chainSpecByFork(f)) catch |err| {
+                runBlockchainTest(allocator, &test_case, zevm.chainspec.chainSpecByFork(f, 1)) catch |err| {
                     std.debug.print("{s}: FAIL: {}\n", .{ name, err });
                     any_failed = true;
                 };
