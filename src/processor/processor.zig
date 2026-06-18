@@ -43,7 +43,7 @@ pub const Errors = error{
 
 pub const GAS_PER_BLOB = 131_072;
 pub const HISTORY_CONTRACT: u256 = 0x0000F90827F1C53a10cb7A02335B175320002935;
-pub const HISTORY_SERVE_WINDOW: u64 = 8192;
+pub const HISTORY_SERVE_WINDOW: u64 = 8191;
 pub const BEACON_ROOTS_ADDRESS: u256 = 0x000F3df6D732807Ef1319fB7B8bB8522d0Beac02;
 const HISTORICAL_ROOTS_MODULUS: u256 = 8191;
 const SYSTEM_ADDRESS: u160 = 0xfffffffffffffffffffffffffffffffffffffffe;
