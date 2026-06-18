@@ -369,7 +369,7 @@ pub fn build(b: *std.Build) void {
     const zisk_exe = b.addExecutable(.{
         .name = "zevm-zisk-guest",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/stateless/main.zig"),
+            .root_source_file = b.path("src/stateless/zk_main.zig"),
             .target = guest_target,
             .optimize = optimize,
             .link_libc = false,
