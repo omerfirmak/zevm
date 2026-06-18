@@ -986,6 +986,7 @@ pub fn Ops(comptime cfg: Config) type {
                 return evm.Errors.OutOfGas;
             }
             remaining -= empty_account_cost;
+            frame.evm.return_data_size = 0;
 
             if (fork.isEnabled(.Amsterdam) and target_was_empty) {
                 frame.gas = try frame.chargeStateGas(@intCast(remaining), evm.STATE_BYTES_PER_NEW_ACCOUNT * fork.cpsb);
