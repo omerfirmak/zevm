@@ -100,6 +100,41 @@ pub const Platform = enum {
     zkvm,
 };
 
+fn createGuestModule(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    platform: Platform,
+    d: Deps,
+    main: std.Build.LazyPath,
+) *std.Build.Module {
+    const ssz_dep = b.dependency("ssz", .{ .target = target, .optimize = optimize });
+
+    const guest_cs_mod = b.createModule(
+        .{ .root_source_file = b.path("src/stateless/committed_state.zig"), .target = target, .optimize = optimize, .link_libc = false, .single_threaded = true, .imports = &.{
+            .{ .name = "rlp", .module = d.rlp_mod },
+            .{ .name = "ssz", .module = ssz_dep.module("ssz.zig") },
+        } },
+    );
+    const guest_zkvm_zevm_mod = createZevmModule(b, target, optimize, guest_cs_mod, platform, d);
+    guest_zkvm_zevm_mod.link_libc = false;
+    guest_zkvm_zevm_mod.single_threaded = true;
+    return b.createModule(.{
+        .root_source_file = main,
+        .target = target,
+        .optimize = optimize,
+        .link_libc = false,
+        .single_threaded = true,
+        .imports = &.{
+            .{ .name = "zkvm", .module = d.zkvm_mod },
+            .{ .name = "zevm", .module = guest_zkvm_zevm_mod },
+            .{ .name = "committed_state", .module = guest_cs_mod },
+            .{ .name = "rlp", .module = d.rlp_mod },
+            .{ .name = "ssz", .module = ssz_dep.module("ssz.zig") },
+        },
+    });
+}
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
@@ -331,6 +366,22 @@ pub fn build(b: *std.Build) void {
     }
     zkevm_test_step.dependOn(&run_zkevm_tests.step);
 
+    // Native guest
+    const guest_exe = b.addExecutable(.{
+        .name = "zevm-guest",
+        .root_module = createGuestModule(
+            b,
+            target,
+            optimize,
+            .native,
+            deps,
+            b.path("src/stateless/main.zig"),
+        ),
+        .use_llvm = true,
+    });
+    const guest_step = b.step("guest", "Build src/stateless/main.zig as the native guest executable");
+    guest_step.dependOn(&b.addInstallArtifact(guest_exe, .{}).step);
+
     // Zisk
     const ziskos_step = b.step("ziskos", "Build libziskos_staticlib.a via cargo +zisk");
     const ziskos_build = b.addSystemCommand(&.{
@@ -357,31 +408,16 @@ pub fn build(b: *std.Build) void {
         .os_tag = .freestanding,
         .abi = .none,
     });
-    const guest_cs_mod = b.createModule(
-        .{ .root_source_file = b.path("src/stateless/committed_state.zig"), .target = guest_target, .optimize = optimize, .link_libc = false, .single_threaded = true, .imports = &.{
-            .{ .name = "rlp", .module = rlp_dep.module("zig-rlp") },
-            .{ .name = "ssz", .module = ssz_dep.module("ssz.zig") },
-        } },
-    );
-    const guest_zkvm_zevm_mod = createZevmModule(b, guest_target, optimize, guest_cs_mod, .zkvm, deps);
-    guest_zkvm_zevm_mod.link_libc = false;
-    guest_zkvm_zevm_mod.single_threaded = true;
     const zisk_exe = b.addExecutable(.{
         .name = "zevm-zisk-guest",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/stateless/zk_main.zig"),
-            .target = guest_target,
-            .optimize = optimize,
-            .link_libc = false,
-            .single_threaded = true,
-            .imports = &.{
-                .{ .name = "zkvm", .module = deps.zkvm_mod },
-                .{ .name = "zevm", .module = guest_zkvm_zevm_mod },
-                .{ .name = "committed_state", .module = guest_cs_mod },
-                .{ .name = "rlp", .module = rlp_dep.module("zig-rlp") },
-                .{ .name = "ssz", .module = ssz_dep.module("ssz.zig") },
-            },
-        }),
+        .root_module = createGuestModule(
+            b,
+            guest_target,
+            optimize,
+            .zkvm,
+            deps,
+            b.path("src/stateless/zk_main.zig"),
+        ),
         .use_llvm = true,
     });
     zisk_exe.entry = .disabled;
@@ -390,6 +426,6 @@ pub fn build(b: *std.Build) void {
     zisk_exe.setLinkerScript(b.path("zkvm/zisk/link.ld"));
     zisk_exe.root_module.addObjectFile(b.path(".zig-cache/ziskos-cargo-target/riscv64ima-zisk-zkvm-elf/release/libziskos_staticlib.a"));
     zisk_exe.step.dependOn(&ziskos_build.step);
-    const guest_step = b.step("zisk", "Build src/stateless/main.zig as the zisk guest executable");
-    guest_step.dependOn(&b.addInstallArtifact(zisk_exe, .{}).step);
+    const zisk_step = b.step("zisk", "Build src/stateless/main.zig as the zisk guest executable");
+    zisk_step.dependOn(&b.addInstallArtifact(zisk_exe, .{}).step);
 }
