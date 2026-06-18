@@ -42,7 +42,7 @@ CHAIN_ID=$(zstd -d "$FIRST_BATCH" --stdout | tar -xO "$FIRST_JSON" | zstd -d --s
     | python3 -c "import sys,json; print(json.load(sys.stdin)['chainId'])")
 
 echo "chainId = $CHAIN_ID — building native guest..."
-zig build guest -Dchainid="$CHAIN_ID"
+zig build guest -Dchainid="$CHAIN_ID" -Doptimize=ReleaseSafe
 echo ""
 
 # ── 3. Run all blocks through the guest ──────────────────────────────────────
