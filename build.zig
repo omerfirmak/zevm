@@ -357,42 +357,31 @@ pub fn build(b: *std.Build) void {
         .os_tag = .freestanding,
         .abi = .none,
     });
-    const guest_cs_mod = b.createModule(.{
-        .root_source_file = b.path("src/stateless/committed_state.zig"),
-        .target = guest_target,
-        .optimize = optimize,
-        .link_libc = false,
-        .single_threaded = true,
-    });
-    guest_cs_mod.addImport("ssz", ssz_dep.module("ssz.zig"));
-    guest_cs_mod.addImport("rlp", rlp_dep.module("zig-rlp"));
+    const guest_cs_mod = b.createModule(
+        .{ .root_source_file = b.path("src/stateless/committed_state.zig"), .target = guest_target, .optimize = optimize, .link_libc = false, .single_threaded = true, .imports = &.{
+            .{ .name = "rlp", .module = rlp_dep.module("zig-rlp") },
+            .{ .name = "ssz", .module = ssz_dep.module("ssz.zig") },
+        } },
+    );
     const guest_zkvm_zevm_mod = createZevmModule(b, guest_target, optimize, guest_cs_mod, .zkvm, deps);
     guest_zkvm_zevm_mod.link_libc = false;
     guest_zkvm_zevm_mod.single_threaded = true;
-    const guest_lib_mod = b.createModule(.{
-        .root_source_file = b.path("src/stateless/main.zig"),
-        .target = guest_target,
-        .optimize = optimize,
-        .link_libc = false,
-        .single_threaded = true,
-    });
-    guest_lib_mod.addImport("zkvm", deps.zkvm_mod);
-    guest_lib_mod.addAnonymousImport("guest.zig", .{
-        .root_source_file = b.path("src/stateless/guest.zig"),
-        .target = guest_target,
-        .optimize = optimize,
-        .single_threaded = true,
-        .imports = &.{
-            .{ .name = "zevm", .module = guest_zkvm_zevm_mod },
-            .{ .name = "committed_state", .module = guest_cs_mod },
-            .{ .name = "rlp", .module = rlp_dep.module("zig-rlp") },
-            .{ .name = "ssz", .module = ssz_dep.module("ssz.zig") },
-        },
-    });
-
     const zisk_exe = b.addExecutable(.{
         .name = "zevm-zisk-guest",
-        .root_module = guest_lib_mod,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/stateless/main.zig"),
+            .target = guest_target,
+            .optimize = optimize,
+            .link_libc = false,
+            .single_threaded = true,
+            .imports = &.{
+                .{ .name = "zkvm", .module = deps.zkvm_mod },
+                .{ .name = "zevm", .module = guest_zkvm_zevm_mod },
+                .{ .name = "committed_state", .module = guest_cs_mod },
+                .{ .name = "rlp", .module = rlp_dep.module("zig-rlp") },
+                .{ .name = "ssz", .module = ssz_dep.module("ssz.zig") },
+            },
+        }),
         .use_llvm = true,
     });
     zisk_exe.entry = .disabled;
