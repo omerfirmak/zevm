@@ -61,8 +61,8 @@
             .hash = "ssz-0.0.9-Lfwd66i_AwDn44wrPJNFYF8rZR5qzuDm1unen5T33H9K",
         },
         .zisk = .{
-            .url = "git+https://github.com/0xPolygonHermez/zisk?ref=v0.18.0#790f9e28a6d1d8575e38dc77f2af4966b8659722",
-            .hash = "N-V-__8AAGB5DQJ5KEFFOdiJi_B93jMZlF-OwIPORP3pF2NI",
+            .url = "git+https://github.com/0xPolygonHermez/zisk?ref=v1.0.0-alpha#4b9f758fabc4955cac20af837019ccc31b803a46",
+            .hash = "N-V-__8AAChMVQLy5i6uaFOW7JF6Or48QvpUzMjHoJ14YG7c",
         },
     },
     .paths = .{
