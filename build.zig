@@ -375,6 +375,7 @@ pub fn build(b: *std.Build) void {
     if (fork_option) |f| {
         run_zkevm_tests.setEnvironmentVariable("FORK", f);
     }
+    const ziskemu_guest_opt = b.option(bool, "ziskemu-guest", "Run zk-tests through ziskemu against the zisk-guest ELF instead of the native guest") orelse false;
     zkevm_test_step.dependOn(&run_zkevm_tests.step);
 
     const chain_id = b.option(u64, "chainid", "Chain ID") orelse 1;
@@ -441,5 +442,13 @@ pub fn build(b: *std.Build) void {
     zisk_exe.root_module.addObjectFile(b.path(".zig-cache/ziskos-cargo-target/riscv64ima-zisk-zkvm-elf/release/libziskos_staticlib.a"));
     zisk_exe.step.dependOn(&ziskos_build.step);
     const zisk_step = b.step("zisk", "Build src/stateless/main.zig as the zisk guest executable");
-    zisk_step.dependOn(&b.addInstallArtifact(zisk_exe, .{}).step);
+    const zisk_install = b.addInstallArtifact(zisk_exe, .{});
+    zisk_step.dependOn(&zisk_install.step);
+
+    // When -Dziskemu-guest is set, the zk-tests step builds the zisk guest ELF and
+    // runs each fixture through ziskemu (from PATH) instead of the in-process guest.
+    if (ziskemu_guest_opt) {
+        run_zkevm_tests.step.dependOn(&zisk_install.step);
+        run_zkevm_tests.setEnvironmentVariable("ZISKEMU_GUEST", "1");
+    }
 }

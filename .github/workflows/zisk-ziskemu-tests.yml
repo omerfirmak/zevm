@@ -1,0 +1,47 @@
+name: zisk ziskemu tests
+
+# Manual-only: builds ziskos from source and runs every zkEVM fixture through
+# ziskemu against the zisk guest ELF. Slow, so not part of the push/PR CI.
+on:
+  workflow_dispatch:
+
+jobs:
+  zisk-ziskemu-tests:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        fork: [Amsterdam]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Rust toolchain (rustup)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install zisk
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            xz-utils jq curl build-essential qemu-system libomp-dev libgmp-dev \
+            nlohmann-json3-dev protobuf-compiler uuid-dev libgrpc++-dev \
+            libsecp256k1-dev libsodium-dev libpqxx-dev nasm libopenmpi-dev \
+            openmpi-bin openmpi-common libclang-dev clang gcc-riscv64-unknown-elf
+          # Match the zisk ref pinned in build.zig.zon so ziskemu matches the guest we build.
+          VER=$(grep '0xPolygonHermez/zisk' build.zig.zon | sed -E 's/.*ref=([^#"]+).*/\1/' | sed 's/^v//')
+          echo "Installing ziskup version: $VER"
+          curl -L https://raw.githubusercontent.com/0xPolygonHermez/zisk/main/ziskup/install.sh | bash -s -- --cpu --nokey --version "$VER"
+          echo "${XDG_CONFIG_HOME:-$HOME}/.zisk/bin" >> $GITHUB_PATH
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Download and extract zkEVM test fixtures
+        run: |
+          curl -L https://github.com/ethereum/execution-specs/releases/download/tests-zkevm%40v0.4.1/fixtures_zkevm.tar.gz | tar -xz
+          mv fixtures zk_fixtures
+
+      - name: Run zkEVM fixtures through ziskemu
+        run: zig build zk-tests -Doptimize=ReleaseFast -Dfork=${{ matrix.fork }} -Dziskemu-guest
