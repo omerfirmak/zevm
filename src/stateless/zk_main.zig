@@ -2,16 +2,16 @@ const std = @import("std");
 const zkvm = @import("zkvm");
 const verify_ssz = @import("guest.zig").verify_ssz;
 
-extern const _kernel_heap_bottom: u8;
-extern const _kernel_heap_size: u8;
+extern const _evm_heap_bottom: u8;
+extern const _evm_heap_size: u8;
 
 comptime {
     @export(&zkvmMain, .{ .name = "main" });
 }
 
 fn zkvmMain() callconv(.c) void {
-    const heap_ptr: [*]u8 = @ptrCast(@constCast(&_kernel_heap_bottom));
-    const heap_len: usize = @intFromPtr(&_kernel_heap_size);
+    const heap_ptr: [*]u8 = @ptrCast(@constCast(&_evm_heap_bottom));
+    const heap_len: usize = @intFromPtr(&_evm_heap_size);
     var fba = std.heap.FixedBufferAllocator.init(heap_ptr[0..heap_len]);
 
     var input_ptr: [*c]const u8 = undefined;

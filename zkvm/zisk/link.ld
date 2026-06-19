@@ -36,9 +36,18 @@ SECTIONS
   . = ALIGN(16);
   PROVIDE(_init_stack_top = . + 0x100000);
 
+  /* ziskos' Rust bump allocator reads these symbols; cap it to a fixed 16 MiB
+     region so its (never-freed) precompile scratch can't collide with zevm's
+     allocator, which shares the same RAM. */
   PROVIDE(_kernel_heap_bottom = _init_stack_top);
-  PROVIDE(_kernel_heap_top = ORIGIN(ram) + LENGTH(ram));
+  PROVIDE(_kernel_heap_top = _kernel_heap_bottom + 0x1000000);
   PROVIDE(_kernel_heap_size = _kernel_heap_top - _kernel_heap_bottom);
+
+  /* zevm's FixedBufferAllocator owns the remainder of RAM, disjoint from the
+     ziskos region above. */
+  PROVIDE(_evm_heap_bottom = _kernel_heap_top);
+  PROVIDE(_evm_heap_top = ORIGIN(ram) + LENGTH(ram));
+  PROVIDE(_evm_heap_size = _evm_heap_top - _evm_heap_bottom);
 
   _end = .;
 }
