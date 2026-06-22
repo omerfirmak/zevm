@@ -693,6 +693,8 @@ pub const EVM = struct {
         depth: usize,
         salt: ?u256,
     ) !struct { u32, i32, u160 } {
+        self.return_data_size = 0;
+
         // Depth/nonce/balance failures are "never started" — return all forwarded gas to caller.
         if (depth >= 1024) return .{ initial_gas, 0, 0 };
 
@@ -713,9 +715,6 @@ pub const EVM = struct {
         // Increase creator nonce before the snapshot
         var creator_acc = try state.accounts.update(creator);
         creator_acc.nonce += 1;
-
-        // Return data is always cleared when CREATE is entered, even on collision failure
-        self.return_data_size = 0;
 
         // EIP-7610: fail on collision (non-zero nonce or existing code or existing storage)
         const existing = try state.accounts.read(new_addr);
