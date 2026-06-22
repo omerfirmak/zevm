@@ -122,3 +122,38 @@ pub inline fn div(a: u256, b: u256) u256 {
 pub inline fn rem(a: u256, b: u256) u256 {
     return divRem(a, b).r;
 }
+
+pub fn mulmod(a: u256, b: u256, m: u256) u256 {
+    if (m == 0) return 0;
+    const ml = toLimbs(m);
+
+    if (ml[1] == 0 and ml[2] == 0 and ml[3] == 0) {
+        const m64 = ml[0];
+        const ar: u128 = divBy64(toLimbs(a), m64).r;
+        const br: u128 = divBy64(toLimbs(b), m64).r;
+        return (ar *% br) % m64;
+    }
+
+    const ar = @mod(a, m);
+    const br = @mod(b, m);
+
+    if (ml[2] == 0 and ml[3] == 0) {
+        return @mod(ar *% br, m);
+    }
+
+    return @intCast(@mod(@as(u512, ar) * @as(u512, br), m));
+}
+
+pub fn addmod(a: u256, b: u256, m: u256) u256 {
+    if (m == 0) return 0;
+    const ml = toLimbs(m);
+
+    if (ml[1] == 0 and ml[2] == 0 and ml[3] == 0) {
+        const m64 = ml[0];
+        const ar: u128 = divBy64(toLimbs(a), m64).r;
+        const br: u128 = divBy64(toLimbs(b), m64).r;
+        return @intCast((ar + br) % m64);
+    }
+
+    return @intCast(@mod(@as(u257, a) + @as(u257, b), m));
+}

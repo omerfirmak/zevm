@@ -122,15 +122,13 @@ pub fn Ops(comptime cfg: Config) type {
 
         pub fn addmod(next_ip: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 3, 1);
-            // u257 prevents overflow before the modulo
-            args[0] = if (args[0] == 0) 0 else @intCast(@mod(@as(u257, args[2]) + @as(u257, args[1]), args[0]));
+            args[0] = uint256.addmod(args[2], args[1], args[0]);
             return next(next_ip, gas, fork.constantGas(.ADDMOD), new_stack_head, frame);
         }
 
         pub fn mulmod(next_ip: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 3, 1);
-            // u512 prevents overflow before the modulo (256*256 = 512 bits max)
-            args[0] = if (args[0] == 0) 0 else @intCast(@mod(@as(u512, args[2]) * @as(u512, args[1]), args[0]));
+            args[0] = uint256.mulmod(args[2], args[1], args[0]);
             return next(next_ip, gas, fork.constantGas(.MULMOD), new_stack_head, frame);
         }
 
