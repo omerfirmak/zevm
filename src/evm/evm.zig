@@ -581,12 +581,13 @@ pub const EVM = struct {
         skip_value_transfer: bool,
         is_static: bool,
     ) !struct { u32, i32, ?Errors } {
+        self.return_data_size = 0;
+
         if (depth >= 1024) return .{ initial_gas, 0, Errors.CallDepthExceeded };
 
         const state_snap = state.snapshot();
         const evm_snap = self.snapshot();
 
-        self.return_data_size = 0;
         if (!skip_value_transfer and value > 0) {
             var caller_account = try state.accounts.update(caller);
             if (caller_account.balance < value) {
