@@ -89,15 +89,20 @@ pub fn processBlock(
         prepared_bal.validateWrites(0, state, &vm.pre_state);
     state.clearTxState();
 
+    var block_regular_used: u32, var block_state_used: u32 = .{ 0, 0 };
+
     for (p_block.block.transactions, 0..) |*tx, index| {
         const msg = try messageFromTx(gpa, tx, p_block.senders[index]);
         if (!evm_spec.isEnabled(.Amsterdam)) {
-            if (msg.gas_limit > p_block.block.header.gas_limit - context.block_regular_used) return Errors.InsufficientGas;
+            if (msg.gas_limit > p_block.block.header.gas_limit - block_regular_used) return Errors.InsufficientGas;
+        } else {
+            if (@min(evm_spec.max_tx_gas, msg.gas_limit) > p_block.block.header.gas_limit - block_regular_used) return Errors.InsufficientGas;
+            if (msg.gas_limit > p_block.block.header.gas_limit - block_state_used) return Errors.InsufficientGas;
         }
 
         const tx_regular, const tx_state = try vm.process(.{ .fork = evm_spec }, &msg, state);
-        context.block_regular_used += tx_regular;
-        context.block_state_used += tx_state;
+        block_regular_used += tx_regular;
+        block_state_used += tx_state;
 
         const blobs_used = switch (tx.*) {
             .blob => |t| t.blob_hashes.len,
@@ -113,9 +118,9 @@ pub fn processBlock(
     }
 
     const block_gas_used: u64 = if (evm_spec.isEnabled(.Amsterdam))
-        @max(context.block_regular_used, context.block_state_used)
+        @max(block_regular_used, block_state_used)
     else
-        context.block_regular_used;
+        block_regular_used;
     if (p_block.block.header.gas_used != block_gas_used) return Errors.MismatchedGasUsed;
     if (!std.mem.eql(u8, &p_block.block.header.logs_bloom, &computeLogsBloom(&vm.logs))) return Errors.MismatchedLogsBloom;
 
