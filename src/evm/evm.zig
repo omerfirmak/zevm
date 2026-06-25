@@ -67,8 +67,6 @@ pub const Context = struct {
     ancestors: [256]u256,
 
     // EIP-8037: accumulated per-tx contributions
-    block_regular_used: u64 = 0,
-    block_state_used: u64 = 0,
 };
 
 pub const Frame = struct {
@@ -401,10 +399,6 @@ pub const EVM = struct {
 
         if (cfg.fork.isEnabled(.Amsterdam)) {
             if (@max(total_regular_intrinsic, floor_cost) > cfg.fork.max_tx_gas) return Errors.OutOfGas;
-            const worst_case_regular = @min(cfg.fork.max_tx_gas, msg.gas_limit - total_state_intrinsic);
-            const worst_case_state = msg.gas_limit - total_regular_intrinsic;
-            if (worst_case_regular > self.context.gas_limit - self.context.block_regular_used) return Errors.GasOverflow;
-            if (worst_case_state > self.context.gas_limit - self.context.block_state_used) return Errors.GasOverflow;
         } else {
             if (msg.gas_limit > cfg.fork.max_tx_gas) return Errors.GasOverflow;
         }
