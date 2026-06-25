@@ -45,6 +45,7 @@ pub const Prepared = struct {
 
             var prev_key: ?u256 = null;
             for (account.storage_changes) |sc| {
+                if (sc.changes.len == 0) return null;
                 if (prev_key) |prev| if (sc.key <= prev) return null;
                 prev_key = sc.key;
                 const lookup: types.StorageLookup = .{ .address = account.addr, .slot = sc.key };
