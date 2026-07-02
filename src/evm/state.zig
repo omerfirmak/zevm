@@ -71,9 +71,12 @@ pub const State = struct {
         self.transient_storage.clearViaJournal();
     }
 
-    pub fn clearAccount(self: *Self, addr: u160) void {
+    pub fn clearAccount(self: *Self, addr: u160, comptime cfg: Config) void {
+        var balance: u256 = 0;
+        if (cfg.fork.isEnabled(.Amsterdam))
+            balance = if (self.accounts.dirties.get(addr)) |acct| acct.balance else 0;
         _ = self.accounts.dirties.putAssumeCapacity(addr, .{
-            .balance = 0,
+            .balance = balance,
             .nonce = 0,
             .code_hash = types.empty_code_hash,
             .storage_hash = types.empty_root_hash,

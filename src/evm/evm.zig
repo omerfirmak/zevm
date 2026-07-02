@@ -528,27 +528,8 @@ pub const EVM = struct {
             _ = try state.accounts.read(self.context.coinbase); // BAL forces us to do that
         }
 
-        defer self.clearSelfdestructed(state);
+        defer self.clearSelfdestructed(state, cfg);
         if (cfg.fork.isEnabled(.Amsterdam)) {
-            const alloc = self.rounded_allocator.allocator();
-            const BurnEntry = struct { addr: u160, amount: u256 };
-            var burns: std.ArrayListUnmanaged(BurnEntry) = .empty;
-            defer burns.deinit(alloc);
-            var it = self.created_accounts.dirties.iterator();
-            while (it.next()) |entry| {
-                if (entry.value_ptr.* != .Selfdestructed) continue;
-                const addr = entry.key_ptr.*;
-                if (state.accounts.dirties.get(addr)) |acct| {
-                    if (acct.balance > 0) try burns.append(alloc, .{ .addr = addr, .amount = acct.balance });
-                }
-            }
-            std.mem.sort(BurnEntry, burns.items, {}, struct {
-                fn less(_: void, a: BurnEntry, b: BurnEntry) bool {
-                    return a.addr < b.addr;
-                }
-            }.less);
-            for (burns.items) |burn| self.pushBurnLog(burn.addr, burn.amount);
-
             const regular_gas = (gas_used_before_refund + self.state_gas_refund) - (total_state_intrinsic + state_gas_used);
             const state_gas = total_state_intrinsic + state_gas_used - self.state_gas_refund;
             return .{ @max(regular_gas, floor_cost), state_gas };
@@ -834,13 +815,6 @@ pub const EVM = struct {
         self.pushLog(SYSTEM_ADDRESS, &[_]u256{ transfer_topic, from, to }, &data);
     }
 
-    pub fn pushBurnLog(self: *Self, addr: u160, amount: u256) void {
-        const burn_topic: u256 = 0xcc16f5dbb4873280815c1ee09dbd06736cffcc184412cf7a71a0fdb75d397ca5;
-        var data: [32]u8 = undefined;
-        std.mem.writeInt(u256, &data, amount, .big);
-        self.pushLog(SYSTEM_ADDRESS, &[_]u256{ burn_topic, addr }, &data);
-    }
-
     pub fn accessAccount(self: *Self, addr: u160) bool {
         return !(self.warm_accounts.writeNoClobber(addr, {}) catch unreachable);
     }
@@ -923,13 +897,13 @@ pub const EVM = struct {
         return false;
     }
 
-    fn clearSelfdestructed(self: *Self, state: *State) void {
+    fn clearSelfdestructed(self: *Self, state: *State, comptime cfg: Config) void {
         var any = false;
         var it = self.created_accounts.dirtiesIterator();
         while (it.next()) |entry| {
             if (entry[0].value_ptr.* != .Selfdestructed) continue;
             any = true;
-            state.clearAccount(entry[0].key_ptr.*);
+            state.clearAccount(entry[0].key_ptr.*, cfg);
         }
         if (!any) return;
 
