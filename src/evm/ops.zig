@@ -961,20 +961,20 @@ pub fn Ops(comptime cfg: Config) type {
             var empty_account_cost: u32 = 0;
             const transferred_value = (try frame.state.accounts.read(frame.target)).balance;
             const is_new_account = frame.evm.markForDestruction(frame.target);
-            if (transferred_value > 0 and (is_new_account or beneficiary != frame.target)) {
-                var beneficiary_account = try frame.state.accounts.update(beneficiary);
-                target_was_empty = beneficiary_account.isEmptyAccount();
-                if (target_was_empty) {
-                    empty_account_cost = fork.selfdestruct_empty_target_gas;
-                }
-                beneficiary_account.balance += transferred_value;
-                (try frame.state.accounts.update(frame.target)).balance = 0;
-                if (fork.isEnabled(.Amsterdam)) {
-                    if (beneficiary != frame.target) {
-                        frame.evm.pushTransferLog(frame.target, beneficiary, transferred_value);
-                    } else {
-                        frame.evm.pushBurnLog(frame.target, transferred_value);
+            if (transferred_value > 0) {
+                if (beneficiary != frame.target) {
+                    var beneficiary_account = try frame.state.accounts.update(beneficiary);
+                    target_was_empty = beneficiary_account.isEmptyAccount();
+                    if (target_was_empty) {
+                        empty_account_cost = fork.selfdestruct_empty_target_gas;
                     }
+                    beneficiary_account.balance += transferred_value;
+                    (try frame.state.accounts.update(frame.target)).balance = 0;
+                    if (fork.isEnabled(.Amsterdam)) {
+                        frame.evm.pushTransferLog(frame.target, beneficiary, transferred_value);
+                    }
+                } else if (is_new_account and !fork.isEnabled(.Amsterdam)) {
+                    (try frame.state.accounts.update(frame.target)).balance = 0;
                 }
             } else {
                 _ = try frame.state.accounts.read(beneficiary); // BAL requires us to do that
