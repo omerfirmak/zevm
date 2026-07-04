@@ -141,12 +141,9 @@ pub const Frame = struct {
     }
 
     pub fn chargeStateGas(self: *Self, gas_left: u32, amount: u32) !u32 {
-        const from_reservoir = @min(amount, self.evm.state_gas_reservoir);
-        const spillover = amount - from_reservoir;
-        if (gas_left < spillover) return Errors.OutOfGas;
-        self.evm.state_gas_reservoir -= from_reservoir;
+        const new_gas = try self.evm.chargeStateGas(gas_left, amount);
         self.state_gas_used += @intCast(amount);
-        return gas_left - spillover;
+        return new_gas;
     }
 
     pub fn creditStateGasRefund(self: *Self, amount: u32) void {
@@ -296,6 +293,14 @@ pub const EVM = struct {
         if (delta < 0) self.state_gas_reservoir -= @abs(delta) else self.state_gas_reservoir += @intCast(delta);
     }
 
+    pub fn chargeStateGas(self: *Self, gas_left: u32, amount: u32) !u32 {
+        const from_reservoir = @min(amount, self.state_gas_reservoir);
+        const spillover = amount - from_reservoir;
+        if (gas_left < spillover) return Errors.OutOfGas;
+        self.state_gas_reservoir -= from_reservoir;
+        return gas_left - spillover;
+    }
+
     pub fn snapshot(self: *Self) Snapshot {
         return .{
             .accounts = self.warm_accounts.snapshot(),
@@ -377,10 +382,8 @@ pub const EVM = struct {
             return Errors.InitcodeSizeExceeded;
         }
 
-        const intrinsic_gas, const create_state_gas = if (is_create) .{
-            cfg.fork.tx_create_gas,
-            STATE_BYTES_PER_NEW_ACCOUNT * cfg.fork.cpsb,
-        } else .{ cfg.fork.tx_base_gas, 0 };
+        const intrinsic_gas = baseIntrinsicRegular(cfg, msg);
+        const create_state_gas = if (is_create) STATE_BYTES_PER_NEW_ACCOUNT * cfg.fork.cpsb else 0;
         const calldata_gas, const floor_data_cost = try calldataCost(cfg.fork, msg.calldata);
         const access_list_gas, const access_list_floor = try accessListGas(cfg.fork, msg.access_list);
         const floor_cost = cfg.fork.tx_base_gas + floor_data_cost + access_list_floor; // EIP-7623
@@ -463,28 +466,47 @@ pub const EVM = struct {
         if (msg.target) |target| {
             _ = self.accessAccount(target);
 
+            const target_account = try state.accounts.read(target);
+            var target_has_delegation = false;
             // EIP-7702: if destination has a delegation, add delegate to accessed_addresses
-            const target_code_hash = (try state.accounts.read(target)).code_hash;
+            const target_code_hash = target_account.code_hash;
             if (!std.mem.eql(u8, &target_code_hash, &types.empty_code_hash)) {
                 const code = try state.get_code(target_code_hash, cfg);
-                if (isDelegation(code.bytes)) _ = self.accessAccount(delegationAddress(code.bytes));
+                target_has_delegation = isDelegation(code.bytes);
+                if (target_has_delegation) _ = self.accessAccount(delegationAddress(code.bytes));
             }
 
-            remaining_gas, const sgu, _ = try self.call(
-                cfg,
-                state,
-                msg.caller,
-                target,
-                target,
-                remaining_gas,
-                msg.calldata,
-                msg.value,
-                0,
-                &[_]u8{},
-                false,
-                false,
-            );
-            state_gas_used = @intCast(sgu);
+            // EIP-2780 top level charges
+            const regular_precharge = if (cfg.fork.isEnabled(.Amsterdam) and target_has_delegation) cfg.fork.cold_account_access_gas else 0;
+            const state_precharge = if (cfg.fork.isEnabled(.Amsterdam) and msg.value > 0 and target_account.isEmptyAccount())
+                STATE_BYTES_PER_NEW_ACCOUNT * cfg.fork.cpsb
+            else
+                0;
+
+            remaining_gas, state_gas_used, const oog = if (remaining_gas < regular_precharge)
+                .{ 0, 0, true }
+            else if (self.chargeStateGas(remaining_gas - regular_precharge, state_precharge)) |call_gas|
+                .{ call_gas, state_precharge, false }
+            else |_|
+                .{ 0, 0, true };
+
+            if (!oog) {
+                remaining_gas, const sgu, _ = try self.call(
+                    cfg,
+                    state,
+                    msg.caller,
+                    target,
+                    target,
+                    remaining_gas,
+                    msg.calldata,
+                    msg.value,
+                    0,
+                    &[_]u8{},
+                    false,
+                    false,
+                );
+                state_gas_used += @intCast(sgu);
+            }
         } else {
             var created_addr: u160 = 0;
             remaining_gas, const sgu, created_addr = try self.create(
@@ -535,6 +557,30 @@ pub const EVM = struct {
             return .{ @max(regular_gas, floor_cost), state_gas };
         }
         return .{ gas_used, 0 };
+    }
+
+    pub fn baseIntrinsicRegular(comptime cfg: Config, msg: *const Message) u32 {
+        const is_create = msg.target == null;
+        const is_self_transfer = msg.target == msg.caller;
+        if (!cfg.fork.isEnabled(.Amsterdam)) {
+            return if (is_create) cfg.fork.tx_create_gas else cfg.fork.tx_base_gas;
+        }
+
+        var total = cfg.fork.tx_base_gas;
+        if (is_create) {
+            total += cfg.fork.create_access;
+        } else if (!is_self_transfer) {
+            total += cfg.fork.cold_account_access_gas;
+        }
+
+        const is_positive_transfer = msg.value > 0;
+        if (is_positive_transfer and is_create) {
+            total += cfg.fork.transfer_log_cost;
+        } else if (is_positive_transfer and !is_self_transfer) {
+            total += cfg.fork.transfer_log_cost + cfg.fork.tx_value_cost;
+        }
+
+        return total;
     }
 
     // Returns { remaining_gas, optional_error }. Not an error union because Reverted

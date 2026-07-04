@@ -112,6 +112,13 @@ pub const Spec = struct {
     ecpairing_gas: u32,
     ecpairing_per_pair_gas: u32,
 
+    // EIP-2780
+    tx_value_cost: u32 = 0,
+    transfer_log_cost: u32 = 0,
+
+    // EIP-8038
+    create_access: u32 = 0,
+
     /// Pre-allocation sizes for State, derived from spec gas costs.
     pub const StateCapacities = struct {
         account_dirties: u32,
@@ -464,6 +471,11 @@ pub const Amsterdam = override(Osaka, .{
     .selfdestruct_empty_target_gas = 0,
     .per_auth_base_cost = 7500,
     .sstore_set_gas = 2900,
+    .tx_base_gas = 12000,
+    .cold_account_access_gas = 3000,
+    .tx_value_cost = 4244,
+    .transfer_log_cost = 1756,
+    .create_access = 11000,
     .gas_table = .{
         .SLOTNUM = 2,
         .DUPN = 3,
