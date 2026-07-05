@@ -251,7 +251,7 @@ fn calculateStateRoot(
         }
 
         state_keys[n_dirty] = committed_state.keccakOfU160(acc_change_entry.addr);
-        state_accounts[n_dirty] = if (post_acc.isEmptyAccount()) null else post_acc;
+        state_accounts[n_dirty] = if (post_acc.isEmpty()) null else post_acc;
         n_dirty += 1;
     }
 

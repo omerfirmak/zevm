@@ -35,7 +35,7 @@ pub const Account = struct {
     storage_hash: [32]u8,
     code_hash: [32]u8,
 
-    pub fn isEmptyAccount(self: *const Account) bool {
+    pub fn isEmpty(self: *const Account) bool {
         return self.nonce == 0 and self.balance == 0 and std.mem.eql(u8, &self.code_hash, &empty_code_hash);
     }
 
