@@ -461,21 +461,21 @@ pub fn Ops(comptime cfg: Config) type {
         pub fn extcodehash(next_ip: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 1, 1);
             const target: u160 = @truncate(args[0]);
-            const dynamic_cost = frame.evm.accessAccountCost(fork, target);
-            if (gas < dynamic_cost) {
+            const cost = frame.evm.accessAccountCost(fork, target) + fork.constantGas(.EXTCODEHASH);
+            if (gas < cost) {
                 return evm.Errors.OutOfGas;
             }
 
             const account = try frame.state.accounts.read(target);
             args[0] = if (account.isEmptyAccount()) 0 else std.mem.readInt(u256, &account.code_hash, .big);
-            return next(next_ip, gas, fork.constantGas(.EXTCODEHASH) + dynamic_cost, new_stack_head, frame);
+            return next(next_ip, gas, cost, new_stack_head, frame);
         }
 
         pub fn extcodesize(next_ip: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 1, 1);
             const target: u160 = @truncate(args[0]);
-            const dynamic_cost = frame.evm.accessAccountCost(fork, target);
-            if (gas < dynamic_cost) {
+            const cost = frame.evm.accessAccountCost(fork, target) + fork.constantGas(.EXTCODESIZE);
+            if (gas < cost) {
                 return evm.Errors.OutOfGas;
             }
 
@@ -485,7 +485,7 @@ pub fn Ops(comptime cfg: Config) type {
             } else {
                 args[0] = 0;
             }
-            return next(next_ip, gas, fork.constantGas(.EXTCODESIZE) + dynamic_cost, new_stack_head, frame);
+            return next(next_ip, gas, cost, new_stack_head, frame);
         }
 
         pub fn extcodecopy(next_ip: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
@@ -658,9 +658,11 @@ pub fn Ops(comptime cfg: Config) type {
             // Restoring a slot to its original value earns back the gas that was
             // charged above the cheap SLOAD cost.
             if (new_value == original_value) {
-                if (original_value == 0) {
+                if (fork.isEnabled(.Amsterdam)) {
+                    delta += fork.storage_write;
+                    if (original_value == 0) state_gas_refund = evm.STATE_BYTES_PER_STORAGE_SLOT * fork.cpsb;
+                } else if (original_value == 0) {
                     delta += fork.sstore_set_gas - fork.warm_access_gas;
-                    state_gas_refund = evm.STATE_BYTES_PER_STORAGE_SLOT * fork.cpsb;
                 } else {
                     delta += fork.sstore_reset_gas - fork.warm_access_gas;
                 }
@@ -672,15 +674,23 @@ pub fn Ops(comptime cfg: Config) type {
         // EIP-2200 net-metered SSTORE gas: charges based on the transition from
         // original (pre-tx) value → current value → new value.
         fn gas_sstore(value: u256, current_value: u256, original_value: u256, is_warm: bool) struct { u32, u32 } {
+            if (fork.isEnabled(.Amsterdam)) {
+                const access: u32 = if (is_warm) fork.warm_access_gas else fork.cold_sload_gas;
+                if (value == current_value) return .{ access, 0 }; // noop
+                if (current_value == original_value) { // first change
+                    const state_gas: u32 = if (original_value == 0) evm.STATE_BYTES_PER_STORAGE_SLOT * fork.cpsb else 0;
+                    return .{ access + fork.storage_write, state_gas };
+                }
+                return .{ access, 0 }; // dirty
+            }
+
             // cold slot access surcharge (EIP-2929)
             const base_dynamic_gas: u32 = if (is_warm) 0 else fork.cold_sload_gas;
-            const storage_state_gas: u32 = evm.STATE_BYTES_PER_STORAGE_SLOT * fork.cpsb;
-
             if (value == current_value) {
                 return .{ base_dynamic_gas + fork.warm_access_gas, 0 };
             } else if (current_value == original_value) {
                 if (original_value == 0) {
-                    return .{ base_dynamic_gas + fork.sstore_set_gas, if (value != 0) storage_state_gas else 0 };
+                    return .{ base_dynamic_gas + fork.sstore_set_gas, 0 };
                 } else {
                     return .{ base_dynamic_gas + fork.sstore_reset_gas, 0 };
                 }

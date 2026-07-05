@@ -887,30 +887,44 @@ pub const EVM = struct {
         }
     }
 
+    fn validateAuth(self: *Self, comptime cfg: Config, auth: Authorization, state: *State) !?struct { types.Account, bool } {
+        // Skip if authority is zero (invalid signature recovery)
+        if (auth.authority == 0) return null;
+        // Skip if chain_id is non-zero and doesn't match current chain
+        if (auth.chain_id != 0 and auth.chain_id != self.context.chainid) return null;
+        // EIP-7702 step 2: nonce in the tuple must be < 2**64-1
+        if (auth.nonce >= std.math.maxInt(u64)) return null;
+        _ = self.accessAccount(auth.authority);
+        const auth_account = try state.accounts.read(auth.authority);
+        // Skip if authority already has non-delegation code; track if it has an existing delegation.
+        const has_existing_delegation = !std.mem.eql(u8, &auth_account.code_hash, &types.empty_code_hash);
+        if (has_existing_delegation) {
+            const existing = try state.get_code(auth_account.code_hash, cfg);
+            if (!isDelegation(existing.bytes)) return null;
+        }
+        // Skip if nonce doesn't match
+        if (auth_account.nonce != auth.nonce) return null;
+        return .{ auth_account, has_existing_delegation };
+    }
+
     // EIP-7702: process authorization list, setting delegation designators on EOAs
     pub fn applyAuthList(self: *Self, comptime cfg: Config, auth_list: []const Authorization, state: *State) !void {
         for (auth_list) |auth| {
-            // Skip if authority is zero (invalid signature recovery)
-            if (auth.authority == 0) continue;
-            // Skip if chain_id is non-zero and doesn't match current chain
-            if (auth.chain_id != 0 and auth.chain_id != self.context.chainid) continue;
-            // EIP-7702 step 2: nonce in the tuple must be < 2**64-1
-            if (auth.nonce >= std.math.maxInt(u64)) continue;
-            _ = self.accessAccount(auth.authority);
-            const auth_account = try state.accounts.read(auth.authority);
-            // Skip if authority already has non-delegation code; track if it has an existing delegation.
-            const has_existing_delegation = !std.mem.eql(u8, &auth_account.code_hash, &types.empty_code_hash);
-            if (has_existing_delegation) {
-                const existing = try state.get_code(auth_account.code_hash, cfg);
-                if (!isDelegation(existing.bytes)) continue;
-            }
-            // Skip if nonce doesn't match
-            if (auth_account.nonce != auth.nonce) continue;
+            const auth_account, const has_existing_delegation = (try self.validateAuth(cfg, auth, state)) orelse {
+                if (cfg.fork.isEnabled(.Amsterdam)) {
+                    const state_bytes = (STATE_BYTES_PER_NEW_ACCOUNT + STATE_BYTES_PER_AUTH_BASE) * cfg.fork.cpsb;
+                    self.state_gas_reservoir += state_bytes;
+                    self.state_gas_refund += state_bytes;
+                    self.gas_refund += cfg.fork.account_write;
+                }
+                continue;
+            };
             // Refund if account is non-empty (already had state)
             if (!auth_account.isEmptyAccount()) {
                 if (cfg.fork.isEnabled(.Amsterdam)) {
                     self.state_gas_reservoir += STATE_BYTES_PER_NEW_ACCOUNT * cfg.fork.cpsb;
                     self.state_gas_refund += STATE_BYTES_PER_NEW_ACCOUNT * cfg.fork.cpsb;
+                    self.gas_refund += cfg.fork.account_write;
                 } else {
                     self.gas_refund += cfg.fork.per_empty_account_cost - cfg.fork.per_auth_base_cost;
                 }
@@ -1033,7 +1047,10 @@ fn authGas(comptime fork: Spec, auth_list: ?[]const Authorization) !struct { u32
 
     const len: u32 = @intCast(auth_list.?.len);
     const state_gas = std.math.mul(u32, len, (STATE_BYTES_PER_NEW_ACCOUNT + STATE_BYTES_PER_AUTH_BASE) * fork.cpsb) catch return Errors.OutOfGas;
-    const auth_regular_unit = if (fork.isEnabled(.Amsterdam)) fork.per_auth_base_cost else fork.per_empty_account_cost;
+    const auth_regular_unit = if (fork.isEnabled(.Amsterdam))
+        fork.account_write + fork.per_auth_base_cost
+    else
+        fork.per_empty_account_cost;
     const regular_gas = std.math.mul(u32, len, auth_regular_unit) catch return Errors.OutOfGas;
     return .{ regular_gas, state_gas };
 }

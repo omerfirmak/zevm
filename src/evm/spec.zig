@@ -118,6 +118,8 @@ pub const Spec = struct {
 
     // EIP-8038
     create_access: u32 = 0,
+    account_write: u32 = 0,
+    storage_write: u32 = 0,
 
     /// Pre-allocation sizes for State, derived from spec gas costs.
     pub const StateCapacities = struct {
@@ -468,7 +470,7 @@ pub const Amsterdam = override(Osaka, .{
     .tx_create_gas = 30000,
     .call_new_account_gas = 0,
     .per_empty_account_cost = 0,
-    .selfdestruct_empty_target_gas = 0,
+    .selfdestruct_empty_target_gas = 8000,
     .per_auth_base_cost = 7500,
     .sstore_set_gas = 2900,
     .tx_base_gas = 12000,
@@ -476,12 +478,21 @@ pub const Amsterdam = override(Osaka, .{
     .tx_value_cost = 4244,
     .transfer_log_cost = 1756,
     .create_access = 11000,
+    .account_write = 8000,
+    .storage_write = 10000,
+    .cold_sload_gas = 3000,
+    .sstore_clears_schedule = 12480,
+    .access_list_address_gas = 3000,
+    .access_list_storage_key_gas = 3000,
+    .call_value_gas = 10300,
     .gas_table = .{
         .SLOTNUM = 2,
         .DUPN = 3,
         .SWAPN = 3,
         .EXCHANGE = 3,
-        .CREATE = 9000,
-        .CREATE2 = 9000,
+        .CREATE = 11000, // CREATE_ACCESS
+        .CREATE2 = 11000, // CREATE_ACCESS
+        .EXTCODESIZE = 100, // WARM_ACCESS
+        .EXTCODECOPY = 100, // WARM_ACCESS
     },
 });
