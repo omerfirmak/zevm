@@ -92,6 +92,7 @@ pub const Frame = struct {
     stack: [max_stack_size]u256 align(@sizeOf(u256)),
     memory: Memory,
     state_gas_used: i32 = 0,
+    total_spillover: u32 = 0,
 
     pub fn enter(self: *Self, comptime cfg: Config) !void {
         return ops.Ops(cfg).entry(
@@ -142,13 +143,17 @@ pub const Frame = struct {
 
     pub fn chargeStateGas(self: *Self, gas_left: u32, amount: u32) !u32 {
         const new_gas = try self.evm.chargeStateGas(gas_left, amount);
+        self.total_spillover += gas_left - new_gas;
         self.state_gas_used += @intCast(amount);
         return new_gas;
     }
 
-    pub fn creditStateGasRefund(self: *Self, amount: u32) void {
-        self.evm.state_gas_reservoir += @intCast(amount);
+    pub fn creditStateGasRefund(self: *Self, gas_left: u32, amount: u32) u32 {
+        const to_gas_left = @min(amount, self.total_spillover);
+        self.total_spillover -= to_gas_left;
+        self.evm.state_gas_reservoir += amount - to_gas_left;
         self.state_gas_used -= @intCast(amount);
+        return gas_left + to_gas_left;
     }
 };
 

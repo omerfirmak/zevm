@@ -713,9 +713,6 @@ pub fn Ops(comptime cfg: Config) type {
             }
             const original_value = original_value_entry.value_ptr.*;
             const dynamic_gas, const state_gas = gas_sstore(args[0], old_value, original_value, is_warm);
-            const regular_refund, const state_gas_refund = refund_sstore(args[0], old_value, original_value);
-            frame.evm.gas_refund += regular_refund;
-            frame.creditStateGasRefund(state_gas_refund);
 
             const regular_cost = fork.constantGas(.SSTORE) + dynamic_gas;
             if (gas < regular_cost) {
@@ -723,6 +720,10 @@ pub fn Ops(comptime cfg: Config) type {
             }
             var remaining_regular_gas = gas - regular_cost;
             remaining_regular_gas = try frame.chargeStateGas(remaining_regular_gas, state_gas);
+
+            const regular_refund, const state_gas_refund = refund_sstore(args[0], old_value, original_value);
+            frame.evm.gas_refund += regular_refund;
+            remaining_regular_gas = frame.creditStateGasRefund(remaining_regular_gas, state_gas_refund);
             return next(next_ip, remaining_regular_gas, 0, new_stack_head, frame);
         }
 
@@ -804,7 +805,7 @@ pub fn Ops(comptime cfg: Config) type {
                     );
                     available_gas += leftover_gas;
                     frame.state_gas_used += child_state_gas_used;
-                    frame.creditStateGasRefund(if (new_addr == 0) create_state_gas else 0);
+                    available_gas = frame.creditStateGasRefund(available_gas, if (new_addr == 0) create_state_gas else 0);
                     args[0] = new_addr; // 0 on failure, address on success
                     return next(next_ip, available_gas, 0, new_stack_head, frame);
                 }
