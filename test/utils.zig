@@ -105,7 +105,7 @@ pub fn finalizeBlock(state: *state_mod.State, committed: *CommittedState) !void 
     while (acct_it.next()) |entry| {
         const addr = entry.key_ptr.*;
         const acct = entry.value_ptr.*;
-        if (acct.isEmptyAccount()) {
+        if (acct.isEmpty()) {
             _ = committed.account_map.remove(addr);
         } else {
             try committed.account_map.put(addr, acct);
@@ -207,7 +207,7 @@ pub fn computeStateRoot(
     while (addr_it.next()) |addr_ptr| {
         const addr = addr_ptr.*;
         const account = try state.accounts.nonTemporalRead(addr);
-        if (account.isEmptyAccount()) continue;
+        if (account.isEmpty()) continue;
         try acct_list.append(gpa, .{ .key = keccak256OfU160(addr), .addr = addr, .account = account });
     }
     std.sort.pdq(AddrEntry, acct_list.items, {}, struct {

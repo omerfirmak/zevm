@@ -478,7 +478,7 @@ pub const EVM = struct {
 
             // EIP-2780 top level charges
             const regular_precharge = if (cfg.fork.isEnabled(.Amsterdam) and target_has_delegation) cfg.fork.cold_account_access_gas else 0;
-            const state_precharge = if (cfg.fork.isEnabled(.Amsterdam) and msg.value > 0 and target_account.isEmptyAccount())
+            const state_precharge = if (cfg.fork.isEnabled(.Amsterdam) and msg.value > 0 and target_account.isEmpty())
                 STATE_BYTES_PER_NEW_ACCOUNT * cfg.fork.cpsb
             else
                 0;
@@ -920,7 +920,7 @@ pub const EVM = struct {
                 continue;
             };
             // Refund if account is non-empty (already had state)
-            if (!auth_account.isEmptyAccount()) {
+            if (!auth_account.isEmpty()) {
                 if (cfg.fork.isEnabled(.Amsterdam)) {
                     self.state_gas_reservoir += STATE_BYTES_PER_NEW_ACCOUNT * cfg.fork.cpsb;
                     self.state_gas_refund += STATE_BYTES_PER_NEW_ACCOUNT * cfg.fork.cpsb;

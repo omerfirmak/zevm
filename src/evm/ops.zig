@@ -467,7 +467,7 @@ pub fn Ops(comptime cfg: Config) type {
             }
 
             const account = try frame.state.accounts.read(target);
-            args[0] = if (account.isEmptyAccount()) 0 else std.mem.readInt(u256, &account.code_hash, .big);
+            args[0] = if (account.isEmpty()) 0 else std.mem.readInt(u256, &account.code_hash, .big);
             return next(next_ip, gas, cost, new_stack_head, frame);
         }
 
@@ -858,7 +858,7 @@ pub fn Ops(comptime cfg: Config) type {
 
                     const stipend = if (positive_value_cost > 0) fork.call_stipend else 0;
                     const target_account = try frame.state.accounts.read(call_target);
-                    const positive_value_to_new_acc_cost = if (variant == .CALL and value_is_positive and target_account.isEmptyAccount())
+                    const positive_value_to_new_acc_cost = if (variant == .CALL and value_is_positive and target_account.isEmpty())
                         fork.call_new_account_gas
                     else
                         0;
@@ -871,7 +871,7 @@ pub fn Ops(comptime cfg: Config) type {
                     }
                     available_gas -= dynamic_cost;
 
-                    if (fork.isEnabled(.Amsterdam) and variant == .CALL and value_is_positive and target_account.isEmptyAccount()) {
+                    if (fork.isEnabled(.Amsterdam) and variant == .CALL and value_is_positive and target_account.isEmpty()) {
                         available_gas = try frame.chargeStateGas(available_gas, evm.STATE_BYTES_PER_NEW_ACCOUNT * fork.cpsb);
                     }
 
@@ -974,7 +974,7 @@ pub fn Ops(comptime cfg: Config) type {
             if (transferred_value > 0) {
                 if (beneficiary != frame.target) {
                     var beneficiary_account = try frame.state.accounts.update(beneficiary);
-                    target_was_empty = beneficiary_account.isEmptyAccount();
+                    target_was_empty = beneficiary_account.isEmpty();
                     if (target_was_empty) {
                         empty_account_cost = fork.selfdestruct_empty_target_gas;
                     }
