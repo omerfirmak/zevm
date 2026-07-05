@@ -50,6 +50,8 @@ const SYSTEM_ADDRESS: u160 = 0xfffffffffffffffffffffffffffffffffffffffe;
 const DEPOSIT_CONTRACT: u160 = 0x00000000219ab540356cBB839Cbe05303d7705Fa;
 const WITHDRAWAL_REQUEST_PREDEPLOY_ADDRESS: u160 = 0x00000961ef480eb55e80d19ad83579a64c007002;
 const CONSOLIDATION_REQUEST_PREDEPLOY_ADDRESS: u160 = 0x0000bbddc7ce488642fb579f8b00f3a590007251;
+const BUILDER_DEPOSIT_CONTRACT_ADDRESS: u160 = 0x0000884d2AA32eAa155F59A2f24eFa73D9008282;
+const BUILDER_EXIT_CONTRACT_ADDRESS: u160 = 0x000014574A74c805590AFF9499fc7A690f008282;
 const SYSTEM_CALL_GAS: u32 = 30_000_000;
 const SYSTEM_MAX_SSTORES_PER_CALL: u32 = 16;
 const DEPOSIT_EVENT_TOPIC: u256 = 0x649bbc62d0e31342afea4e5cd82d4049e7e1ee912fc0889aa790803be39038c5;
@@ -153,7 +155,7 @@ fn computeRequestsHash(
     state: *State,
     logs: *const std.DoublyLinkedList,
 ) ![32]u8 {
-    var buf: [96]u8 = undefined;
+    var buf: [160]u8 = undefined;
     var size: usize = 0;
     if (try hashDepositRequests(allocator, logs)) |h| {
         @memcpy(buf[size .. size + 32], &h);
@@ -179,6 +181,30 @@ fn computeRequestsHash(
         spec,
         CONSOLIDATION_REQUEST_PREDEPLOY_ADDRESS,
         0x02,
+        state,
+    )) |h| {
+        @memcpy(buf[size .. size + 32], &h);
+        size += 32;
+    }
+    vm.reset();
+    if (try hashSystemCall(
+        allocator,
+        vm,
+        spec,
+        BUILDER_DEPOSIT_CONTRACT_ADDRESS,
+        0x03,
+        state,
+    )) |h| {
+        @memcpy(buf[size .. size + 32], &h);
+        size += 32;
+    }
+    vm.reset();
+    if (try hashSystemCall(
+        allocator,
+        vm,
+        spec,
+        BUILDER_EXIT_CONTRACT_ADDRESS,
+        0x04,
         state,
     )) |h| {
         @memcpy(buf[size .. size + 32], &h);
