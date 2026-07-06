@@ -440,6 +440,8 @@ const exception_map = .{
     .{ "TransactionException.NONCE_MISMATCH_TOO_HIGH", evm.Errors.NonceMismatch },
     .{ "TransactionException.INITCODE_SIZE_EXCEEDED", evm.Errors.InitcodeSizeExceeded },
     .{ "TransactionException.SENDER_NOT_EOA", evm.Errors.SenderNotEOA },
+    .{ "TransactionException.INVALID_SIGNATURE_VRS", error.InvalidSignature },
+    .{ "TransactionException.INVALID_CHAINID", error.InvalidChainId },
     .{ "TransactionException.INSUFFICIENT_MAX_FEE_PER_GAS", evm.Errors.FeeTooLow },
     .{ "TransactionException.PRIORITY_GREATER_THAN_MAX_FEE_PER_GAS", evm.Errors.PriorityFeeTooHigh },
     .{ "TransactionException.TYPE_3_TX_ZERO_BLOBS", evm.Errors.ZeroBlobs },

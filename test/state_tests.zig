@@ -142,7 +142,6 @@ fn runStateTestFile(io: std.Io, allocator: std.mem.Allocator, dir: std.Io.Dir, p
 }
 
 fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []const u8, comptime trace: bool, comptime dump_diff: bool) !void {
-    const tx = test_case.transaction;
     const fork_enum = utils.forkFromString(fork);
     const post_entries = test_case.post.map.get(fork).?;
 
@@ -183,6 +182,7 @@ fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []con
             var decoded_tx: types.Transaction = undefined;
             _ = rlp.deserialize(types.Transaction, arena_allocator, txbytes, &decoded_tx) catch |e| break :blk e;
 
+            const sender = zevm.processor.recoverTxSender(arena_allocator, &decoded_tx, context.chainid) catch |e| break :blk e;
             const gas_limit: u64 = switch (decoded_tx) {
                 inline else => |t| @intCast(t.gas_limit),
             };
@@ -193,7 +193,7 @@ fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []con
                 inline else => |f| (comptime spec.specByFork(f)).evmCapacities(),
             });
 
-            const msg = zevm.processor.messageFromTx(arena_allocator, &decoded_tx, tx.sender.value) catch |e| break :blk e;
+            const msg = zevm.processor.messageFromTx(arena_allocator, &decoded_tx, sender) catch |e| break :blk e;
             break :blk switch (fork_enum) {
                 inline else => |f| if (vm.process(.{ .fork = spec.specByFork(f), .tracing_enabled = trace }, &msg, &state)) |_| null else |err| err,
             };

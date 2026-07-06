@@ -126,7 +126,7 @@ fn prepareBlock(
 
     const txns = if (block_entry.transactions) |ts| ts else block_entry.rlp_decoded.?.transactions.?;
     var senders = try arena.alloc(u160, txns.len);
-    for (txns, 0..) |tx, i| senders[i] = tx.sender.value;
+    for (block.transactions, 0..) |tx, i| senders[i] = try zevm.processor.recoverTxSender(arena, &tx, 1);
 
     return .{
         .block = block,
