@@ -12,114 +12,114 @@ pub const Spec = struct {
     gas_table: [256]u32,
 
     // EIP-2929: access cost tiers
-    warm_access_gas: u32,
-    cold_account_access_gas: u32,
-    cold_sload_gas: u32,
+    warm_access_gas: u64,
+    cold_account_access_gas: u64,
+    cold_sload_gas: u64,
 
     // EIP-2200/3529: SSTORE gas schedule
-    sstore_set_gas: u32,
-    sstore_reset_gas: u32,
-    sstore_clears_schedule: u32,
+    sstore_set_gas: u64,
+    sstore_reset_gas: u64,
+    sstore_clears_schedule: u64,
 
     // EIP-170: max deployed code size and deposit cost per byte
     max_code_size: usize,
-    code_deposit_gas: u32,
+    code_deposit_gas: u64,
 
     // EIP-2930: access list intrinsic gas
-    access_list_address_gas: u32,
-    access_list_storage_key_gas: u32,
+    access_list_address_gas: u64,
+    access_list_storage_key_gas: u64,
 
     // Intrinsic base gas per transaction type
-    tx_base_gas: u32,
-    tx_create_gas: u32,
+    tx_base_gas: u64,
+    tx_create_gas: u64,
 
     // Per-word gas for hashing operations (KECCAK256, CREATE2)
-    keccak_word_gas: u32,
+    keccak_word_gas: u64,
 
     // EIP-150: denominator for the 63/64 gas forwarding rule
     gas_forward_denom: u32,
 
-    selfdestruct_empty_target_gas: u32,
+    selfdestruct_empty_target_gas: u64,
 
     // EIP-8037: cost per state byte (0 = disabled)
-    cpsb: u32 = 0,
+    cpsb: u64 = 0,
 
     // EIP-7928: per-item cost used to bound BAL size against block gas limit
-    bal_item_cost: u32 = 0,
+    bal_item_cost: u64 = 0,
 
     // EIP-7623 TOTAL_COST_FLOOR_PER_TOKEN
-    total_cost_floor_per_token: u32,
+    total_cost_floor_per_token: u64,
 
     // EIP-7825: maximum transaction gas limit
-    max_tx_gas: u32,
+    max_tx_gas: u64,
 
     // EIP-160: gas per byte of exponent in EXP
-    exp_per_byte_gas: u32,
+    exp_per_byte_gas: u64,
 
     // CALL gas constants
-    call_value_gas: u32, // charged when CALL/CALLCODE sends non-zero value
-    call_new_account_gas: u32, // charged when CALL creates a new (empty) account
-    call_stipend: u32, // bonus gas given to callee when value is transferred
+    call_value_gas: u64, // charged when CALL/CALLCODE sends non-zero value
+    call_new_account_gas: u64, // charged when CALL creates a new (empty) account
+    call_stipend: u64, // bonus gas given to callee when value is transferred
 
-    log_size_gas_factor: u32,
+    log_size_gas_factor: u64,
 
     // Identity precompile
-    identity_base_gas: u32,
-    identity_per_word_gas: u32,
+    identity_base_gas: u64,
+    identity_per_word_gas: u64,
 
     // SHA2-256 precompile
-    sha2256_base_gas: u32,
-    sha2256_per_word_gas: u32,
+    sha2256_base_gas: u64,
+    sha2256_per_word_gas: u64,
 
     // RIPEMD160 precompile
-    ripemd160_base_gas: u32,
-    ripemd160_per_word_gas: u32,
+    ripemd160_base_gas: u64,
+    ripemd160_per_word_gas: u64,
 
     // ECRECOVER precompile
-    ecrecover_gas: u32,
+    ecrecover_gas: u64,
 
     // P256VERIFY precompile (EIP-7951)
-    p256verify_gas: u32,
+    p256verify_gas: u64,
 
     // EIP-2537 BLS12-381 precompiles
-    bls12_g1add_gas: u32,
-    bls12_g1mul_gas: u32,
-    bls12_g2add_gas: u32,
-    bls12_g2mul_gas: u32,
-    bls12_pairing_base_gas: u32,
-    bls12_pairing_per_pair_gas: u32,
-    bls12_map_fp_to_g1_gas: u32,
-    bls12_map_fp2_to_g2_gas: u32,
+    bls12_g1add_gas: u64,
+    bls12_g1mul_gas: u64,
+    bls12_g2add_gas: u64,
+    bls12_g2mul_gas: u64,
+    bls12_pairing_base_gas: u64,
+    bls12_pairing_per_pair_gas: u64,
+    bls12_map_fp_to_g1_gas: u64,
+    bls12_map_fp2_to_g2_gas: u64,
 
     // EIP-4844 / EIP-7594
-    gas_per_blob: u32,
-    point_evaluation_gas: u32,
+    gas_per_blob: u64,
+    point_evaluation_gas: u64,
     max_blobs_per_tx: u64,
 
     // EIP-7883 / 7823 modexp pricing helpers
-    modexp_minimum_cost: u32,
+    modexp_minimum_cost: u64,
     modexp_small_length: usize,
-    modexp_small_cost: u32,
-    modexp_large_multiplier: u32,
+    modexp_small_cost: u64,
+    modexp_large_multiplier: u64,
 
     // EIP-7702: set code for EOAs
-    per_empty_account_cost: u32, // intrinsic cost per authorization tuple
-    per_auth_base_cost: u32, // refund amount when authority account is non-empty
+    per_empty_account_cost: u64, // intrinsic cost per authorization tuple
+    per_auth_base_cost: u64, // refund amount when authority account is non-empty
 
     // EC precompiles
-    ecadd_gas: u32,
-    ecmul_gas: u32,
-    ecpairing_gas: u32,
-    ecpairing_per_pair_gas: u32,
+    ecadd_gas: u64,
+    ecmul_gas: u64,
+    ecpairing_gas: u64,
+    ecpairing_per_pair_gas: u64,
 
     // EIP-2780
-    tx_value_cost: u32 = 0,
-    transfer_log_cost: u32 = 0,
+    tx_value_cost: u64 = 0,
+    transfer_log_cost: u64 = 0,
 
     // EIP-8038
-    create_access: u32 = 0,
-    account_write: u32 = 0,
-    storage_write: u32 = 0,
+    create_access: u64 = 0,
+    account_write: u64 = 0,
+    storage_write: u64 = 0,
 
     /// Pre-allocation sizes for State, derived from spec gas costs.
     pub const StateCapacities = struct {
@@ -146,25 +146,22 @@ pub const Spec = struct {
     /// Derive tight State pre-allocation sizes from a transaction gas limit.
     pub fn stateCapacities(comptime self: Self, gas_limit: u64) StateCapacities {
         const tstore_gas: u64 = self.gas_table[Opcode.TSTORE.byte()];
-        const sstore_min_gas: u64 = @as(u64, @intCast(self.cold_sload_gas)) + @as(u64, @intCast(self.sstore_reset_gas));
-        const warm: u64 = @intCast(self.warm_access_gas);
-        const cold_account: u64 = @intCast(self.cold_account_access_gas);
-        const cold_slot: u64 = @intCast(self.cold_sload_gas);
+        const sstore_min_gas = self.cold_sload_gas + self.sstore_reset_gas;
         // Cheapest account write: CALL with value — each call modifies sender + receiver (×2)
-        const acct_write: u64 = warm + @as(u64, @intCast(self.call_value_gas));
+        const acct_write = self.warm_access_gas + self.call_value_gas;
 
-        const max_tx_gas = @as(u64, @intCast(self.max_tx_gas));
+        const max_tx_gas = self.max_tx_gas;
         // Dirties: unique keys touched; load on read adds one entry per first cold access.
         // *2 for accounts because one CALL touches two accounts.
-        const as_: u32 = @intCast((gas_limit / acct_write) * 2 + gas_limit / cold_account);
-        const cs: u32 = @intCast(gas_limit / sstore_min_gas + gas_limit / cold_slot);
+        const as_: u32 = @intCast((gas_limit / acct_write) * 2 + gas_limit / self.cold_account_access_gas);
+        const cs: u32 = @intCast(gas_limit / sstore_min_gas + gas_limit / self.cold_sload_gas);
         const ts: u32 = @intCast(max_tx_gas / tstore_gas);
 
         // Journal: cleared between txns, so bounded by max_tx_gas.
         // Only value-bearing CALLs write account entries; each costs warm + call_value_gas (×2 accounts).
         const aj: u32 = @intCast((max_tx_gas / acct_write) * 2);
         // Contract slots: re-writes to a warm dirty slot cost only warm_access_gas
-        const cj: u32 = @intCast(max_tx_gas / warm);
+        const cj: u32 = @intCast(max_tx_gas / self.warm_access_gas);
         // Transient: each TSTORE costs tstore_gas regardless of whether the slot was already dirty
         const tj: u32 = @intCast(max_tx_gas / tstore_gas);
 
@@ -182,23 +179,20 @@ pub const Spec = struct {
 
     /// Derive tight EVM pre-allocation sizes from the spec's max_tx_gas.
     pub fn evmCapacities(comptime self: Self) EvmCapacities {
-        const gas_limit: u64 = @intCast(self.max_tx_gas);
-        const cold_account: u64 = @intCast(self.cold_account_access_gas);
-        const cold_slot: u64 = @intCast(self.cold_sload_gas);
-        const sstore_min: u64 = cold_slot + @as(u64, @intCast(self.sstore_reset_gas));
+        const sstore_min = self.cold_sload_gas + self.sstore_reset_gas;
         const create_gas: u64 = self.gas_table[Opcode.CREATE.byte()];
         // All three are per-tx (cleared in reset()), so bounded by max_tx_gas / first-access cost.
         // warm_accounts: writeNoClobber, one entry per unique cold account
-        const wa: u32 = @intCast(gas_limit / cold_account);
+        const wa: u32 = @intCast(self.max_tx_gas / self.cold_account_access_gas);
         // warm_slots: writeNoClobber, one entry per unique cold slot
-        const ws: u32 = @intCast(gas_limit / cold_slot);
+        const ws: u32 = @intCast(self.max_tx_gas / self.cold_sload_gas);
         // pre_state: getOrPut on first SSTORE per slot
-        const ps: u32 = @intCast(gas_limit / sstore_min);
-        const ca: u32 = @intCast(gas_limit / create_gas);
+        const ps: u32 = @intCast(self.max_tx_gas / sstore_min);
+        const ca: u32 = @intCast(self.max_tx_gas / create_gas);
         // Invert EIP-150 memory cost formula: words²/512 + 3*words = gas
         // => words² + 1536*words - 512*gas = 0
         // => words = (-1536 + sqrt(1536² + 2048*gas)) / 2
-        const quadratic_discriminant: u64 = 2_359_296 + 2048 * gas_limit;
+        const quadratic_discriminant: u64 = 2_359_296 + 2048 * self.max_tx_gas;
         const mem_words: u64 = comptime (std.math.sqrt(quadratic_discriminant) -| 1536) / 2;
         const ret: usize = @intCast(mem_words * 32);
         return .{

@@ -18,7 +18,7 @@ const InstructionPointer = Bytecode.InstructionPointer;
 // The interface that opcode handlers are required to implement
 pub const Fn = *const fn (
     InstructionPointer,
-    u32,
+    u64,
     u16,
     *evm.Frame,
 ) evm.Errors!void;
@@ -29,7 +29,7 @@ pub fn Ops(comptime cfg: Config) type {
     return struct {
         // Tail calls the next instruction after checking to see if the execution has run out of gas
         // Increments the PC as well
-        pub inline fn next(next_ip: InstructionPointer, gas: u32, cost: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+        pub inline fn next(next_ip: InstructionPointer, gas: u64, cost: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             if (gas < cost) {
                 @branchHint(.unlikely);
                 return evm.Errors.OutOfGas;
@@ -44,47 +44,47 @@ pub fn Ops(comptime cfg: Config) type {
             return @call(.always_tail, next_op, .{ next_ip + 1, gas - cost, stack_head, frame });
         }
 
-        pub fn invalid(_: InstructionPointer, _: u32, _: u16, _: *evm.Frame) evm.Errors!void {
+        pub fn invalid(_: InstructionPointer, _: u64, _: u16, _: *evm.Frame) evm.Errors!void {
             return evm.Errors.InvalidOpcode;
         }
 
-        pub fn stop(_: InstructionPointer, gas: u32, _: u16, frame: *evm.Frame) evm.Errors!void {
+        pub fn stop(_: InstructionPointer, gas: u64, _: u16, frame: *evm.Frame) evm.Errors!void {
             // I would rather just return this instead of writing it to the frame
             // but https://github.com/ziglang/zig/issues/18189
-            frame.gas = @intCast(gas);
+            frame.gas = gas;
             frame.evm.return_data_size = 0;
         }
 
-        pub fn pop(next_ip: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+        pub fn pop(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, _ = try frame.stackPop(stack_head, 1, 0);
             return next(next_ip, gas, fork.constantGas(.POP), new_stack_head, frame);
         }
 
-        pub fn add(next_ip: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+        pub fn add(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 2, 1);
             args[0] = args[1] +% args[0];
             return next(next_ip, gas, fork.constantGas(.ADD), new_stack_head, frame);
         }
 
-        pub fn mul(next_ip: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+        pub fn mul(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 2, 1);
             args[0] = args[1] *% args[0];
             return next(next_ip, gas, fork.constantGas(.MUL), new_stack_head, frame);
         }
 
-        pub fn sub(next_ip: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+        pub fn sub(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 2, 1);
             args[0] = args[1] -% args[0];
             return next(next_ip, gas, fork.constantGas(.SUB), new_stack_head, frame);
         }
 
-        pub fn div(next_ip: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+        pub fn div(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 2, 1);
             args[0] = uint256.div(args[1], args[0]);
             return next(next_ip, gas, fork.constantGas(.DIV), new_stack_head, frame);
         }
 
-        pub fn sdiv(next_ip: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+        pub fn sdiv(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 2, 1);
             if (args[0] == 0) {
                 args[0] = 0;
@@ -99,13 +99,13 @@ pub fn Ops(comptime cfg: Config) type {
             return next(next_ip, gas, fork.constantGas(.SDIV), new_stack_head, frame);
         }
 
-        pub fn mod(next_ip: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+        pub fn mod(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 2, 1);
             args[0] = uint256.rem(args[1], args[0]);
             return next(next_ip, gas, fork.constantGas(.MOD), new_stack_head, frame);
         }
 
-        pub fn smod(next_ip: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+        pub fn smod(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 2, 1);
             if (args[0] == 0) {
                 args[0] = 0;
@@ -120,19 +120,19 @@ pub fn Ops(comptime cfg: Config) type {
             return next(next_ip, gas, fork.constantGas(.SMOD), new_stack_head, frame);
         }
 
-        pub fn addmod(next_ip: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+        pub fn addmod(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 3, 1);
             args[0] = uint256.addmod(args[2], args[1], args[0]);
             return next(next_ip, gas, fork.constantGas(.ADDMOD), new_stack_head, frame);
         }
 
-        pub fn mulmod(next_ip: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+        pub fn mulmod(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 3, 1);
             args[0] = uint256.mulmod(args[2], args[1], args[0]);
             return next(next_ip, gas, fork.constantGas(.MULMOD), new_stack_head, frame);
         }
 
-        pub fn exp(next_ip: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+        pub fn exp(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 2, 1);
             var exponent = args[0];
             const exp_bytes: u32 = if (exponent == 0) 0 else @divFloor(256 - @as(u32, @clz(exponent)) + 7, 8);
@@ -151,7 +151,7 @@ pub fn Ops(comptime cfg: Config) type {
             return next(next_ip, gas, fork.constantGas(.EXP) + dynamic_gas, new_stack_head, frame);
         }
 
-        pub fn signextend(next_ip: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+        pub fn signextend(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 2, 1);
             if (args[1] <= 30) {
                 const size: u5 = @intCast(args[1]);
@@ -169,67 +169,67 @@ pub fn Ops(comptime cfg: Config) type {
             return next(next_ip, gas, fork.constantGas(.SIGNEXTEND), new_stack_head, frame);
         }
 
-        pub fn lt(next_ip: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+        pub fn lt(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 2, 1);
             args[0] = @intFromBool(args[1] < args[0]);
             return next(next_ip, gas, fork.constantGas(.LT), new_stack_head, frame);
         }
 
-        pub fn gt(next_ip: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+        pub fn gt(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 2, 1);
             args[0] = @intFromBool(args[1] > args[0]);
             return next(next_ip, gas, fork.constantGas(.GT), new_stack_head, frame);
         }
 
-        pub fn slt(next_ip: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+        pub fn slt(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 2, 1);
             args[0] = @intFromBool(@as(i256, @bitCast(args[1])) < @as(i256, @bitCast(args[0])));
             return next(next_ip, gas, fork.constantGas(.SLT), new_stack_head, frame);
         }
 
-        pub fn sgt(next_ip: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+        pub fn sgt(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 2, 1);
             args[0] = @intFromBool(@as(i256, @bitCast(args[1])) > @as(i256, @bitCast(args[0])));
             return next(next_ip, gas, fork.constantGas(.SGT), new_stack_head, frame);
         }
 
-        pub fn eq(next_ip: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+        pub fn eq(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 2, 1);
             args[0] = @intFromBool(args[1] == args[0]);
             return next(next_ip, gas, fork.constantGas(.EQ), new_stack_head, frame);
         }
 
-        pub fn iszero(next_ip: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+        pub fn iszero(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 1, 1);
             args[0] = @intFromBool(args[0] == 0);
             return next(next_ip, gas, fork.constantGas(.ISZERO), new_stack_head, frame);
         }
 
-        pub fn @"and"(next_ip: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+        pub fn @"and"(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 2, 1);
             args[0] = args[1] & args[0];
             return next(next_ip, gas, fork.constantGas(.AND), new_stack_head, frame);
         }
 
-        pub fn @"or"(next_ip: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+        pub fn @"or"(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 2, 1);
             args[0] = args[1] | args[0];
             return next(next_ip, gas, fork.constantGas(.OR), new_stack_head, frame);
         }
 
-        pub fn xor(next_ip: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+        pub fn xor(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 2, 1);
             args[0] = args[1] ^ args[0];
             return next(next_ip, gas, fork.constantGas(.XOR), new_stack_head, frame);
         }
 
-        pub fn not(next_ip: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+        pub fn not(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 1, 1);
             args[0] = ~args[0];
             return next(next_ip, gas, fork.constantGas(.NOT), new_stack_head, frame);
         }
 
-        pub fn byte(next_ip: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+        pub fn byte(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 2, 1);
             if (args[1] > 31) {
                 args[0] = 0;
@@ -241,7 +241,7 @@ pub fn Ops(comptime cfg: Config) type {
             return next(next_ip, gas, fork.constantGas(.BYTE), new_stack_head, frame);
         }
 
-        pub fn shl(next_ip: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+        pub fn shl(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 2, 1);
             if (args[1] >= 256) {
                 args[0] = 0;
@@ -251,7 +251,7 @@ pub fn Ops(comptime cfg: Config) type {
             return next(next_ip, gas, fork.constantGas(.SHL), new_stack_head, frame);
         }
 
-        pub fn shr(next_ip: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+        pub fn shr(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 2, 1);
             if (args[1] >= 256) {
                 args[0] = 0;
@@ -261,7 +261,7 @@ pub fn Ops(comptime cfg: Config) type {
             return next(next_ip, gas, fork.constantGas(.SHR), new_stack_head, frame);
         }
 
-        pub fn sar(next_ip: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+        pub fn sar(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 2, 1);
             const value = @as(i256, @bitCast(args[0]));
             if (args[1] >= 256) {
@@ -272,23 +272,23 @@ pub fn Ops(comptime cfg: Config) type {
             return next(next_ip, gas, fork.constantGas(.SAR), new_stack_head, frame);
         }
 
-        pub fn clz(next_ip: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+        pub fn clz(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 1, 1);
             args[0] = @clz(args[0]);
             return next(next_ip, gas, fork.constantGas(.CLZ), new_stack_head, frame);
         }
 
-        pub fn jumpdest(next_ip: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+        pub fn jumpdest(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             return next(next_ip, gas, fork.constantGas(.JUMPDEST), stack_head, frame);
         }
 
-        pub fn jump(_: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+        pub fn jump(_: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 1, 0);
             const dest = frame.code.isValidJumpDest(args[0]) orelse return evm.Errors.InvalidJumpDest;
             return next(dest, gas, fork.constantGas(.JUMP), new_stack_head, frame);
         }
 
-        pub fn jumpi(next_ip: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+        pub fn jumpi(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 2, 0);
             if (args[0] == 0) {
                 return next(next_ip, gas, fork.constantGas(.JUMPI), new_stack_head, frame);
@@ -298,18 +298,18 @@ pub fn Ops(comptime cfg: Config) type {
             return next(dest, gas, fork.constantGas(.JUMPI), new_stack_head, frame);
         }
 
-        pub fn opGas(next_ip: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+        pub fn opGas(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             if (gas < fork.constantGas(.GAS)) {
                 return evm.Errors.OutOfGas;
             }
             const remaining_gas = gas - fork.constantGas(.GAS);
-            const new_stack_head = try frame.stackPush(stack_head, @intCast(remaining_gas));
+            const new_stack_head = try frame.stackPush(stack_head, remaining_gas);
             return next(next_ip, remaining_gas, 0, new_stack_head, frame);
         }
 
         pub fn pushN(comptime n: usize) Fn {
             return struct {
-                pub fn push(next_ip: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+                pub fn push(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
                     const new_stack_head, const slot = try frame.stackReserve(stack_head);
                     frame.code.readBytesToValue(next_ip, n, slot);
                     return next(next_ip + n, gas, fork.constantGas(@enumFromInt(@intFromEnum(Opcode.PUSH0) + n)), new_stack_head, frame);
@@ -319,7 +319,7 @@ pub fn Ops(comptime cfg: Config) type {
 
         pub fn dupN(comptime n: usize) Fn {
             return struct {
-                pub fn dup(next_ip: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+                pub fn dup(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
                     var new_stack_head, const s = try frame.stackPop(stack_head, n, n);
                     new_stack_head = try frame.stackPush(new_stack_head, s[0]);
                     return next(next_ip, gas, fork.constantGas(@enumFromInt(Opcode.DUP1.byte() + n - 1)), new_stack_head, frame);
@@ -329,7 +329,7 @@ pub fn Ops(comptime cfg: Config) type {
 
         pub fn swapN(comptime n: usize) Fn {
             return struct {
-                pub fn swap(next_ip: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+                pub fn swap(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
                     const new_stack_head, const s = try frame.stackPop(stack_head, n + 1, n + 1);
                     const tmp = s[0];
                     s[0] = s[n];
@@ -350,7 +350,7 @@ pub fn Ops(comptime cfg: Config) type {
             return if (q < r) .{ q + 1, r + 1 } else .{ r + 1, 29 - q };
         }
 
-        pub fn dupn(next_ip: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+        pub fn dupn(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const n = decodeSingle(frame.code.readByte(next_ip));
             if (stack_head < n) return evm.Errors.StackUnderflow;
             const new_stack_head, const slot = try frame.stackReserve(stack_head);
@@ -358,7 +358,7 @@ pub fn Ops(comptime cfg: Config) type {
             return next(next_ip + 1, gas, fork.constantGas(.DUPN), new_stack_head, frame);
         }
 
-        pub fn swapn(next_ip: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+        pub fn swapn(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const n = decodeSingle(frame.code.readByte(next_ip));
             if (stack_head <= n) return evm.Errors.StackUnderflow;
             const tmp = frame.stack[stack_head - 1];
@@ -367,7 +367,7 @@ pub fn Ops(comptime cfg: Config) type {
             return next(next_ip + 1, gas, fork.constantGas(.SWAPN), stack_head, frame);
         }
 
-        pub fn exchange(next_ip: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+        pub fn exchange(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const n, const m = decodePair(frame.code.readByte(next_ip));
             if (stack_head <= m) return evm.Errors.StackUnderflow;
             const tmp = frame.stack[stack_head - 1 - n];
@@ -376,18 +376,18 @@ pub fn Ops(comptime cfg: Config) type {
             return next(next_ip + 1, gas, fork.constantGas(.EXCHANGE), stack_head, frame);
         }
 
-        pub fn address(next_ip: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+        pub fn address(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head = try frame.stackPush(stack_head, frame.target);
             return next(next_ip, gas, fork.constantGas(.ADDRESS), new_stack_head, frame);
         }
 
-        pub fn selfbalance(next_ip: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+        pub fn selfbalance(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const acc = try frame.state.accounts.read(frame.target);
             const new_stack_head = try frame.stackPush(stack_head, acc.balance);
             return next(next_ip, gas, fork.constantGas(.SELFBALANCE), new_stack_head, frame);
         }
 
-        pub fn balance(next_ip: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+        pub fn balance(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 1, 1);
             const target: u160 = @truncate(args[0]);
             const dynamic_cost = frame.evm.accessAccountCost(fork, target);
@@ -399,22 +399,22 @@ pub fn Ops(comptime cfg: Config) type {
             return next(next_ip, gas, fork.constantGas(.BALANCE) + dynamic_cost, new_stack_head, frame);
         }
 
-        pub fn origin(next_ip: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+        pub fn origin(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head = try frame.stackPush(stack_head, frame.evm.msg.caller);
             return next(next_ip, gas, fork.constantGas(.ORIGIN), new_stack_head, frame);
         }
 
-        pub fn caller(next_ip: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+        pub fn caller(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head = try frame.stackPush(stack_head, frame.caller);
             return next(next_ip, gas, fork.constantGas(.CALLER), new_stack_head, frame);
         }
 
-        pub fn callvalue(next_ip: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+        pub fn callvalue(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head = try frame.stackPush(stack_head, frame.value);
             return next(next_ip, gas, fork.constantGas(.CALLVALUE), new_stack_head, frame);
         }
 
-        pub fn calldataload(next_ip: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+        pub fn calldataload(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 1, 1);
             if (args[0] > frame.calldata.len) {
                 args[0] = 0;
@@ -428,12 +428,12 @@ pub fn Ops(comptime cfg: Config) type {
             return next(next_ip, gas, fork.constantGas(.CALLDATALOAD), new_stack_head, frame);
         }
 
-        pub fn calldatasize(next_ip: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+        pub fn calldatasize(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head = try frame.stackPush(stack_head, @intCast(frame.calldata.len));
             return next(next_ip, gas, fork.constantGas(.CALLDATASIZE), new_stack_head, frame);
         }
 
-        pub fn calldatacopy(next_ip: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+        pub fn calldatacopy(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 3, 0);
             const available_gas = try frame.memory.growToFit(args[2], args[0], gas);
             const dynamic_gas = mem.toWordSize(args[0]) * 3;
@@ -443,12 +443,12 @@ pub fn Ops(comptime cfg: Config) type {
             return next(next_ip, available_gas, fork.constantGas(.CALLDATACOPY) + dynamic_gas, new_stack_head, frame);
         }
 
-        pub fn codesize(next_ip: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+        pub fn codesize(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head = try frame.stackPush(stack_head, frame.code.bytes.len);
             return next(next_ip, gas, fork.constantGas(.CODESIZE), new_stack_head, frame);
         }
 
-        pub fn codecopy(next_ip: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+        pub fn codecopy(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 3, 0);
             const available_gas = try frame.memory.growToFit(args[2], args[0], gas);
             const dynamic_gas = mem.toWordSize(args[0]) * 3;
@@ -458,7 +458,7 @@ pub fn Ops(comptime cfg: Config) type {
             return next(next_ip, available_gas, fork.constantGas(.CODECOPY) + dynamic_gas, new_stack_head, frame);
         }
 
-        pub fn extcodehash(next_ip: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+        pub fn extcodehash(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 1, 1);
             const target: u160 = @truncate(args[0]);
             const cost = frame.evm.accessAccountCost(fork, target) + fork.constantGas(.EXTCODEHASH);
@@ -471,7 +471,7 @@ pub fn Ops(comptime cfg: Config) type {
             return next(next_ip, gas, cost, new_stack_head, frame);
         }
 
-        pub fn extcodesize(next_ip: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+        pub fn extcodesize(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 1, 1);
             const target: u160 = @truncate(args[0]);
             const cost = frame.evm.accessAccountCost(fork, target) + fork.constantGas(.EXTCODESIZE);
@@ -488,7 +488,7 @@ pub fn Ops(comptime cfg: Config) type {
             return next(next_ip, gas, cost, new_stack_head, frame);
         }
 
-        pub fn extcodecopy(next_ip: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+        pub fn extcodecopy(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 4, 0);
             var available_gas = try frame.memory.growToFit(args[2], args[0], gas);
             const target: u160 = @truncate(args[3]);
@@ -509,17 +509,17 @@ pub fn Ops(comptime cfg: Config) type {
             return next(next_ip, available_gas, fork.constantGas(.EXTCODECOPY), new_stack_head, frame);
         }
 
-        pub fn gasprice(next_ip: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+        pub fn gasprice(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head = try frame.stackPush(stack_head, frame.evm.effective_gas_price);
             return next(next_ip, gas, fork.constantGas(.GASPRICE), new_stack_head, frame);
         }
 
-        pub fn pc(next_ip: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+        pub fn pc(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head = try frame.stackPush(stack_head, frame.code.programCounter(next_ip) - 1);
             return next(next_ip, gas, fork.constantGas(.PC), new_stack_head, frame);
         }
 
-        pub fn keccak256(next_ip: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+        pub fn keccak256(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 2, 1);
             const available_gas = try frame.memory.growToFit(args[1], args[0], gas);
             const dynamic_gas = mem.toWordSize(args[0]) * fork.keccak_word_gas;
@@ -529,12 +529,12 @@ pub fn Ops(comptime cfg: Config) type {
             return next(next_ip, available_gas, fork.constantGas(.KECCAK256) + dynamic_gas, new_stack_head, frame);
         }
 
-        pub fn msize(next_ip: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+        pub fn msize(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head = try frame.stackPush(stack_head, frame.memory.buf.len);
             return next(next_ip, gas, fork.constantGas(.MSIZE), new_stack_head, frame);
         }
 
-        pub fn blockhash(next_ip: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+        pub fn blockhash(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 1, 1);
             const requested = args[0];
             const current = frame.evm.context.number;
@@ -547,42 +547,42 @@ pub fn Ops(comptime cfg: Config) type {
             return next(next_ip, gas, fork.constantGas(.BLOCKHASH), new_stack_head, frame);
         }
 
-        pub fn coinbase(next_ip: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+        pub fn coinbase(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head = try frame.stackPush(stack_head, frame.context.coinbase);
             return next(next_ip, gas, fork.constantGas(.COINBASE), new_stack_head, frame);
         }
 
-        pub fn timestamp(next_ip: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+        pub fn timestamp(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head = try frame.stackPush(stack_head, frame.context.time);
             return next(next_ip, gas, fork.constantGas(.TIMESTAMP), new_stack_head, frame);
         }
 
-        pub fn number(next_ip: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+        pub fn number(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head = try frame.stackPush(stack_head, frame.context.number);
             return next(next_ip, gas, fork.constantGas(.NUMBER), new_stack_head, frame);
         }
 
-        pub fn random(next_ip: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+        pub fn random(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head = try frame.stackPush(stack_head, frame.context.random);
             return next(next_ip, gas, fork.constantGas(.PREVRANDO), new_stack_head, frame);
         }
 
-        pub fn gaslimit(next_ip: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+        pub fn gaslimit(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head = try frame.stackPush(stack_head, frame.context.gas_limit);
             return next(next_ip, gas, fork.constantGas(.GASLIMIT), new_stack_head, frame);
         }
 
-        pub fn chainid(next_ip: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+        pub fn chainid(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head = try frame.stackPush(stack_head, frame.context.chainid);
             return next(next_ip, gas, fork.constantGas(.CHAINID), new_stack_head, frame);
         }
 
-        pub fn basefee(next_ip: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+        pub fn basefee(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head = try frame.stackPush(stack_head, frame.context.basefee);
             return next(next_ip, gas, fork.constantGas(.BASEFEE), new_stack_head, frame);
         }
 
-        pub fn blobhash(next_ip: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+        pub fn blobhash(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 1, 1);
             const hashes = frame.evm.msg.blob_versioned_hashes;
             args[0] = if (std.math.cast(usize, args[0])) |i|
@@ -592,12 +592,12 @@ pub fn Ops(comptime cfg: Config) type {
             return next(next_ip, gas, fork.constantGas(.BLOBHASH), new_stack_head, frame);
         }
 
-        pub fn blobbasefee(next_ip: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+        pub fn blobbasefee(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head = try frame.stackPush(stack_head, frame.evm.context.blob_base_fee);
             return next(next_ip, gas, fork.constantGas(.BLOBBASEFEE), new_stack_head, frame);
         }
 
-        pub fn mload(next_ip: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+        pub fn mload(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 1, 1);
             const available_gas = try frame.memory.growToFit(args[0], 32, gas);
 
@@ -606,7 +606,7 @@ pub fn Ops(comptime cfg: Config) type {
             return next(next_ip, available_gas, fork.constantGas(.MLOAD), new_stack_head, frame);
         }
 
-        pub fn mstore(next_ip: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+        pub fn mstore(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 2, 0);
             const available_gas = try frame.memory.growToFit(args[1], 32, gas);
 
@@ -615,7 +615,7 @@ pub fn Ops(comptime cfg: Config) type {
             return next(next_ip, available_gas, fork.constantGas(.MSTORE), new_stack_head, frame);
         }
 
-        pub fn mstore8(next_ip: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+        pub fn mstore8(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 2, 0);
             const available_gas = try frame.memory.growToFit(args[1], 1, gas);
 
@@ -624,7 +624,7 @@ pub fn Ops(comptime cfg: Config) type {
             return next(next_ip, available_gas, fork.constantGas(.MSTORE8), new_stack_head, frame);
         }
 
-        pub fn sload(next_ip: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+        pub fn sload(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 1, 1);
             const dynamic_gas = frame.evm.accessSlotCost(fork, frame.target, args[0]);
             if (gas < dynamic_gas) {
@@ -637,10 +637,10 @@ pub fn Ops(comptime cfg: Config) type {
         }
 
         // EIP-2200/EIP-3529 refund delta for an SSTORE.
-        fn refund_sstore(new_value: u256, current_value: u256, original_value: u256) struct { i32, u32 } {
+        fn refund_sstore(new_value: u256, current_value: u256, original_value: u256) struct { i64, u64 } {
             if (new_value == current_value) return .{ 0, 0 };
 
-            var delta: i32 = 0;
+            var delta: i64 = 0;
 
             if (original_value != 0) {
                 if (current_value == 0) {
@@ -654,7 +654,7 @@ pub fn Ops(comptime cfg: Config) type {
                 }
             }
 
-            var state_gas_refund: u32 = 0;
+            var state_gas_refund: u64 = 0;
             // Restoring a slot to its original value earns back the gas that was
             // charged above the cheap SLOAD cost.
             if (new_value == original_value) {
@@ -673,19 +673,19 @@ pub fn Ops(comptime cfg: Config) type {
 
         // EIP-2200 net-metered SSTORE gas: charges based on the transition from
         // original (pre-tx) value → current value → new value.
-        fn gas_sstore(value: u256, current_value: u256, original_value: u256, is_warm: bool) struct { u32, u32 } {
+        fn gas_sstore(value: u256, current_value: u256, original_value: u256, is_warm: bool) struct { u64, u64 } {
             if (fork.isEnabled(.Amsterdam)) {
-                const access: u32 = if (is_warm) fork.warm_access_gas else fork.cold_sload_gas;
+                const access: u64 = if (is_warm) fork.warm_access_gas else fork.cold_sload_gas;
                 if (value == current_value) return .{ access, 0 }; // noop
                 if (current_value == original_value) { // first change
-                    const state_gas: u32 = if (original_value == 0) evm.STATE_BYTES_PER_STORAGE_SLOT * fork.cpsb else 0;
+                    const state_gas: u64 = if (original_value == 0) evm.STATE_BYTES_PER_STORAGE_SLOT * fork.cpsb else 0;
                     return .{ access + fork.storage_write, state_gas };
                 }
                 return .{ access, 0 }; // dirty
             }
 
             // cold slot access surcharge (EIP-2929)
-            const base_dynamic_gas: u32 = if (is_warm) 0 else fork.cold_sload_gas;
+            const base_dynamic_gas: u64 = if (is_warm) 0 else fork.cold_sload_gas;
             if (value == current_value) {
                 return .{ base_dynamic_gas + fork.warm_access_gas, 0 };
             } else if (current_value == original_value) {
@@ -699,7 +699,7 @@ pub fn Ops(comptime cfg: Config) type {
             }
         }
 
-        pub fn sstore(next_ip: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+        pub fn sstore(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             if (frame.is_static) return evm.Errors.WriteProtection;
             if (gas <= fork.call_stipend) return evm.Errors.OutOfGas;
             const new_stack_head, const args = try frame.stackPop(stack_head, 2, 0);
@@ -727,20 +727,20 @@ pub fn Ops(comptime cfg: Config) type {
             return next(next_ip, remaining_regular_gas, 0, new_stack_head, frame);
         }
 
-        pub fn tload(next_ip: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+        pub fn tload(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 1, 1);
             args[0] = try frame.state.transient_storage.read(.{ .address = frame.target, .slot = args[0] });
             return next(next_ip, gas, fork.constantGas(.TLOAD), new_stack_head, frame);
         }
 
-        pub fn tstore(next_ip: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+        pub fn tstore(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             if (frame.is_static) return evm.Errors.WriteProtection;
             const new_stack_head, const args = try frame.stackPop(stack_head, 2, 0);
             _ = try frame.state.transient_storage.write(.{ .address = frame.target, .slot = args[1] }, args[0]);
             return next(next_ip, gas, fork.constantGas(.TSTORE), new_stack_head, frame);
         }
 
-        pub fn mcopy(next_ip: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+        pub fn mcopy(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 3, 0);
             const available_gas = try frame.memory.growToFit(@max(args[2], args[1]), args[0], gas);
             const dynamic_gas = mem.toWordSize(args[0]) * 3;
@@ -754,7 +754,7 @@ pub fn Ops(comptime cfg: Config) type {
 
         pub fn create_variant(comptime variant: Opcode) Fn {
             return struct {
-                pub fn create(next_ip: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+                pub fn create(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
                     if (frame.is_static) return evm.Errors.WriteProtection;
 
                     // Stack layout (args[0]=bottom, args[n-1]=top):
@@ -774,13 +774,13 @@ pub fn Ops(comptime cfg: Config) type {
                     var available_gas = try frame.memory.growToFit(offset, size, gas);
 
                     // Deduct base cost and EIP-3860 initcode word cost
-                    const initcode_word_cost: u32 = @intCast(mem.toWordSize(size) * 2);
+                    const initcode_word_cost: u64 = mem.toWordSize(size) * 2;
                     if (available_gas < fork.constantGas(variant) + initcode_word_cost) return evm.Errors.OutOfGas;
                     available_gas -= fork.constantGas(variant) + initcode_word_cost;
 
                     // CREATE2 hashes initcode: keccak_word_gas per word
                     if (variant == .CREATE2) {
-                        const hash_cost: u32 = @intCast(mem.toWordSize(size) * fork.keccak_word_gas);
+                        const hash_cost: u64 = mem.toWordSize(size) * fork.keccak_word_gas;
                         if (available_gas < hash_cost) return evm.Errors.OutOfGas;
                         available_gas -= hash_cost;
                     }
@@ -814,7 +814,7 @@ pub fn Ops(comptime cfg: Config) type {
 
         pub fn call_variant(comptime variant: Opcode) Fn {
             return struct {
-                pub fn call(next_ip: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+                pub fn call(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
                     // CALL and CALLCODE consume a value arg from the stack; DELEGATECALL and STATICCALL do not
                     const has_value_arg = variant == .CALL or variant == .CALLCODE;
                     const n_args = if (has_value_arg) 7 else 6;
@@ -908,7 +908,7 @@ pub fn Ops(comptime cfg: Config) type {
 
         pub fn return_variant(comptime variant: Opcode) Fn {
             return struct {
-                pub fn @"return"(_: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+                pub fn @"return"(_: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
                     _, const args = try frame.stackPop(stack_head, 2, 0);
                     const available_gas = try frame.memory.growToFit(args[1], args[0], gas);
                     const remaining = available_gas - fork.constantGas(variant);
@@ -923,7 +923,7 @@ pub fn Ops(comptime cfg: Config) type {
                         @memcpy(frame.evm.return_buffer[0..source.len], source);
                     }
                     frame.evm.return_data_size = @intCast(args[0]);
-                    frame.gas = @intCast(remaining);
+                    frame.gas = remaining;
 
                     if (variant == .REVERT) {
                         return evm.Errors.Reverted;
@@ -932,12 +932,12 @@ pub fn Ops(comptime cfg: Config) type {
             }.@"return";
         }
 
-        pub fn returndatasize(next_ip: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+        pub fn returndatasize(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head = try frame.stackPush(stack_head, frame.evm.return_data_size);
             return next(next_ip, gas, fork.constantGas(.RETURNDATASIZE), new_stack_head, frame);
         }
 
-        pub fn returndatacopy(next_ip: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+        pub fn returndatacopy(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 3, 0);
             const available_gas = try frame.memory.growToFit(args[2], args[0], gas);
             const dynamic_gas = mem.toWordSize(args[0]) * 3;
@@ -953,7 +953,7 @@ pub fn Ops(comptime cfg: Config) type {
             return next(next_ip, available_gas, fork.constantGas(.RETURNDATACOPY) + dynamic_gas, new_stack_head, frame);
         }
 
-        pub fn selfdestruct(_: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+        pub fn selfdestruct(_: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             if (frame.is_static) return evm.Errors.WriteProtection;
 
             _, const args = try frame.stackPop(stack_head, 1, 0);
@@ -969,7 +969,7 @@ pub fn Ops(comptime cfg: Config) type {
             var remaining = gas - cost;
 
             var target_was_empty = false;
-            var empty_account_cost: u32 = 0;
+            var empty_account_cost: u64 = 0;
             const transferred_value = (try frame.state.accounts.read(frame.target)).balance;
             const is_new_account = frame.evm.markForDestruction(frame.target);
             if (transferred_value > 0) {
@@ -998,15 +998,15 @@ pub fn Ops(comptime cfg: Config) type {
             frame.evm.return_data_size = 0;
 
             if (fork.isEnabled(.Amsterdam) and target_was_empty) {
-                frame.gas = try frame.chargeStateGas(@intCast(remaining), evm.STATE_BYTES_PER_NEW_ACCOUNT * fork.cpsb);
+                frame.gas = try frame.chargeStateGas(remaining, evm.STATE_BYTES_PER_NEW_ACCOUNT * fork.cpsb);
             } else {
-                frame.gas = @intCast(remaining);
+                frame.gas = remaining;
             }
         }
 
         pub fn log_variant(comptime variant: Opcode) Fn {
             return struct {
-                pub fn log(next_ip: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+                pub fn log(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
                     if (frame.is_static) return evm.Errors.WriteProtection;
                     const topic_count = variant.byte() - Opcode.LOG0.byte();
                     const num_args = 2 + topic_count;
@@ -1016,7 +1016,7 @@ pub fn Ops(comptime cfg: Config) type {
                     const mem_size = args[topic_count];
                     const mem_offset = args[topic_count + 1];
                     const available_gas = try frame.memory.growToFit(mem_offset, mem_size, gas);
-                    const dynamic_gas = fork.log_size_gas_factor * @as(u32, @intCast(mem_size));
+                    const dynamic_gas = fork.log_size_gas_factor * @as(u64, @intCast(mem_size));
 
                     const data = frame.memory.slice(@truncate(mem_offset), @intCast(mem_size));
                     // Topics are deepest-first in args; reverse to get push order (topic1 first).
@@ -1030,12 +1030,12 @@ pub fn Ops(comptime cfg: Config) type {
             }.log;
         }
 
-        pub fn slotnum(next_ip: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+        pub fn slotnum(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head = try frame.stackPush(stack_head, frame.context.slotnum);
             return next(next_ip, gas, fork.constantGas(.SLOTNUM), new_stack_head, frame);
         }
 
-        pub fn entry(next_ip: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+        pub fn entry(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             return next(next_ip, gas, 0, stack_head, frame);
         }
 
@@ -1149,7 +1149,7 @@ pub fn Ops(comptime cfg: Config) type {
     };
 }
 
-fn tracing_hook(next_ip: InstructionPointer, gas: u32, stack_head: u16, frame: *evm.Frame) void {
+fn tracing_hook(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) void {
     const log = struct {
         depth: usize,
         pc: u64,
