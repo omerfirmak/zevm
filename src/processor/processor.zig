@@ -39,6 +39,8 @@ pub const Errors = error{
     MismatchedWithdrawalsRoot,
     SyscallRevert,
     InvalidBal,
+    InvalidSignature,
+    InvalidChainId,
 };
 
 pub const GAS_PER_BLOB = 131_072;
@@ -472,8 +474,8 @@ fn convertAuthList(allocator: std.mem.Allocator, auth_list: []const types.Author
 const secp256k1_n_half: u256 = 0x7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5D576E7357A4501DDFE92F46681B20A0;
 
 fn recoverEip7702Authority(allocator: std.mem.Allocator, auth: types.AuthorizationTuple) !u160 {
-    if (auth.v > 1) return error.InvalidSignature;
-    if (auth.s == 0 or auth.s > secp256k1_n_half) return error.InvalidSignature;
+    if (auth.v > 1) return Errors.InvalidSignature;
+    if (auth.s == 0 or auth.s > secp256k1_n_half) return Errors.InvalidSignature;
 
     var encoded = std.array_list.Managed(u8).init(allocator);
     defer encoded.deinit();
@@ -490,6 +492,33 @@ fn recoverEip7702Authority(allocator: std.mem.Allocator, auth: types.Authorizati
     const hash = keccak256(msg[0 .. 1 + encoded.items.len]);
 
     return ecrecover(hash, auth.v, auth.r, auth.s);
+}
+
+const secp256k1_n: u256 = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141;
+
+pub fn recoverTxSender(allocator: std.mem.Allocator, tx: *const types.Transaction, chain_id: u64) !u160 {
+    const r, const s = switch (tx.*) {
+        inline else => |t| .{ t.r, t.s },
+    };
+    if (r == 0 or r >= secp256k1_n) return Errors.InvalidSignature;
+    if (s == 0 or s > secp256k1_n_half) return Errors.InvalidSignature; // EIP-2 low-s
+
+    switch (tx.*) {
+        .legacy => |t| {
+            if (t.v == 27 or t.v == 28) {
+                // pre-EIP-155: valid on any chain
+            } else if (t.v >= 35) {
+                if ((t.v - 35) / 2 != chain_id) return Errors.InvalidChainId;
+            } else return Errors.InvalidSignature;
+        },
+        inline else => |t| {
+            if (t.v > 1) return Errors.InvalidSignature;
+            if (t.chain_id != chain_id) return Errors.InvalidChainId;
+        },
+    }
+
+    const hash = try tx.signingHash(allocator, chain_id);
+    return ecrecover(hash, tx.recoveryId(), r, s) catch return Errors.InvalidSignature;
 }
 
 pub fn computeLogsBloom(logs: *const std.DoublyLinkedList) [256]u8 {
