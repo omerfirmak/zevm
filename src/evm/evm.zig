@@ -898,21 +898,26 @@ pub const EVM = struct {
         if (auth.nonce >= std.math.maxInt(u64)) return null;
         _ = self.accessAccount(auth.authority);
         const auth_account = try state.accounts.read(auth.authority);
-        // Skip if authority already has non-delegation code; track if it has an existing delegation.
-        const has_existing_delegation = !std.mem.eql(u8, &auth_account.code_hash, &types.empty_code_hash);
-        if (has_existing_delegation) {
+        // Skip if authority already has non-delegation code; track if it currently delegates.
+        const delegated_now = !std.mem.eql(u8, &auth_account.code_hash, &types.empty_code_hash);
+        if (delegated_now) {
             const existing = try state.get_code(auth_account.code_hash, cfg);
             if (!isDelegation(existing.bytes)) return null;
         }
         // Skip if nonce doesn't match
         if (auth_account.nonce != auth.nonce) return null;
-        return .{ auth_account, has_existing_delegation };
+        return .{ auth_account, delegated_now };
     }
 
     // EIP-7702: process authorization list, setting delegation designators on EOAs
     pub fn applyAuthList(self: *Self, comptime cfg: Config, auth_list: []const Authorization, state: *State) !void {
+        const alloc = self.rounded_allocator.allocator();
+        var pre_tx_delegated: std.AutoHashMapUnmanaged(u160, bool) = .empty;
+        defer pre_tx_delegated.deinit(alloc);
+        try pre_tx_delegated.ensureTotalCapacity(alloc, @intCast(auth_list.len));
+
         for (auth_list) |auth| {
-            const auth_account, const has_existing_delegation = (try self.validateAuth(cfg, auth, state)) orelse {
+            const auth_account, const delegated_now = (try self.validateAuth(cfg, auth, state)) orelse {
                 if (cfg.fork.isEnabled(.Amsterdam)) {
                     const state_bytes = (STATE_BYTES_PER_NEW_ACCOUNT + STATE_BYTES_PER_AUTH_BASE) * cfg.fork.cpsb;
                     self.state_gas_reservoir += state_bytes;
@@ -921,6 +926,9 @@ pub const EVM = struct {
                 }
                 continue;
             };
+            const gop = pre_tx_delegated.getOrPutAssumeCapacity(auth.authority);
+            if (!gop.found_existing) gop.value_ptr.* = delegated_now;
+            const delegated_before_tx = gop.value_ptr.*;
             // Refund if account is non-empty (already had state)
             if (!auth_account.isEmpty()) {
                 if (cfg.fork.isEnabled(.Amsterdam)) {
@@ -931,9 +939,14 @@ pub const EVM = struct {
                     self.gas_refund += cfg.fork.per_empty_account_cost - cfg.fork.per_auth_base_cost;
                 }
             }
-            if (cfg.fork.isEnabled(.Amsterdam) and (has_existing_delegation or auth.address == 0)) {
-                self.state_gas_reservoir += STATE_BYTES_PER_AUTH_BASE * cfg.fork.cpsb;
-                self.state_gas_refund += STATE_BYTES_PER_AUTH_BASE * cfg.fork.cpsb;
+            if (cfg.fork.isEnabled(.Amsterdam)) {
+                const auth_base_units: u64 = if (auth.address == 0)
+                    @as(u64, 1) + @intFromBool(delegated_now and !delegated_before_tx)
+                else
+                    @intFromBool(delegated_now or delegated_before_tx);
+                const refill = auth_base_units * STATE_BYTES_PER_AUTH_BASE * cfg.fork.cpsb;
+                self.state_gas_reservoir += refill;
+                self.state_gas_refund += refill;
             }
             var auth_mutable = try state.accounts.update(auth.authority);
             if (auth.address == 0) {
