@@ -56,6 +56,14 @@ fn serialize_ssz_result(allocator: std.mem.Allocator, res: types.StatelessValida
 }
 
 pub fn verify(allocator: std.mem.Allocator, input: types.StatelessInput) !void {
+    const act = input.chain_config.active_fork.activation;
+    const payload = input.new_payload_request.execution_payload;
+    const bn = act.block_number.constSlice();
+    const ts = act.timestamp.constSlice();
+    if (bn.len == 0 and ts.len == 0) return error.InvalidForkActivation;
+    if (bn.len > 0 and payload.block_number < bn[0]) return error.InactiveForkConfig;
+    if (ts.len > 0 and payload.timestamp < ts[0]) return error.InactiveForkConfig;
+
     const spec = zevm.spec.Amsterdam;
     const headers = try allocator.alloc(zevm.types.BlockHeader, input.witness.headers.len());
     const header_hashes = try allocator.alloc([32]u8, input.witness.headers.len());
