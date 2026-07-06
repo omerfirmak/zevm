@@ -493,11 +493,11 @@ pub fn Ops(comptime cfg: Config) type {
             var available_gas = try frame.memory.growToFit(args[2], args[0], gas);
             const target: u160 = @truncate(args[3]);
             const access_cost = frame.evm.accessAccountCost(fork, target);
-            const dynamic_gas = mem.toWordSize(args[0]) * 3 + access_cost;
-            if (available_gas < dynamic_gas) {
+            const cost = fork.constantGas(.EXTCODECOPY) + mem.toWordSize(args[0]) * 3 + access_cost;
+            if (available_gas < cost) {
                 return evm.Errors.OutOfGas;
             }
-            available_gas -= dynamic_gas;
+            available_gas -= cost;
 
             const code_hash = (try frame.state.accounts.read(target)).code_hash;
             var slice: []const u8 = &[_]u8{};
@@ -506,7 +506,7 @@ pub fn Ops(comptime cfg: Config) type {
                 slice = bytecode.safeSlice(args[1], @intCast(args[0]));
             }
             frame.memory.copyAndClearRemaining(@truncate(args[2]), @intCast(args[0]), slice);
-            return next(next_ip, available_gas, fork.constantGas(.EXTCODECOPY), new_stack_head, frame);
+            return next(next_ip, available_gas, 0, new_stack_head, frame);
         }
 
         pub fn gasprice(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
