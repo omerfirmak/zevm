@@ -472,46 +472,20 @@ pub const EVM = struct {
         if (msg.target) |target| {
             _ = self.accessAccount(target);
 
-            const target_account = try state.accounts.read(target);
-            var target_has_delegation = false;
-            // EIP-7702: if destination has a delegation, add delegate to accessed_addresses
-            const target_code_hash = target_account.code_hash;
-            if (!std.mem.eql(u8, &target_code_hash, &types.empty_code_hash)) {
-                const code = try state.get_code(target_code_hash, cfg);
-                target_has_delegation = isDelegation(code.bytes);
-                if (target_has_delegation) _ = self.accessAccount(delegationAddress(code.bytes));
-            }
-
-            // EIP-2780 top level charges
-            const regular_precharge = if (cfg.fork.isEnabled(.Amsterdam) and target_has_delegation) cfg.fork.cold_account_access_gas else 0;
-            const state_precharge = if (cfg.fork.isEnabled(.Amsterdam) and msg.value > 0 and target_account.isEmpty())
-                STATE_BYTES_PER_NEW_ACCOUNT * cfg.fork.cpsb
-            else
-                0;
-
-            remaining_gas, const oog = if (remaining_gas < regular_precharge)
-                .{ 0, true }
-            else if (self.chargeStateGas(remaining_gas - regular_precharge, state_precharge)) |call_gas|
-                .{ call_gas, false }
-            else |_|
-                .{ 0, true };
-
-            if (!oog) {
-                remaining_gas, _ = try self.call(
-                    cfg,
-                    state,
-                    msg.caller,
-                    target,
-                    target,
-                    remaining_gas,
-                    msg.calldata,
-                    msg.value,
-                    0,
-                    &[_]u8{},
-                    false,
-                    false,
-                );
-            }
+            remaining_gas, _ = try self.call(
+                cfg,
+                state,
+                msg.caller,
+                target,
+                target,
+                remaining_gas,
+                msg.calldata,
+                msg.value,
+                0,
+                &[_]u8{},
+                false,
+                false,
+            );
         } else {
             var created_addr: u160 = 0;
             remaining_gas, const target_alive, created_addr = try self.create(
@@ -614,54 +588,83 @@ pub const EVM = struct {
         const state_snap = state.snapshot();
         const evm_snap = self.snapshot();
 
-        if (!skip_value_transfer and value > 0) {
-            var caller_account = try state.accounts.update(caller);
-            if (caller_account.balance < value) {
-                _ = try resolveCode(code_addr, state, cfg); // todo: remove
-                return .{ initial_gas, Errors.NotEnoughFunds };
-            }
-            caller_account.balance -= value;
-            (try state.accounts.update(target)).balance += value;
-            if (cfg.fork.isEnabled(.Amsterdam) and caller != target) self.pushTransferLog(caller, target, value);
-        }
-
         var remaining_gas = initial_gas;
         var err = @as(?Errors, null);
-        if (cfg.fork.getPrecompile(code_addr)) |precompile_handler| {
-            remaining_gas, err = self.callPrecompile(
-                precompile_handler,
-                initial_gas,
-                calldata,
-                return_buffer,
-            );
-        } else if (try resolveCode(code_addr, state, cfg)) |code| {
-            const allocator = self.rounded_allocator.allocator();
-            var frame = allocator.create(Frame) catch unreachable;
-            defer allocator.destroy(frame);
-            frame.* = Frame{
-                .evm = self,
-                .context = self.context,
-                .state = state,
-                .code = code,
 
-                .caller = caller,
-                .target = target,
-                .calldata = calldata,
-                .value = value,
-                .is_static = is_static,
-                .return_buffer = return_buffer,
+        if (depth == 0) {
+            const target_account = try state.accounts.read(target);
+            var target_has_delegation = false;
+            // EIP-7702: if destination has a delegation, add delegate to accessed_addresses
+            const target_code_hash = target_account.code_hash;
+            if (!std.mem.eql(u8, &target_code_hash, &types.empty_code_hash)) {
+                const code = try state.get_code(target_code_hash, cfg);
+                target_has_delegation = isDelegation(code.bytes);
+                if (target_has_delegation) _ = self.accessAccount(delegationAddress(code.bytes));
+            }
 
-                .gas = initial_gas,
-                .stack = undefined,
-                .memory = Memory.init(allocator),
-                .depth = depth + 1,
-            };
-            defer frame.memory.deinit();
+            // EIP-2780 top level charges
+            const regular_precharge = if (cfg.fork.isEnabled(.Amsterdam) and target_has_delegation) cfg.fork.cold_account_access_gas else 0;
+            const state_precharge = if (cfg.fork.isEnabled(.Amsterdam) and value > 0 and target_account.isEmpty())
+                STATE_BYTES_PER_NEW_ACCOUNT * cfg.fork.cpsb
+            else
+                0;
 
-            frame.enter(cfg) catch |frameErr| {
-                err = frameErr;
-            };
-            remaining_gas = frame.gas;
+            remaining_gas, err = if (remaining_gas < regular_precharge)
+                .{ 0, Errors.OutOfGas }
+            else if (self.chargeStateGas(remaining_gas - regular_precharge, state_precharge)) |call_gas|
+                .{ call_gas, @as(?Errors, null) }
+            else |_|
+                .{ 0, Errors.OutOfGas };
+        }
+
+        if (err == null) {
+            if (!skip_value_transfer and value > 0) {
+                var caller_account = try state.accounts.update(caller);
+                if (caller_account.balance < value) {
+                    _ = try resolveCode(code_addr, state, cfg); // todo: remove
+                    return .{ remaining_gas, Errors.NotEnoughFunds };
+                }
+                caller_account.balance -= value;
+                (try state.accounts.update(target)).balance += value;
+                if (cfg.fork.isEnabled(.Amsterdam) and caller != target) self.pushTransferLog(caller, target, value);
+            }
+
+            if (cfg.fork.getPrecompile(code_addr)) |precompile_handler| {
+                remaining_gas, err = self.callPrecompile(
+                    precompile_handler,
+                    remaining_gas,
+                    calldata,
+                    return_buffer,
+                );
+            } else if (try resolveCode(code_addr, state, cfg)) |code| {
+                const allocator = self.rounded_allocator.allocator();
+                var frame = allocator.create(Frame) catch unreachable;
+                defer allocator.destroy(frame);
+                frame.* = Frame{
+                    .evm = self,
+                    .context = self.context,
+                    .state = state,
+                    .code = code,
+
+                    .caller = caller,
+                    .target = target,
+                    .calldata = calldata,
+                    .value = value,
+                    .is_static = is_static,
+                    .return_buffer = return_buffer,
+
+                    .gas = remaining_gas,
+                    .stack = undefined,
+                    .memory = Memory.init(allocator),
+                    .depth = depth + 1,
+                };
+                defer frame.memory.deinit();
+
+                frame.enter(cfg) catch |frameErr| {
+                    err = frameErr;
+                };
+                remaining_gas = frame.gas;
+            }
         }
 
         if (err != null) {
