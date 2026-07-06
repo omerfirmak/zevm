@@ -514,7 +514,7 @@ pub const EVM = struct {
             }
         } else {
             var created_addr: u160 = 0;
-            remaining_gas, created_addr = try self.create(
+            remaining_gas, const target_alive, created_addr = try self.create(
                 cfg,
                 state,
                 msg.caller,
@@ -524,7 +524,7 @@ pub const EVM = struct {
                 0,
                 null,
             );
-            if (cfg.fork.isEnabled(.Amsterdam) and created_addr == 0) {
+            if (cfg.fork.isEnabled(.Amsterdam) and (created_addr == 0 or target_alive)) {
                 self.state_gas_reservoir += create_state_gas;
                 self.state_gas_refund += create_state_gas;
             }
@@ -716,17 +716,17 @@ pub const EVM = struct {
         initial_gas: u64,
         depth: usize,
         salt: ?u256,
-    ) !struct { u64, u160 } {
+    ) !struct { u64, bool, u160 } {
         self.return_data_size = 0;
 
         // Depth/nonce/balance failures are "never started" — return all forwarded gas to caller.
-        if (depth >= 1024) return .{ initial_gas, 0 };
+        if (depth >= 1024) return .{ initial_gas, false, 0 };
 
         const creator_account = try state.accounts.read(creator);
         const nonce = creator_account.nonce;
         // Nonce must not overflow (u64 range enforced at tx entry; sub-calls inherit that invariant)
-        if (nonce >= std.math.maxInt(u64)) return .{ initial_gas, 0 };
-        if (creator_account.balance < value) return .{ initial_gas, 0 };
+        if (nonce >= std.math.maxInt(u64)) return .{ initial_gas, false, 0 };
+        if (creator_account.balance < value) return .{ initial_gas, false, 0 };
 
         const new_addr: u160 = if (salt) |s|
             create2Address(creator, s, initcode)
@@ -742,7 +742,8 @@ pub const EVM = struct {
 
         // EIP-7610: fail on collision (non-zero nonce or existing code or existing storage)
         const existing = try state.accounts.read(new_addr);
-        if (existing.nonce != 0 or !std.mem.eql(u8, &existing.code_hash, &types.empty_code_hash) or !std.mem.eql(u8, &existing.storage_hash, &types.empty_root_hash)) return .{ 0, 0 };
+        if (existing.nonce != 0 or !std.mem.eql(u8, &existing.code_hash, &types.empty_code_hash) or !std.mem.eql(u8, &existing.storage_hash, &types.empty_root_hash)) return .{ 0, false, 0 };
+        const target_alive = existing.balance != 0;
 
         const state_snap = state.snapshot();
         const evm_snap = self.snapshot();
@@ -793,7 +794,7 @@ pub const EVM = struct {
                 frame.gas = 0;
                 self.return_data_size = 0;
             }
-            return .{ frame.gas, 0 };
+            return .{ frame.gas, false, 0 };
         };
 
         // Collect deployed bytecode from the global return buffer
@@ -813,7 +814,7 @@ pub const EVM = struct {
         {
             state.revert(state_snap);
             self.revert(evm_snap);
-            return .{ 0, 0 };
+            return .{ 0, false, 0 };
         }
         frame.gas -= deposit_regular_gas;
         frame.gas = self.chargeStateGas(frame.gas, deposit_state_gas) catch unreachable; // if check above guards against an underflow
@@ -826,7 +827,7 @@ pub const EVM = struct {
         }
         (try state.accounts.update(new_addr)).code_hash = code_hash;
         // created_accounts was registered before frame.enter(); SELFDESTRUCT may have marked it false — don't overwrite.
-        return .{ frame.gas, new_addr };
+        return .{ frame.gas, target_alive, new_addr };
     }
 
     pub const LogNode = struct { log: Log, node: std.DoublyLinkedList.Node };

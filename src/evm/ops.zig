@@ -793,7 +793,7 @@ pub fn Ops(comptime cfg: Config) type {
                     available_gas -= max_forwardable;
 
                     const initcode = frame.memory.slice(@truncate(offset), @intCast(size));
-                    const leftover_gas, const new_addr = try frame.evm.create(
+                    const leftover_gas, const target_alive, const new_addr = try frame.evm.create(
                         cfg,
                         frame.state,
                         frame.target,
@@ -804,7 +804,8 @@ pub fn Ops(comptime cfg: Config) type {
                         salt,
                     );
                     available_gas += leftover_gas;
-                    available_gas = frame.evm.creditStateGasRefund(available_gas, if (new_addr == 0) create_state_gas else 0);
+                    if (new_addr == 0 or target_alive)
+                        available_gas = frame.evm.creditStateGasRefund(available_gas, create_state_gas);
                     args[0] = new_addr; // 0 on failure, address on success
                     return next(next_ip, available_gas, 0, new_stack_head, frame);
                 }
