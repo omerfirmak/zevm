@@ -548,19 +548,21 @@ fn bloomAdd(bloom: *[256]u8, item: []const u8) void {
 }
 
 fn applyEip4788(header: *const types.BlockHeader, state: *State) !void {
+    const acct = try state.accounts.read(BEACON_ROOTS_ADDRESS);
+    if (std.mem.eql(u8, &acct.code_hash, &types.empty_code_hash)) return;
     const timestamp: u256 = header.timestamp;
     const root: u256 = std.mem.readInt(u256, &header.parent_beacon_block_root, .big);
     const idx = timestamp % HISTORICAL_ROOTS_MODULUS;
     _ = try state.contract_state.write(.{ .address = BEACON_ROOTS_ADDRESS, .slot = idx }, timestamp);
     _ = try state.contract_state.write(.{ .address = BEACON_ROOTS_ADDRESS, .slot = idx + HISTORICAL_ROOTS_MODULUS }, root);
-    _ = try state.accounts.read(BEACON_ROOTS_ADDRESS);
 }
 
 fn applyEip2935(header: *const types.BlockHeader, state: *State) !void {
+    const acct = try state.accounts.read(HISTORY_CONTRACT);
+    if (std.mem.eql(u8, &acct.code_hash, &types.empty_code_hash)) return;
     const slot: u256 = (header.number - 1) % HISTORY_SERVE_WINDOW;
     const value: u256 = std.mem.readInt(u256, &header.parent_hash, .big);
     _ = try state.contract_state.write(.{ .address = HISTORY_CONTRACT, .slot = slot }, value);
-    _ = try state.accounts.read(HISTORY_CONTRACT);
 }
 
 fn calcExcessBlobGas(comptime spec: ChainSpec, parent: *const types.BlockHeader) u64 {
