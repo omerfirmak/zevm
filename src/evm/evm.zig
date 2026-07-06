@@ -88,11 +88,11 @@ pub const Frame = struct {
     return_buffer: []u8,
 
     // vm state
-    gas: u32,
+    gas: u64,
     stack: [max_stack_size]u256 align(@sizeOf(u256)),
     memory: Memory,
-    state_gas_used: i32 = 0,
-    total_spillover: u32 = 0,
+    state_gas_used: i64 = 0,
+    total_spillover: u64 = 0,
 
     pub fn enter(self: *Self, comptime cfg: Config) !void {
         return ops.Ops(cfg).entry(
@@ -141,14 +141,14 @@ pub const Frame = struct {
         return .{ head - n + peek, @ptrCast(self.stack[head - n .. head].ptr) };
     }
 
-    pub fn chargeStateGas(self: *Self, gas_left: u32, amount: u32) !u32 {
+    pub fn chargeStateGas(self: *Self, gas_left: u64, amount: u64) !u64 {
         const new_gas = try self.evm.chargeStateGas(gas_left, amount);
         self.total_spillover += gas_left - new_gas;
         self.state_gas_used += @intCast(amount);
         return new_gas;
     }
 
-    pub fn creditStateGasRefund(self: *Self, gas_left: u32, amount: u32) u32 {
+    pub fn creditStateGasRefund(self: *Self, gas_left: u64, amount: u64) u64 {
         const to_gas_left = @min(amount, self.total_spillover);
         self.total_spillover -= to_gas_left;
         self.evm.state_gas_reservoir += amount - to_gas_left;
@@ -173,7 +173,7 @@ pub const Message = struct {
     caller: u160,
     nonce: u64,
     target: ?u160, // null = CREATE, some(addr) = CALL (including to address 0)
-    gas_limit: u32,
+    gas_limit: u64,
     gas_price: ?u256 = null, // legacy gas price; null for EIP-1559 txs
     calldata: []u8,
     value: u256,
@@ -192,7 +192,7 @@ pub const Message = struct {
 const Snapshot = struct {
     accounts: usize,
     slots: usize,
-    gas_refund: i32,
+    gas_refund: i64,
     created: usize,
     num_logs: usize,
 };
@@ -240,14 +240,14 @@ pub const EVM = struct {
     warm_accounts: storage.AccountsAccessList,
     warm_slots: storage.SlotsAccessList,
     // EIP-2200/EIP-3529: accumulated gas refund counter; may go negative mid-tx
-    gas_refund: i32,
+    gas_refund: i64,
     // effective gas price for the current transaction
     effective_gas_price: u256,
     // Accounts created in this txn, also used to mark them for SELFDESTRUCT
     created_accounts: storage.CreatedAccounts,
     // EIP-8037: state gas book keeping
-    state_gas_reservoir: u32,
-    state_gas_refund: u32,
+    state_gas_reservoir: u64,
+    state_gas_refund: u64,
 
     pub fn init(
         gpa: std.mem.Allocator,
@@ -294,11 +294,11 @@ pub const EVM = struct {
         self.created_accounts.journal.clearRetainingCapacity();
     }
 
-    fn adjustReservoir(self: *Self, delta: i32) void {
+    fn adjustReservoir(self: *Self, delta: i64) void {
         if (delta < 0) self.state_gas_reservoir -= @abs(delta) else self.state_gas_reservoir += @intCast(delta);
     }
 
-    pub fn chargeStateGas(self: *Self, gas_left: u32, amount: u32) !u32 {
+    pub fn chargeStateGas(self: *Self, gas_left: u64, amount: u64) !u64 {
         const from_reservoir = @min(amount, self.state_gas_reservoir);
         const spillover = amount - from_reservoir;
         if (gas_left < spillover) return Errors.OutOfGas;
@@ -332,7 +332,7 @@ pub const EVM = struct {
             msg.gas_price orelse 0;
     }
 
-    pub fn validateAndPriceBlobTx(self: *const Self, comptime fork: Spec, blob_base_fee: u256) !struct { u32, u256 } {
+    pub fn validateAndPriceBlobTx(self: *const Self, comptime fork: Spec, blob_base_fee: u256) !struct { u64, u256 } {
         const msg = self.msg;
         if (msg.max_fee_per_blob_gas) |max_fee_per_blob| {
             const hashes = msg.blob_versioned_hashes;
@@ -347,14 +347,14 @@ pub const EVM = struct {
             }
             if (max_fee_per_blob < blob_base_fee) return Errors.InsufficientMaxFeePerBlobGas;
 
-            const gas = @as(u32, @intCast(hashes.len)) * fork.gas_per_blob;
+            const gas = @as(u64, hashes.len) * fork.gas_per_blob;
             const upfront = std.math.mul(u256, @intCast(gas), max_fee_per_blob) catch return Errors.NotEnoughFunds;
             return .{ gas, upfront };
         }
         return .{ 0, 0 };
     }
 
-    pub fn process(self: *Self, comptime cfg: Config, msg: *const Message, state: *State) !struct { u32, u32 } {
+    pub fn process(self: *Self, comptime cfg: Config, msg: *const Message, state: *State) !struct { u64, u64 } {
         self.msg = msg;
         self.effective_gas_price = effectiveGasPrice(msg, self.context.basefee);
 
@@ -467,7 +467,7 @@ pub const EVM = struct {
             try self.applyAuthList(cfg, auth_list, state);
 
         var remaining_gas = execution_gas_limit;
-        var state_gas_used: u32 = 0;
+        var state_gas_used: u64 = 0;
         if (msg.target) |target| {
             _ = self.accessAccount(target);
 
@@ -564,7 +564,7 @@ pub const EVM = struct {
         return .{ gas_used, 0 };
     }
 
-    pub fn baseIntrinsicRegular(comptime cfg: Config, msg: *const Message) u32 {
+    pub fn baseIntrinsicRegular(comptime cfg: Config, msg: *const Message) u64 {
         const is_create = msg.target == null;
         const is_self_transfer = msg.target == msg.caller;
         if (!cfg.fork.isEnabled(.Amsterdam)) {
@@ -599,14 +599,14 @@ pub const EVM = struct {
         caller: u160,
         target: u160,
         code_addr: u160,
-        initial_gas: u32,
+        initial_gas: u64,
         calldata: []u8,
         value: u256,
         depth: usize,
         return_buffer: []u8,
         skip_value_transfer: bool,
         is_static: bool,
-    ) !struct { u32, i32, ?Errors } {
+    ) !struct { u64, i64, ?Errors } {
         self.return_data_size = 0;
 
         if (depth >= 1024) return .{ initial_gas, 0, Errors.CallDepthExceeded };
@@ -626,7 +626,7 @@ pub const EVM = struct {
         }
 
         var remaining_gas = initial_gas;
-        var state_gas_used: i32 = 0;
+        var state_gas_used: i64 = 0;
         var err = @as(?Errors, null);
         if (cfg.fork.getPrecompile(code_addr)) |precompile_handler| {
             remaining_gas, err = self.callPrecompile(
@@ -683,7 +683,7 @@ pub const EVM = struct {
     // EIP-7702: return the EIP-2929 access cost for following a delegation on code_addr, also
     // marking the delegate as warm. Returns 0 if code_addr has no delegation designator.
     // Must be called from CALL/CALLCODE/DELEGATECALL/STATICCALL before forwarding gas.
-    pub fn delegationAccessCost(self: *Self, comptime cfg: Config, code_addr: u160, state: *State) !u32 {
+    pub fn delegationAccessCost(self: *Self, comptime cfg: Config, code_addr: u160, state: *State) !u64 {
         const code_hash = (try state.accounts.read(code_addr)).code_hash;
         if (std.mem.eql(u8, &code_hash, &types.empty_code_hash)) return 0;
         const raw = try state.get_code(code_hash, cfg);
@@ -694,10 +694,10 @@ pub const EVM = struct {
     pub fn callPrecompile(
         self: *Self,
         handler: precompile.Handler,
-        initial_gas: u32,
+        initial_gas: u64,
         calldata: []u8,
         return_buffer: []u8,
-    ) struct { u32, ?Errors } {
+    ) struct { u64, ?Errors } {
         const result = handler(self.rounded_allocator.allocator(), initial_gas, calldata, self.return_buffer);
         self.return_data_size = result.return_size;
         if (result.return_size > 0) {
@@ -716,10 +716,10 @@ pub const EVM = struct {
         creator: u160,
         initcode: []const u8,
         value: u256,
-        initial_gas: u32,
+        initial_gas: u64,
         depth: usize,
         salt: ?u256,
-    ) !struct { u32, i32, u160 } {
+    ) !struct { u64, i64, u160 } {
         self.return_data_size = 0;
 
         // Depth/nonce/balance failures are "never started" — return all forwarded gas to caller.
@@ -803,11 +803,11 @@ pub const EVM = struct {
         const deployed_len = self.return_data_size;
         self.return_data_size = 0;
         const deployed_code = self.return_buffer[0..deployed_len];
-        const deposit_regular_gas: u32 = if (cfg.fork.isEnabled(.Amsterdam))
+        const deposit_regular_gas: u64 = if (cfg.fork.isEnabled(.Amsterdam))
             mem.toWordSize(deployed_len) * 6
         else
             @intCast(deployed_len * cfg.fork.code_deposit_gas);
-        const deposit_state_gas: u32 = @intCast(deployed_len * cfg.fork.cpsb);
+        const deposit_state_gas: u64 = deployed_len * cfg.fork.cpsb;
 
         if (deployed_len > cfg.fork.max_code_size or // EIP-170
             (deployed_len > 0 and deployed_code[0] == 0xef) or // EIP-3541: reject EOF containers (0xEF prefix) in non-EOF deployments
@@ -870,7 +870,7 @@ pub const EVM = struct {
         return !(self.warm_accounts.writeNoClobber(addr, {}) catch unreachable);
     }
 
-    pub fn accessAccountCost(self: *Self, comptime fork: Spec, addr: u160) u32 {
+    pub fn accessAccountCost(self: *Self, comptime fork: Spec, addr: u160) u64 {
         return if (self.accessAccount(addr)) fork.warm_access_gas else fork.cold_account_access_gas;
     }
 
@@ -878,7 +878,7 @@ pub const EVM = struct {
         return !(self.warm_slots.writeNoClobber(.{ .address = addr, .slot = slot }, {}) catch unreachable);
     }
 
-    pub fn accessSlotCost(self: *Self, comptime fork: Spec, addr: u160, slot: u256) u32 {
+    pub fn accessSlotCost(self: *Self, comptime fork: Spec, addr: u160, slot: u256) u64 {
         return if (self.accessSlot(addr, slot)) fork.warm_access_gas else fork.cold_sload_gas;
     }
 
@@ -995,7 +995,7 @@ fn resolveCode(code_addr: u160, state: *State, comptime cfg: Config) !?Bytecode 
 }
 
 // EIP-3860: 2 gas per 32-byte initcode word (ceiling division)
-fn initcodeWordCost(len: usize) u32 {
+fn initcodeWordCost(len: usize) u64 {
     return @intCast(((len + 31) / 32) * 2);
 }
 
@@ -1047,48 +1047,44 @@ fn create2Address(creator: u160, salt: u256, initcode: []const u8) u160 {
     return std.mem.readInt(u160, hash[12..32], .big);
 }
 
-fn authGas(comptime fork: Spec, auth_list: ?[]const Authorization) !struct { u32, u32 } {
+fn authGas(comptime fork: Spec, auth_list: ?[]const Authorization) !struct { u64, u64 } {
     if (auth_list == null or auth_list.?.len == 0) return .{ 0, 0 };
 
-    const len: u32 = @intCast(auth_list.?.len);
-    const state_gas = std.math.mul(u32, len, (STATE_BYTES_PER_NEW_ACCOUNT + STATE_BYTES_PER_AUTH_BASE) * fork.cpsb) catch return Errors.OutOfGas;
+    const len: u64 = auth_list.?.len;
+    const state_gas = len * (STATE_BYTES_PER_NEW_ACCOUNT + STATE_BYTES_PER_AUTH_BASE) * fork.cpsb;
     const auth_regular_unit = if (fork.isEnabled(.Amsterdam))
         fork.account_write + fork.per_auth_base_cost
     else
         fork.per_empty_account_cost;
-    const regular_gas = std.math.mul(u32, len, auth_regular_unit) catch return Errors.OutOfGas;
+    const regular_gas = len * auth_regular_unit;
     return .{ regular_gas, state_gas };
 }
 
-fn accessListGas(comptime fork: Spec, access_list: []const AccessListEntry) !struct { u32, u32 } {
-    var gas: u32 = 0;
-    var key_count: u32 = 0;
+fn accessListGas(comptime fork: Spec, access_list: []const AccessListEntry) !struct { u64, u64 } {
+    var gas: u64 = 0;
+    var key_count: u64 = 0;
     for (access_list) |entry| {
-        gas = std.math.add(u32, gas, fork.access_list_address_gas) catch return Errors.OutOfGas;
-        const key_gas = std.math.mul(u32, @intCast(entry.storage_keys.len), fork.access_list_storage_key_gas) catch return Errors.OutOfGas;
-        gas = std.math.add(u32, gas, @intCast(key_gas)) catch return Errors.OutOfGas;
-        key_count += @intCast(entry.storage_keys.len);
+        gas += fork.access_list_address_gas;
+        gas += @as(u64, entry.storage_keys.len) * fork.access_list_storage_key_gas;
+        key_count += entry.storage_keys.len;
     }
 
-    var floor: u32 = 0;
+    var floor: u64 = 0;
     if (fork.isEnabled(.Amsterdam)) {
-        const bytes: u32 = key_count * 32 + @as(u32, @intCast(access_list.len)) * 20;
+        const bytes = key_count * 32 + @as(u64, access_list.len) * 20;
         const tokens = bytes * 4;
-        floor = std.math.mul(u32, tokens, fork.total_cost_floor_per_token) catch return Errors.OutOfGas;
-        gas = std.math.add(u32, gas, floor) catch return Errors.OutOfGas;
+        floor = tokens * fork.total_cost_floor_per_token;
+        gas += floor;
     }
     return .{ gas, floor };
 }
 
-fn calldataCost(comptime fork: Spec, calldata: []u8) !struct { u32, u32 } {
+fn calldataCost(comptime fork: Spec, calldata: []u8) !struct { u64, u64 } {
     const zeros = std.mem.count(u8, calldata, &[_]u8{0});
     const cost = zeros * 4 + (calldata.len - zeros) * 16;
     const tokens = if (fork.isEnabled(.Amsterdam)) calldata.len * 4 else zeros + (calldata.len - zeros) * 4;
-    const floor = std.math.mul(usize, tokens, fork.total_cost_floor_per_token) catch return Errors.OutOfGas;
-    if (cost > std.math.maxInt(u32) or floor > std.math.maxInt(u32)) {
-        return Errors.OutOfGas;
-    }
-    return .{ @intCast(cost), @intCast(floor) };
+    const floor = tokens * fork.total_cost_floor_per_token;
+    return .{ cost, floor };
 }
 
 // EIP-7702: delegation designator prefix (0xef0100) followed by 20-byte address = 23 bytes total

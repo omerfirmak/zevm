@@ -187,7 +187,7 @@ fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []con
                 inline else => |t| @intCast(t.gas_limit),
             };
             state = try state_mod.State.init(arena_allocator, &committed, switch (fork_enum) {
-                inline else => |f| (comptime spec.specByFork(f)).stateCapacities(gas_limit),
+                inline else => |f| (comptime spec.specByFork(f)).stateCapacities(@min(30_000_000, gas_limit)),
             });
             vm = try evm.EVM.init(arena_allocator, &context, switch (fork_enum) {
                 inline else => |f| (comptime spec.specByFork(f)).evmCapacities(),

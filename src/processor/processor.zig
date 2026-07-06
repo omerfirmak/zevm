@@ -54,8 +54,8 @@ const WITHDRAWAL_REQUEST_PREDEPLOY_ADDRESS: u160 = 0x00000961ef480eb55e80d19ad83
 const CONSOLIDATION_REQUEST_PREDEPLOY_ADDRESS: u160 = 0x0000bbddc7ce488642fb579f8b00f3a590007251;
 const BUILDER_DEPOSIT_CONTRACT_ADDRESS: u160 = 0x0000884d2AA32eAa155F59A2f24eFa73D9008282;
 const BUILDER_EXIT_CONTRACT_ADDRESS: u160 = 0x000014574A74c805590AFF9499fc7A690f008282;
-const SYSTEM_CALL_GAS: u32 = 30_000_000;
-const SYSTEM_MAX_SSTORES_PER_CALL: u32 = 16;
+const SYSTEM_CALL_GAS: u64 = 30_000_000;
+const SYSTEM_MAX_SSTORES_PER_CALL = 16;
 const DEPOSIT_EVENT_TOPIC: u256 = 0x649bbc62d0e31342afea4e5cd82d4049e7e1ee912fc0889aa790803be39038c5;
 
 pub const PreprocessedBlock = struct {
@@ -93,7 +93,7 @@ pub fn processBlock(
         prepared_bal.validateWrites(0, state, &vm.pre_state);
     state.clearTxState();
 
-    var block_regular_used: u32, var block_state_used: u32 = .{ 0, 0 };
+    var block_regular_used: u64, var block_state_used: u64 = .{ 0, 0 };
 
     for (p_block.block.transactions, 0..) |*tx, index| {
         const msg = try messageFromTx(gpa, tx, p_block.senders[index]);
@@ -407,7 +407,7 @@ pub fn messageFromTx(
     }, .target = if (switch (tx.*) {
         inline else => |*t| t.to,
     }) |to| std.mem.readInt(u160, &to, .big) else null, .gas_limit = switch (tx.*) {
-        inline else => |*t| @intCast(t.gas_limit),
+        inline else => |*t| t.gas_limit,
     }, .gas_price = switch (tx.*) {
         inline .access_list, .legacy => |*t| t.gas_price,
         else => null,

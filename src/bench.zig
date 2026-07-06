@@ -12,7 +12,7 @@ const BenchmarkDef = struct {
     hex_bytes: []const u8,
     /// Raw calldata bytes.
     calldata: []const u8,
-    gas_limit: u32 = 1_000_000_000,
+    gas_limit: u64 = 1_000_000_000,
     /// Size of the deployed-bytecode buffer (bytes).
     bytecode_buf_size: usize = 4 * 1024 * 1024,
 };
@@ -21,7 +21,7 @@ const BenchmarkDef = struct {
 // matching revm's `tx_gas_limit_cap = Some(u64::MAX)` config.
 const bench_fork: Config = blk: {
     var f = spec.Osaka;
-    f.max_tx_gas = std.math.maxInt(u32);
+    f.max_tx_gas = std.math.maxInt(u64);
     break :blk .{ .fork = f, .tracing_enabled = false };
 };
 
@@ -142,8 +142,8 @@ fn runBenchmark(io: std.Io, allocator: std.mem.Allocator, bench_def: BenchmarkDe
     var times = try allocator.alloc(u64, iters);
     defer allocator.free(times);
     var start = std.Io.Timestamp.now(io, .real);
-    var gas_used: u32 = 0;
-    var state_gas_used: u32 = 0;
+    var gas_used: u64 = 0;
+    var state_gas_used: u64 = 0;
 
     for (0..iters + warmup) |i| {
         _ = vm_arena.reset(.retain_capacity);
