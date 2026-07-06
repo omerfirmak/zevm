@@ -3,10 +3,10 @@ const evm = @import("zevm");
 const stateless_trie = @import("trie.zig");
 const List = @import("ssz").utils.List;
 
-const MAX_BYTES_PER_WITNESS_NODE = 1 << 20;
-const MAX_WITNESS_NODES = 1 << 20;
-const MAX_BYTES_PER_CODE = 1 << 24;
-const MAX_WITNESS_CODES = 1 << 16;
+const MAX_BYTES_PER_WITNESS_NODE = 1 << 10;
+const MAX_WITNESS_NODES = 1 << 22;
+const MAX_BYTES_PER_CODE = 1 << 16;
+const MAX_WITNESS_CODES = 1 << 18;
 
 pub const Errors = error{
     InvalidWitness,

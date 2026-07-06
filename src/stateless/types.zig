@@ -9,16 +9,15 @@ const MAX_BLOB_COMMITMENTS_PER_BLOCK = 4096;
 const MAX_DEPOSIT_REQUESTS_PER_PAYLOAD = 1 << 13;
 const MAX_WITHDRAWAL_REQUESTS_PER_PAYLOAD = 1 << 4;
 const MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD = 1 << 1;
-const MAX_BLOCK_ACCESS_LIST_BYTES = 1 << 24;
-const MAX_WITNESS_NODES = 1 << 20;
-const MAX_WITNESS_CODES = 1 << 16;
+const MAX_WITNESS_NODES = 1 << 22;
+const MAX_WITNESS_CODES = 1 << 18;
 const MAX_WITNESS_HEADERS = 256;
-const MAX_BYTES_PER_WITNESS_NODE = 1 << 20;
-const MAX_BYTES_PER_CODE = 1 << 24;
+const MAX_BYTES_PER_WITNESS_NODE = 1 << 10;
+const MAX_BYTES_PER_CODE = 1 << 16;
 const MAX_BYTES_PER_HEADER = 1 << 10;
 const MAX_OPTIONAL_FORK_ACTIVATION_VALUES = 1;
 const MAX_BLOB_SCHEDULES_PER_FORK = 1;
-const MAX_PUBLIC_KEYS = 1 << 20;
+const MAX_PUBLIC_KEYS = 1 << 15;
 
 pub const Withdrawal = struct {
     index: u64,
@@ -45,7 +44,7 @@ pub const ExecutionPayload = struct {
     withdrawals: List(Withdrawal, MAX_WITHDRAWALS_PER_PAYLOAD),
     blob_gas_used: u64,
     excess_blob_gas: u64,
-    block_access_list: List(u8, MAX_BLOCK_ACCESS_LIST_BYTES),
+    block_access_list: List(u8, MAX_BYTES_PER_TRANSACTION),
     slot_number: u64,
 };
 
