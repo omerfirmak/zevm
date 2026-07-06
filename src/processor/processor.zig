@@ -265,7 +265,7 @@ fn hashSystemCall(
     const calldata: []u8 = &.{};
     const evm_spec = comptime EvmSpec.specByFork(spec.fork);
     vm.state_gas_reservoir = evm.STATE_BYTES_PER_STORAGE_SLOT * evm_spec.cpsb * SYSTEM_MAX_SSTORES_PER_CALL;
-    _, _, const call_err = vm.call(
+    _, const call_err = vm.call(
         .{
             .fork = evm_spec,
         },
