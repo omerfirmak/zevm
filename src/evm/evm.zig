@@ -599,7 +599,11 @@ pub const EVM = struct {
             if (!std.mem.eql(u8, &target_code_hash, &types.empty_code_hash)) {
                 const code = try state.get_code(target_code_hash, cfg);
                 target_has_delegation = isDelegation(code.bytes);
-                if (target_has_delegation) _ = self.accessAccount(delegationAddress(code.bytes));
+                if (target_has_delegation) {
+                    const delegate = delegationAddress(code.bytes);
+                    _ = self.accessAccount(delegate);
+                    _ = try state.accounts.read(delegate);
+                }
             }
 
             // EIP-2780 top level charges
