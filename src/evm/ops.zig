@@ -872,8 +872,10 @@ pub fn Ops(comptime cfg: Config) type {
                     }
                     available_gas -= dynamic_cost;
 
-                    if (fork.isEnabled(.Amsterdam) and variant == .CALL and value_is_positive and target_account.isEmpty()) {
-                        available_gas = try frame.evm.chargeStateGas(available_gas, evm.STATE_BYTES_PER_NEW_ACCOUNT * fork.cpsb);
+                    const new_account_state_gas = evm.STATE_BYTES_PER_NEW_ACCOUNT * fork.cpsb;
+                    const new_account_charged = fork.isEnabled(.Amsterdam) and variant == .CALL and value_is_positive and target_account.isEmpty();
+                    if (new_account_charged) {
+                        available_gas = try frame.evm.chargeStateGas(available_gas, new_account_state_gas);
                     }
 
                     // EIP-150: forward at most (denom-1)/denom of remaining gas to sub-calls
@@ -900,6 +902,9 @@ pub fn Ops(comptime cfg: Config) type {
 
                     args[0] = if (err != null) 0 else 1;
                     available_gas += leftover_gas;
+                    if (err != null and new_account_charged) {
+                        available_gas = frame.evm.creditStateGasRefund(available_gas, new_account_state_gas);
+                    }
                     return next(next_ip, available_gas, 0, new_stack_head, frame);
                 }
             }.call;
