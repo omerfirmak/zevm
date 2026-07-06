@@ -556,10 +556,10 @@ pub const EVM = struct {
 
         defer self.clearSelfdestructed(state, cfg);
         if (cfg.fork.isEnabled(.Amsterdam)) {
-            const state_gas_used: u64 = @intCast(self.state_gas_used);
-            const regular_gas = (gas_used_before_refund + self.state_gas_refund) - (total_state_intrinsic + state_gas_used);
-            const state_gas = total_state_intrinsic + state_gas_used - self.state_gas_refund;
-            return .{ @max(regular_gas, floor_cost), state_gas };
+            const state_gas_signed = @as(i64, @intCast(total_state_intrinsic)) + self.state_gas_used - @as(i64, @intCast(self.state_gas_refund));
+            const state_gas: u64 = @intCast(@max(@as(i64, 0), state_gas_signed));
+            const regular_gas = gas_used_before_refund - state_gas;
+            return .{ regular_gas, state_gas };
         }
         return .{ gas_used, 0 };
     }
