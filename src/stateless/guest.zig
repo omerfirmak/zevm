@@ -12,27 +12,44 @@ const STATELESS_INPUT_SCHEMA_ID_SIZE: usize = 2;
 
 pub fn verify_ssz(allocator: std.mem.Allocator, input_bytes: []const u8) ![]const u8 {
     @setEvalBranchQuota(200_000);
-    if (input_bytes.len < STATELESS_INPUT_SCHEMA_ID_SIZE) return error.UnsupportedSchemaId;
+    var res: types.StatelessValidationResult = .{
+        .chain_config = .{
+            .chain_id = 0,
+            .active_fork = .{
+                .fork = 0,
+                .activation = .{
+                    .block_number = try .init(allocator),
+                    .timestamp = try .init(allocator),
+                },
+                .blob_schedule = try .init(allocator),
+            },
+        },
+        .new_payload_request_root = @splat(0),
+        .successful_validation = false,
+    };
+
+    if (input_bytes.len < STATELESS_INPUT_SCHEMA_ID_SIZE)
+        return serialize_ssz_result(allocator, res);
     const schema_id = std.mem.readInt(u16, input_bytes[0..STATELESS_INPUT_SCHEMA_ID_SIZE], .big);
-    if (schema_id != STATELESS_INPUT_SCHEMA_ID) return error.UnsupportedSchemaId;
+    if (schema_id != STATELESS_INPUT_SCHEMA_ID)
+        return serialize_ssz_result(allocator, res);
 
     var input: types.StatelessInput = undefined;
-    try ssz.deserialize(types.StatelessInput, input_bytes[STATELESS_INPUT_SCHEMA_ID_SIZE..], &input, allocator);
+    ssz.deserialize(types.StatelessInput, input_bytes[STATELESS_INPUT_SCHEMA_ID_SIZE..], &input, allocator) catch
+        return serialize_ssz_result(allocator, res);
 
-    if (input.chain_config.chain_id != @import("build_options").chain_id) return error.UnexpectedChainid;
+    res.chain_config = input.chain_config;
+    ssz.hashTreeRoot(zevm.crypto.hash.Sha256, types.NewPayloadRequest, input.new_payload_request, &res.new_payload_request_root, allocator) catch
+        return serialize_ssz_result(allocator, res);
 
-    var new_payload_request_root: [32]u8 = undefined;
-    try ssz.hashTreeRoot(zevm.crypto.hash.Sha256, types.NewPayloadRequest, input.new_payload_request, &new_payload_request_root, allocator);
+    if (input.chain_config.chain_id != @import("build_options").chain_id)
+        return serialize_ssz_result(allocator, res);
 
-    var res: types.StatelessValidationResult = .{
-        .chain_config = input.chain_config,
-        .new_payload_request_root = new_payload_request_root,
-        .successful_validation = true,
-    };
-    verify(allocator, input) catch {
-        res.successful_validation = false;
-    };
+    res.successful_validation = if (verify(allocator, input)) |_| true else |_| false;
+    return serialize_ssz_result(allocator, res);
+}
 
+fn serialize_ssz_result(allocator: std.mem.Allocator, res: types.StatelessValidationResult) ![]const u8 {
     var buf: std.ArrayList(u8) = .empty;
     try ssz.serialize(types.StatelessValidationResult, res, &buf, allocator);
     return buf.items;
