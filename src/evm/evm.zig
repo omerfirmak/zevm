@@ -393,7 +393,10 @@ pub const EVM = struct {
         const create_state_gas = if (is_create) STATE_BYTES_PER_NEW_ACCOUNT * cfg.fork.cpsb else 0;
         const calldata_gas, const floor_data_cost = try calldataCost(cfg.fork, msg.calldata);
         const access_list_gas, const access_list_floor = try accessListGas(cfg.fork, msg.access_list);
-        const floor_cost = cfg.fork.tx_base_gas + floor_data_cost + access_list_floor; // EIP-7623
+        const floor_cost = (if (cfg.fork.isEnabled(.Amsterdam))
+            intrinsic_gas
+        else
+            cfg.fork.tx_base_gas) + floor_data_cost + access_list_floor; // EIP-7623
         // EIP-3860: 2 gas per 32-byte initcode word, charged as intrinsic for CREATE txs
         const initcode_gas = if (is_create) initcodeWordCost(msg.calldata.len) else 0;
         // EIP-7702: PER_EMPTY_ACCOUNT_COST per authorization tuple
