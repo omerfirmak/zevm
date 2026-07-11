@@ -626,7 +626,7 @@ pub fn Ops(comptime cfg: Config) type {
 
         pub fn sload(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 1, 1);
-            const dynamic_gas = frame.evm.accessSlotCost(fork, frame.target, args[0]);
+            const dynamic_gas, _ = frame.evm.accessSlotCost(fork, frame.target, args[0]);
             if (gas < dynamic_gas) {
                 return evm.Errors.OutOfGas;
             }
@@ -704,7 +704,8 @@ pub fn Ops(comptime cfg: Config) type {
             if (gas <= fork.call_stipend) return evm.Errors.OutOfGas;
             const new_stack_head, const args = try frame.stackPop(stack_head, 2, 0);
             const lookup: types.StorageLookup = .{ .address = frame.target, .slot = args[1] };
-            const is_warm = frame.evm.accessSlot(frame.target, args[1]);
+            const access_cost, const is_warm = frame.evm.accessSlotCost(fork, frame.target, args[1]);
+            if (gas < access_cost) return evm.Errors.OutOfGas;
             const old_value, _ = try frame.state.contract_state.write(lookup, args[0]);
             // lazily record the pre-tx value on first write; subsequent writes don't update it
             const original_value_entry = frame.evm.pre_state.getOrPutAssumeCapacity(lookup);

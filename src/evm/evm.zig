@@ -885,8 +885,8 @@ pub const EVM = struct {
         return !(self.warm_slots.writeNoClobber(.{ .address = addr, .slot = slot }, {}) catch unreachable);
     }
 
-    pub fn accessSlotCost(self: *Self, comptime fork: Spec, addr: u160, slot: u256) u64 {
-        return if (self.accessSlot(addr, slot)) fork.warm_access_gas else fork.cold_sload_gas;
+    pub fn accessSlotCost(self: *Self, comptime fork: Spec, addr: u160, slot: u256) struct { u64, bool } {
+        return if (self.accessSlot(addr, slot)) .{ fork.warm_access_gas, true } else .{ fork.cold_sload_gas, false };
     }
 
     // EIP-2930: pre-warm all addresses and storage keys in the access list
