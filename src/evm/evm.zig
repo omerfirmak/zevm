@@ -46,6 +46,7 @@ pub const Errors = error{
     CreateSetCodeTx,
     InvalidPrecompileInput,
     MissingAncestorHash,
+    CreateCollision,
 } || @import("committed_state.zig").Errors;
 
 pub const Context = struct {
@@ -233,7 +234,6 @@ pub const EVM = struct {
     created_accounts: storage.CreatedAccounts,
     // EIP-8037: state gas book keeping
     state_gas_reservoir: u64,
-    state_gas_refund: u64,
     total_spillover: u64 = 0,
     state_gas_used: i64 = 0,
 
@@ -263,7 +263,6 @@ pub const EVM = struct {
             .logs = .{},
             .num_logs = 0,
             .state_gas_reservoir = 0,
-            .state_gas_refund = 0,
         };
     }
 
@@ -272,7 +271,6 @@ pub const EVM = struct {
         self.gas_refund = 0;
         self.num_logs = 0;
         self.state_gas_reservoir = 0;
-        self.state_gas_refund = 0;
         self.total_spillover = 0;
         self.state_gas_used = 0;
         self.pre_state.clearRetainingCapacity();
@@ -390,7 +388,6 @@ pub const EVM = struct {
         }
 
         const intrinsic_gas = baseIntrinsicRegular(cfg, msg);
-        const create_state_gas = if (is_create) STATE_BYTES_PER_NEW_ACCOUNT * cfg.fork.cpsb else 0;
         const calldata_gas, const floor_data_cost = try calldataCost(cfg.fork, msg.calldata);
         const access_list_gas, const access_list_floor = try accessListGas(cfg.fork, msg.access_list);
         const floor_cost = (if (cfg.fork.isEnabled(.Amsterdam))
@@ -400,18 +397,15 @@ pub const EVM = struct {
         // EIP-3860: 2 gas per 32-byte initcode word, charged as intrinsic for CREATE txs
         const initcode_gas = if (is_create) initcodeWordCost(msg.calldata.len) else 0;
         // EIP-7702: PER_EMPTY_ACCOUNT_COST per authorization tuple
-        const auth_regular_gas, const auth_state_gas = try authGas(cfg.fork, msg.authorization_list);
-        const total_regular_intrinsic = intrinsic_gas + calldata_gas + access_list_gas + initcode_gas + auth_regular_gas;
-
-        const total_state_intrinsic = create_state_gas + auth_state_gas;
-        const total_intrinsic = total_regular_intrinsic + total_state_intrinsic;
+        const auth_regular_gas = try authGas(cfg.fork, msg.authorization_list);
+        const total_intrinsic = intrinsic_gas + calldata_gas + access_list_gas + initcode_gas + auth_regular_gas;
 
         if (msg.gas_limit < total_intrinsic or msg.gas_limit < floor_cost) {
             return Errors.OutOfGas;
         }
 
         if (cfg.fork.isEnabled(.Amsterdam)) {
-            if (@max(total_regular_intrinsic, floor_cost) > cfg.fork.max_tx_gas) return Errors.OutOfGas;
+            if (@max(total_intrinsic, floor_cost) > cfg.fork.max_tx_gas) return Errors.OutOfGas;
         } else {
             if (msg.gas_limit > cfg.fork.max_tx_gas) return Errors.GasOverflow;
         }
@@ -444,7 +438,7 @@ pub const EVM = struct {
         }
 
         // For CALL txs, increment nonce here; for CREATE, create() handles nonce increment.
-        if (!is_create) caller_account.nonce = msg.nonce + 1;
+        caller_account.nonce = msg.nonce + 1;
         const gas_cost = std.math.mul(u256, @intCast(msg.gas_limit), self.effective_gas_price) catch return Errors.GasOverflow;
         caller_account.balance -= gas_cost;
         // EIP-4844: deduct blob gas fee (non-refundable, uses actual base fee not max)
@@ -454,7 +448,7 @@ pub const EVM = struct {
         var execution_gas_limit = execution_gas;
         // EIP-8037: regular gas is capped at TX_MAX_GAS_LIMIT; excess pre-funded into reservoir
         if (cfg.fork.isEnabled(.Amsterdam)) {
-            const max_regular = cfg.fork.max_tx_gas - total_regular_intrinsic;
+            const max_regular = cfg.fork.max_tx_gas - total_intrinsic;
             execution_gas_limit = @min(max_regular, execution_gas);
             self.state_gas_reservoir = execution_gas - execution_gas_limit;
         }
@@ -467,44 +461,51 @@ pub const EVM = struct {
         _ = self.accessAccount(self.context.coinbase); // EIP-3651
         self.applyAccessList(msg.access_list);
 
-        // EIP-7702: process authorization list, setting delegation designators on EOAs
-        if (msg.authorization_list) |auth_list|
-            try self.applyAuthList(cfg, auth_list, state);
-
         var remaining_gas = execution_gas_limit;
+        var create_state_gas: u64 = 0;
+        var err: ?Errors = null;
         if (msg.target) |target| {
-            _ = self.accessAccount(target);
-
-            remaining_gas, _ = try self.call(
-                cfg,
-                state,
-                msg.caller,
-                target,
-                target,
-                remaining_gas,
-                msg.calldata,
-                msg.value,
-                0,
-                &[_]u8{},
-                false,
-                false,
-            );
-        } else {
-            var created_addr: u160 = 0;
-            remaining_gas, const target_alive, created_addr = try self.create(
-                cfg,
-                state,
-                msg.caller,
-                msg.calldata,
-                msg.value,
-                remaining_gas,
-                0,
-                null,
-            );
-            if (cfg.fork.isEnabled(.Amsterdam) and (created_addr == 0 or target_alive)) {
-                self.state_gas_reservoir += create_state_gas;
-                self.state_gas_refund += create_state_gas;
+            if (self.prepareDispatch(cfg, state, msg, target, remaining_gas)) |prep| {
+                remaining_gas, create_state_gas = prep;
+                remaining_gas, err = try self.call(
+                    cfg,
+                    state,
+                    msg.caller,
+                    target,
+                    target,
+                    remaining_gas,
+                    msg.calldata,
+                    msg.value,
+                    0,
+                    &[_]u8{},
+                    false,
+                    false,
+                );
+            } else |e| {
+                if (e != Errors.OutOfGas) return e;
+                err = Errors.OutOfGas;
             }
+        } else {
+            const new_addr = createAddress(msg.caller, @intCast(caller_account.nonce - 1));
+            create_state_gas = if ((try state.accounts.read(new_addr)).isEmpty()) STATE_BYTES_PER_NEW_ACCOUNT * cfg.fork.cpsb else 0;
+            if (self.chargeStateGas(remaining_gas, create_state_gas)) |g| {
+                remaining_gas, _, err = try self.create(
+                    cfg,
+                    state,
+                    msg.caller,
+                    new_addr,
+                    msg.calldata,
+                    msg.value,
+                    g,
+                    0,
+                );
+            } else |_| {
+                remaining_gas = 0;
+            }
+        }
+        if (err) |e| {
+            remaining_gas = self.creditStateGasRefund(remaining_gas, create_state_gas);
+            if (e != Errors.Reverted) remaining_gas = 0;
         }
 
         // EIP-3529: refund capped at 1/5 of total gas used (intrinsic + execution)
@@ -533,8 +534,7 @@ pub const EVM = struct {
 
         defer self.clearSelfdestructed(state, cfg);
         if (cfg.fork.isEnabled(.Amsterdam)) {
-            const state_gas_signed = @as(i64, @intCast(total_state_intrinsic)) + self.state_gas_used - @as(i64, @intCast(self.state_gas_refund));
-            const state_gas: u64 = @intCast(@max(@as(i64, 0), state_gas_signed));
+            const state_gas: u64 = @intCast(@max(@as(i64, 0), self.state_gas_used));
             const regular_gas = gas_used_before_refund - state_gas;
             return .{ regular_gas, state_gas };
         }
@@ -565,6 +565,43 @@ pub const EVM = struct {
         return total;
     }
 
+    // Hosts the pre-frame actions that take place in a top level call
+    fn prepareDispatch(self: *Self, comptime cfg: Config, state: *State, msg: *const Message, target: u160, initial_gas: u64) !struct { u64, u64 } {
+        var remaining_gas = initial_gas;
+        var create_state_gas: u64 = 0;
+
+        const state_snap = state.snapshot();
+        const evm_snap = self.snapshot();
+        errdefer {
+            state.revert(state_snap);
+            self.revert(evm_snap);
+        }
+
+        // EIP-7702: process authorization list, setting delegation designators on EOAs
+        remaining_gas = try self.applyAuthList(cfg, remaining_gas, msg, state);
+
+        _ = self.accessAccount(target);
+        const target_account = try state.accounts.read(target);
+        if (cfg.fork.isEnabled(.Amsterdam) and msg.value > 0 and target_account.isEmpty()) {
+            create_state_gas = STATE_BYTES_PER_NEW_ACCOUNT * cfg.fork.cpsb;
+            remaining_gas = try self.chargeStateGas(remaining_gas, create_state_gas);
+        }
+
+        if (!std.mem.eql(u8, &target_account.code_hash, &types.empty_code_hash)) {
+            const code = try state.get_code(target_account.code_hash, cfg);
+            if (isDelegation(code.bytes)) {
+                const delegate = delegationAddress(code.bytes);
+                const access_cost = self.accessAccountCost(cfg.fork, delegate);
+                if (cfg.fork.isEnabled(.Amsterdam)) {
+                    if (remaining_gas < access_cost) return Errors.OutOfGas;
+                    remaining_gas -= access_cost;
+                }
+                _ = try state.accounts.read(delegate);
+            }
+        }
+        return .{ remaining_gas, create_state_gas };
+    }
+
     // Returns { remaining_gas, optional_error }. Not an error union because Reverted
     // must return remaining gas to the caller alongside the error signal.
     // skip_value_transfer: set true for DELEGATECALL, which preserves msg.value in the
@@ -584,94 +621,58 @@ pub const EVM = struct {
         skip_value_transfer: bool,
         is_static: bool,
     ) !struct { u64, ?Errors } {
-        self.return_data_size = 0;
-
-        if (depth >= 1024) return .{ initial_gas, Errors.CallDepthExceeded };
-
         const state_snap = state.snapshot();
         const evm_snap = self.snapshot();
 
         var remaining_gas = initial_gas;
         var err = @as(?Errors, null);
 
-        if (depth == 0) {
-            const target_account = try state.accounts.read(target);
-            var target_has_delegation = false;
-            // EIP-7702: if destination has a delegation, add delegate to accessed_addresses
-            const target_code_hash = target_account.code_hash;
-            if (!std.mem.eql(u8, &target_code_hash, &types.empty_code_hash)) {
-                const code = try state.get_code(target_code_hash, cfg);
-                target_has_delegation = isDelegation(code.bytes);
-                if (target_has_delegation) {
-                    const delegate = delegationAddress(code.bytes);
-                    _ = self.accessAccount(delegate);
-                    _ = try state.accounts.read(delegate);
-                }
+        if (!skip_value_transfer and value > 0) {
+            var caller_account = try state.accounts.update(caller);
+            if (caller_account.balance < value) {
+                _ = try resolveCode(code_addr, state, cfg); // todo: remove
+                return .{ remaining_gas, Errors.NotEnoughFunds };
             }
-
-            // EIP-2780 top level charges
-            const regular_precharge = if (cfg.fork.isEnabled(.Amsterdam) and target_has_delegation) cfg.fork.cold_account_access_gas else 0;
-            const state_precharge = if (cfg.fork.isEnabled(.Amsterdam) and value > 0 and target_account.isEmpty())
-                STATE_BYTES_PER_NEW_ACCOUNT * cfg.fork.cpsb
-            else
-                0;
-
-            remaining_gas, err = if (remaining_gas < regular_precharge)
-                .{ 0, Errors.OutOfGas }
-            else if (self.chargeStateGas(remaining_gas - regular_precharge, state_precharge)) |call_gas|
-                .{ call_gas, @as(?Errors, null) }
-            else |_|
-                .{ 0, Errors.OutOfGas };
+            caller_account.balance -= value;
+            (try state.accounts.update(target)).balance += value;
+            if (cfg.fork.isEnabled(.Amsterdam) and caller != target) self.pushTransferLog(caller, target, value);
         }
 
-        if (err == null) {
-            if (!skip_value_transfer and value > 0) {
-                var caller_account = try state.accounts.update(caller);
-                if (caller_account.balance < value) {
-                    _ = try resolveCode(code_addr, state, cfg); // todo: remove
-                    return .{ remaining_gas, Errors.NotEnoughFunds };
-                }
-                caller_account.balance -= value;
-                (try state.accounts.update(target)).balance += value;
-                if (cfg.fork.isEnabled(.Amsterdam) and caller != target) self.pushTransferLog(caller, target, value);
-            }
+        if (cfg.fork.getPrecompile(code_addr)) |precompile_handler| {
+            remaining_gas, err = self.callPrecompile(
+                precompile_handler,
+                remaining_gas,
+                calldata,
+                return_buffer,
+            );
+        } else if (try resolveCode(code_addr, state, cfg)) |code| {
+            const allocator = self.rounded_allocator.allocator();
+            var frame = allocator.create(Frame) catch unreachable;
+            defer allocator.destroy(frame);
+            frame.* = Frame{
+                .evm = self,
+                .context = self.context,
+                .state = state,
+                .code = code,
 
-            if (cfg.fork.getPrecompile(code_addr)) |precompile_handler| {
-                remaining_gas, err = self.callPrecompile(
-                    precompile_handler,
-                    remaining_gas,
-                    calldata,
-                    return_buffer,
-                );
-            } else if (try resolveCode(code_addr, state, cfg)) |code| {
-                const allocator = self.rounded_allocator.allocator();
-                var frame = allocator.create(Frame) catch unreachable;
-                defer allocator.destroy(frame);
-                frame.* = Frame{
-                    .evm = self,
-                    .context = self.context,
-                    .state = state,
-                    .code = code,
+                .caller = caller,
+                .target = target,
+                .calldata = calldata,
+                .value = value,
+                .is_static = is_static,
+                .return_buffer = return_buffer,
 
-                    .caller = caller,
-                    .target = target,
-                    .calldata = calldata,
-                    .value = value,
-                    .is_static = is_static,
-                    .return_buffer = return_buffer,
+                .gas = remaining_gas,
+                .stack = undefined,
+                .memory = Memory.init(allocator),
+                .depth = depth + 1,
+            };
+            defer frame.memory.deinit();
 
-                    .gas = remaining_gas,
-                    .stack = undefined,
-                    .memory = Memory.init(allocator),
-                    .depth = depth + 1,
-                };
-                defer frame.memory.deinit();
-
-                frame.enter(cfg) catch |frameErr| {
-                    err = frameErr;
-                };
-                remaining_gas = frame.gas;
-            }
+            frame.enter(cfg) catch |frameErr| {
+                err = frameErr;
+            };
+            remaining_gas = frame.gas;
         }
 
         if (err != null) {
@@ -721,45 +722,25 @@ pub const EVM = struct {
         comptime cfg: Config,
         state: *State,
         creator: u160,
+        new_addr: u160,
         initcode: []const u8,
         value: u256,
         initial_gas: u64,
         depth: usize,
-        salt: ?u256,
-    ) !struct { u64, bool, u160 } {
-        self.return_data_size = 0;
-
-        // Depth/nonce/balance failures are "never started" — return all forwarded gas to caller.
-        if (depth >= 1024) return .{ initial_gas, false, 0 };
-
-        const creator_account = try state.accounts.read(creator);
-        const nonce = creator_account.nonce;
-        // Nonce must not overflow (u64 range enforced at tx entry; sub-calls inherit that invariant)
-        if (nonce >= std.math.maxInt(u64)) return .{ initial_gas, false, 0 };
-        if (creator_account.balance < value) return .{ initial_gas, false, 0 };
-
-        const new_addr: u160 = if (salt) |s|
-            create2Address(creator, s, initcode)
-        else
-            createAddress(creator, @intCast(nonce));
-
+    ) !struct { u64, u160, ?Errors } {
         // EIP-2929: warm the new address
         _ = self.accessAccount(new_addr);
 
-        // Increase creator nonce before the snapshot
-        var creator_acc = try state.accounts.update(creator);
-        creator_acc.nonce += 1;
-
         // EIP-7610: fail on collision (non-zero nonce or existing code or existing storage)
         const existing = try state.accounts.read(new_addr);
-        if (existing.nonce != 0 or !std.mem.eql(u8, &existing.code_hash, &types.empty_code_hash) or !std.mem.eql(u8, &existing.storage_hash, &types.empty_root_hash)) return .{ 0, false, 0 };
-        const target_alive = existing.balance != 0;
+        if (existing.nonce != 0 or !std.mem.eql(u8, &existing.code_hash, &types.empty_code_hash) or !std.mem.eql(u8, &existing.storage_hash, &types.empty_root_hash))
+            return .{ 0, 0, Errors.CreateCollision };
 
         const state_snap = state.snapshot();
         const evm_snap = self.snapshot();
 
         // Commit value transfer
-        creator_acc = try state.accounts.update(creator);
+        var creator_acc = try state.accounts.update(creator);
         creator_acc.balance -= value;
         const new_contract_acc = try state.accounts.update(new_addr);
         new_contract_acc.nonce = 1; // EIP-161
@@ -804,7 +785,7 @@ pub const EVM = struct {
                 frame.gas = 0;
                 self.return_data_size = 0;
             }
-            return .{ frame.gas, false, 0 };
+            return .{ frame.gas, 0, err };
         };
 
         // Collect deployed bytecode from the global return buffer
@@ -824,7 +805,7 @@ pub const EVM = struct {
         {
             state.revert(state_snap);
             self.revert(evm_snap);
-            return .{ 0, false, 0 };
+            return .{ 0, 0, Errors.OutOfGas };
         }
         frame.gas -= deposit_regular_gas;
         frame.gas = self.chargeStateGas(frame.gas, deposit_state_gas) catch unreachable; // if check above guards against an underflow
@@ -837,7 +818,7 @@ pub const EVM = struct {
         }
         (try state.accounts.update(new_addr)).code_hash = code_hash;
         // created_accounts was registered before frame.enter(); SELFDESTRUCT may have marked it false — don't overwrite.
-        return .{ frame.gas, target_alive, new_addr };
+        return .{ frame.gas, new_addr, @as(?Errors, null) };
     }
 
     pub const LogNode = struct { log: Log, node: std.DoublyLinkedList.Node };
@@ -909,55 +890,58 @@ pub const EVM = struct {
         _ = self.accessAccount(auth.authority);
         const auth_account = try state.accounts.read(auth.authority);
         // Skip if authority already has non-delegation code; track if it currently delegates.
-        const delegated_now = !std.mem.eql(u8, &auth_account.code_hash, &types.empty_code_hash);
-        if (delegated_now) {
+        const has_existing_code = !std.mem.eql(u8, &auth_account.code_hash, &types.empty_code_hash);
+        if (has_existing_code) {
             const existing = try state.get_code(auth_account.code_hash, cfg);
             if (!isDelegation(existing.bytes)) return null;
         }
         // Skip if nonce doesn't match
         if (auth_account.nonce != auth.nonce) return null;
-        return .{ auth_account, delegated_now };
+        return .{ auth_account, has_existing_code };
     }
 
     // EIP-7702: process authorization list, setting delegation designators on EOAs
-    pub fn applyAuthList(self: *Self, comptime cfg: Config, auth_list: []const Authorization, state: *State) !void {
+    pub fn applyAuthList(self: *Self, comptime cfg: Config, gas: u64, msg: *const Message, state: *State) !u64 {
+        var gas_left = gas;
+        const auth_list = msg.authorization_list orelse return gas;
+
         const alloc = self.rounded_allocator.allocator();
-        var pre_tx_delegated: std.AutoHashMapUnmanaged(u160, bool) = .empty;
-        defer pre_tx_delegated.deinit(alloc);
-        try pre_tx_delegated.ensureTotalCapacity(alloc, @intCast(auth_list.len));
+        var auth_base_settled: std.AutoHashMapUnmanaged(u160, bool) = .empty;
+        defer auth_base_settled.deinit(alloc);
+        try auth_base_settled.ensureTotalCapacity(alloc, @intCast(auth_list.len));
 
         for (auth_list) |auth| {
-            const auth_account, const delegated_now = (try self.validateAuth(cfg, auth, state)) orelse {
-                if (cfg.fork.isEnabled(.Amsterdam)) {
-                    const state_bytes = (STATE_BYTES_PER_NEW_ACCOUNT + STATE_BYTES_PER_AUTH_BASE) * cfg.fork.cpsb;
-                    self.state_gas_reservoir += state_bytes;
-                    self.state_gas_refund += state_bytes;
-                    self.gas_refund += cfg.fork.account_write;
-                }
+            const auth_account, const has_existing_delegation = (try self.validateAuth(cfg, auth, state)) orelse
                 continue;
-            };
-            const gop = pre_tx_delegated.getOrPutAssumeCapacity(auth.authority);
-            if (!gop.found_existing) gop.value_ptr.* = delegated_now;
-            const delegated_before_tx = gop.value_ptr.*;
-            // Refund if account is non-empty (already had state)
-            if (!auth_account.isEmpty()) {
-                if (cfg.fork.isEnabled(.Amsterdam)) {
-                    self.state_gas_reservoir += STATE_BYTES_PER_NEW_ACCOUNT * cfg.fork.cpsb;
-                    self.state_gas_refund += STATE_BYTES_PER_NEW_ACCOUNT * cfg.fork.cpsb;
-                    self.gas_refund += cfg.fork.account_write;
-                } else {
-                    self.gas_refund += cfg.fork.per_empty_account_cost - cfg.fork.per_auth_base_cost;
-                }
-            }
+
+            const settled_entry = auth_base_settled.getOrPutAssumeCapacity(auth.authority);
+            if (!settled_entry.found_existing) settled_entry.value_ptr.* = has_existing_delegation;
+            const seen_in_this_tx_before = settled_entry.found_existing;
+
             if (cfg.fork.isEnabled(.Amsterdam)) {
-                const auth_base_units: u64 = if (auth.address == 0)
-                    @as(u64, 1) + @intFromBool(delegated_now and !delegated_before_tx)
-                else
-                    @intFromBool(delegated_now or delegated_before_tx);
-                const refill = auth_base_units * STATE_BYTES_PER_AUTH_BASE * cfg.fork.cpsb;
-                self.state_gas_reservoir += refill;
-                self.state_gas_refund += refill;
+                // Writing to an account not written before
+                if (!seen_in_this_tx_before and auth.authority != msg.caller and (auth.authority != msg.target.? or msg.value == 0)) {
+                    if (gas_left < cfg.fork.account_write) return Errors.OutOfGas;
+                    gas_left -= cfg.fork.account_write;
+                }
+
+                // Creating a new account
+                if (auth_account.isEmpty()) {
+                    gas_left = try self.chargeStateGas(gas_left, STATE_BYTES_PER_NEW_ACCOUNT * cfg.fork.cpsb);
+                }
+
+                // Writing a net-positive delegation
+                if (auth.address != 0) {
+                    if (!settled_entry.value_ptr.*) {
+                        gas_left = try self.chargeStateGas(gas_left, STATE_BYTES_PER_AUTH_BASE * cfg.fork.cpsb);
+                    }
+                    settled_entry.value_ptr.* = true;
+                }
+            } else if (!auth_account.isEmpty()) {
+                // Refund if account is non-empty (already had state)
+                self.gas_refund += cfg.fork.per_empty_account_cost - cfg.fork.per_auth_base_cost;
             }
+
             var auth_mutable = try state.accounts.update(auth.authority);
             if (auth.address == 0) {
                 // Reset: remove delegation, restore empty code hash
@@ -972,6 +956,8 @@ pub const EVM = struct {
             }
             auth_mutable.nonce += 1;
         }
+
+        return gas_left;
     }
 
     pub fn markForDestruction(self: *Self, addr: u160) bool {
@@ -1021,7 +1007,7 @@ fn initcodeWordCost(len: usize) u64 {
 
 /// CREATE address: keccak256(rlp([creator, nonce]))[12:]
 // RLP([address, nonce]): max 1 (list) + 21 (addr) + 9 (nonce) = 31 bytes
-fn createAddress(creator: u160, nonce: u64) u160 {
+pub fn createAddress(creator: u160, nonce: u64) u160 {
     var buf: [31]u8 = undefined;
     var pos: usize = 1; // reserve buf[0] for list prefix
 
@@ -1057,7 +1043,7 @@ fn createAddress(creator: u160, nonce: u64) u160 {
 }
 
 // CREATE2 address: keccak256(0xff ++ creator ++ salt ++ keccak256(initcode))[12:]
-fn create2Address(creator: u160, salt: u256, initcode: []const u8) u160 {
+pub fn create2Address(creator: u160, salt: u256, initcode: []const u8) u160 {
     var buf: [85]u8 = undefined;
     buf[0] = 0xff;
     std.mem.writeInt(u160, buf[1..21], creator, .big);
@@ -1067,17 +1053,14 @@ fn create2Address(creator: u160, salt: u256, initcode: []const u8) u160 {
     return std.mem.readInt(u160, hash[12..32], .big);
 }
 
-fn authGas(comptime fork: Spec, auth_list: ?[]const Authorization) !struct { u64, u64 } {
-    if (auth_list == null or auth_list.?.len == 0) return .{ 0, 0 };
+fn authGas(comptime fork: Spec, auth_list: ?[]const Authorization) !u64 {
+    if (auth_list == null or auth_list.?.len == 0) return 0;
 
-    const len: u64 = auth_list.?.len;
-    const state_gas = len * (STATE_BYTES_PER_NEW_ACCOUNT + STATE_BYTES_PER_AUTH_BASE) * fork.cpsb;
     const auth_regular_unit = if (fork.isEnabled(.Amsterdam))
-        fork.account_write + fork.per_auth_base_cost
+        fork.per_auth_base_cost
     else
         fork.per_empty_account_cost;
-    const regular_gas = len * auth_regular_unit;
-    return .{ regular_gas, state_gas };
+    return auth_list.?.len * auth_regular_unit;
 }
 
 fn accessListGas(comptime fork: Spec, access_list: []const AccessListEntry) !struct { u64, u64 } {

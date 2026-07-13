@@ -767,7 +767,6 @@ pub fn Ops(comptime cfg: Config) type {
                     const value = args[n_args - 1];
                     const offset = args[n_args - 2];
                     const size = args[n_args - 3];
-                    const salt: ?u256 = if (variant == .CREATE2) args[0] else null;
 
                     // EIP-3860: reject oversized initcode
                     if (size > 2 * fork.max_code_size) return evm.Errors.OutOfGas;
@@ -786,28 +785,43 @@ pub fn Ops(comptime cfg: Config) type {
                         available_gas -= hash_cost;
                     }
 
-                    const create_state_gas = evm.STATE_BYTES_PER_NEW_ACCOUNT * fork.cpsb;
-                    available_gas = try frame.evm.chargeStateGas(available_gas, create_state_gas);
+                    frame.evm.return_data_size = 0;
+                    const creator_account = try frame.state.accounts.read(frame.target);
+                    if (frame.depth + 1 <= 1024 and
+                        creator_account.nonce < std.math.maxInt(u64) and
+                        creator_account.balance >= value)
+                    {
+                        const initcode = frame.memory.slice(@truncate(offset), @intCast(size));
 
-                    // EIP-150: forward at most (denom-1)/denom of remaining gas
-                    const max_forwardable = available_gas - @divFloor(available_gas, fork.gas_forward_denom);
-                    available_gas -= max_forwardable;
+                        const new_addr: u160 = if (variant == .CREATE2)
+                            evm.create2Address(frame.target, args[0], initcode)
+                        else
+                            evm.createAddress(frame.target, @intCast(creator_account.nonce));
 
-                    const initcode = frame.memory.slice(@truncate(offset), @intCast(size));
-                    const leftover_gas, const target_alive, const new_addr = try frame.evm.create(
-                        cfg,
-                        frame.state,
-                        frame.target,
-                        initcode,
-                        value,
-                        max_forwardable,
-                        frame.depth,
-                        salt,
-                    );
-                    available_gas += leftover_gas;
-                    if (new_addr == 0 or target_alive)
-                        available_gas = frame.evm.creditStateGasRefund(available_gas, create_state_gas);
-                    args[0] = new_addr; // 0 on failure, address on success
+                        (try frame.state.accounts.update(frame.target)).nonce += 1;
+
+                        const create_state_gas = if ((try frame.state.accounts.read(new_addr)).isEmpty()) evm.STATE_BYTES_PER_NEW_ACCOUNT * cfg.fork.cpsb else 0;
+                        available_gas = try frame.evm.chargeStateGas(available_gas, create_state_gas);
+
+                        // EIP-150: forward at most (denom-1)/denom of remaining gas
+                        const max_forwardable = available_gas - @divFloor(available_gas, fork.gas_forward_denom);
+                        available_gas -= max_forwardable;
+
+                        const leftover_gas, const created_addr, _ = try frame.evm.create(
+                            cfg,
+                            frame.state,
+                            frame.target,
+                            new_addr,
+                            initcode,
+                            value,
+                            max_forwardable,
+                            frame.depth,
+                        );
+                        available_gas += leftover_gas;
+                        if (created_addr == 0)
+                            available_gas = frame.evm.creditStateGasRefund(available_gas, create_state_gas);
+                        args[0] = created_addr;
+                    } else args[0] = 0;
                     return next(next_ip, available_gas, 0, new_stack_head, frame);
                 }
             }.create;
@@ -879,31 +893,37 @@ pub fn Ops(comptime cfg: Config) type {
                         available_gas = try frame.evm.chargeStateGas(available_gas, new_account_state_gas);
                     }
 
-                    // EIP-150: forward at most (denom-1)/denom of remaining gas to sub-calls
-                    const forwarded_gas = @min(call_gas, available_gas - @divFloor(available_gas, fork.gas_forward_denom));
-                    available_gas -= forwarded_gas;
+                    frame.evm.return_data_size = 0;
+                    if (frame.depth + 1 <= 1024) {
+                        // EIP-150: forward at most (denom-1)/denom of remaining gas to sub-calls
+                        const forwarded_gas = @min(call_gas, available_gas - @divFloor(available_gas, fork.gas_forward_denom));
+                        available_gas -= forwarded_gas;
 
-                    const calldata = frame.memory.slice(@truncate(args[3]), @intCast(args[2]));
-                    const return_buffer = frame.memory.slice(@truncate(args[1]), @intCast(args[0]));
+                        const calldata = frame.memory.slice(@truncate(args[3]), @intCast(args[2]));
+                        const return_buffer = frame.memory.slice(@truncate(args[1]), @intCast(args[0]));
 
-                    const leftover_gas, const err = try frame.evm.call(
-                        cfg,
-                        frame.state,
-                        call_caller,
-                        call_target,
-                        addr,
-                        forwarded_gas + stipend,
-                        calldata,
-                        value,
-                        frame.depth,
-                        return_buffer,
-                        comptime (variant == .DELEGATECALL),
-                        frame.is_static or (variant == .STATICCALL),
-                    );
+                        const leftover_gas, const err = try frame.evm.call(
+                            cfg,
+                            frame.state,
+                            call_caller,
+                            call_target,
+                            addr,
+                            forwarded_gas + stipend,
+                            calldata,
+                            value,
+                            frame.depth,
+                            return_buffer,
+                            comptime (variant == .DELEGATECALL),
+                            frame.is_static or (variant == .STATICCALL),
+                        );
+                        args[0] = if (err != null) 0 else 1;
+                        available_gas += leftover_gas;
+                    } else {
+                        args[0] = 0;
+                        available_gas += stipend;
+                    }
 
-                    args[0] = if (err != null) 0 else 1;
-                    available_gas += leftover_gas;
-                    if (err != null and new_account_charged) {
+                    if (args[0] == 0 and new_account_charged) {
                         available_gas = frame.evm.creditStateGasRefund(available_gas, new_account_state_gas);
                     }
                     return next(next_ip, available_gas, 0, new_stack_head, frame);
