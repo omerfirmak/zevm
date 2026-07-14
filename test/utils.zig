@@ -436,6 +436,7 @@ const exception_map = .{
     .{ "TransactionException.INTRINSIC_GAS_TOO_LOW", evm.Errors.OutOfGas },
     .{ "TransactionException.INTRINSIC_GAS_BELOW_FLOOR_GAS_COST", evm.Errors.OutOfGas },
     .{ "TransactionException.NONCE_IS_MAX", evm.Errors.NonceMax },
+    .{ "TransactionException.NONCE_IS_MAX", evm.Errors.NonceMismatch },
     .{ "TransactionException.NONCE_MISMATCH_TOO_LOW", evm.Errors.NonceMismatch },
     .{ "TransactionException.NONCE_MISMATCH_TOO_HIGH", evm.Errors.NonceMismatch },
     .{ "TransactionException.INITCODE_SIZE_EXCEEDED", evm.Errors.InitcodeSizeExceeded },
