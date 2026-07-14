@@ -410,12 +410,13 @@ pub const EVM = struct {
             if (msg.gas_limit > cfg.fork.max_tx_gas) return Errors.GasOverflow;
         }
 
+        if (msg.nonce == std.math.maxInt(u64)) {
+            return Errors.NonceMax;
+        }
         _ = self.accessAccount(msg.caller);
         var caller_account = try state.accounts.update(msg.caller);
         if (caller_account.nonce != msg.nonce) {
             return Errors.NonceMismatch;
-        } else if (msg.nonce == std.math.maxInt(u64)) {
-            return Errors.NonceMax;
         }
 
         // EIP-3607: reject transaction if sender has code (is a contract).
