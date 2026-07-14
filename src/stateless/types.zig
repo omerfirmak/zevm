@@ -9,6 +9,8 @@ const MAX_BLOB_COMMITMENTS_PER_BLOCK = 4096;
 const MAX_DEPOSIT_REQUESTS_PER_PAYLOAD = 1 << 13;
 const MAX_WITHDRAWAL_REQUESTS_PER_PAYLOAD = 1 << 4;
 const MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD = 1 << 1;
+const MAX_BUILDER_DEPOSIT_REQUESTS_PER_PAYLOAD = 1 << 6;
+const MAX_BUILDER_EXIT_REQUESTS_PER_PAYLOAD = 1 << 4;
 const MAX_WITNESS_NODES = 1 << 22;
 const MAX_WITNESS_CODES = 1 << 18;
 const MAX_WITNESS_HEADERS = 256;
@@ -16,7 +18,6 @@ const MAX_BYTES_PER_WITNESS_NODE = 1 << 10;
 const MAX_BYTES_PER_CODE = 1 << 16;
 const MAX_BYTES_PER_HEADER = 1 << 10;
 const MAX_OPTIONAL_FORK_ACTIVATION_VALUES = 1;
-const MAX_BLOB_SCHEDULES_PER_FORK = 1;
 const MAX_PUBLIC_KEYS = 1 << 15;
 
 pub const Withdrawal = struct {
@@ -68,10 +69,24 @@ pub const ConsolidationRequest = struct {
     target_pubkey: [48]u8,
 };
 
+pub const BuilderDepositRequest = struct {
+    pubkey: [48]u8,
+    withdrawal_credentials: [32]u8,
+    amount: u64,
+    signature: [96]u8,
+};
+
+pub const BuilderExitRequest = struct {
+    source_address: [20]u8,
+    pubkey: [48]u8,
+};
+
 pub const ExecutionRequests = struct {
     deposits: List(DepositRequest, MAX_DEPOSIT_REQUESTS_PER_PAYLOAD),
     withdrawals: List(WithdrawalRequest, MAX_WITHDRAWAL_REQUESTS_PER_PAYLOAD),
     consolidations: List(ConsolidationRequest, MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD),
+    builder_deposits: List(BuilderDepositRequest, MAX_BUILDER_DEPOSIT_REQUESTS_PER_PAYLOAD),
+    builder_exits: List(BuilderExitRequest, MAX_BUILDER_EXIT_REQUESTS_PER_PAYLOAD),
 };
 
 pub const NewPayloadRequest = struct {
@@ -92,16 +107,8 @@ pub const ForkActivation = struct {
     timestamp: List(u64, MAX_OPTIONAL_FORK_ACTIVATION_VALUES),
 };
 
-pub const BlobSchedule = struct {
-    target: u64,
-    max: u64,
-    base_fee_update_fraction: u64,
-};
-
 pub const ForkConfig = struct {
-    fork: u64,
     activation: ForkActivation,
-    blob_schedule: List(BlobSchedule, MAX_BLOB_SCHEDULES_PER_FORK),
 };
 
 pub const ChainConfig = struct {
