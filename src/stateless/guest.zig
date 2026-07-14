@@ -7,7 +7,7 @@ const committed_state = @import("committed_state");
 const CommittedState = committed_state.CommittedState;
 const Spec = zevm.spec.Spec;
 
-const STATELESS_INPUT_SCHEMA_ID: u16 = 0x0001;
+const STATELESS_INPUT_SCHEMA_ID: u16 = 0x1501; // 0x15 (Amsterdam) || 0x01 (Rev)
 const STATELESS_INPUT_SCHEMA_ID_SIZE: usize = 2;
 
 pub fn verify_ssz(allocator: std.mem.Allocator, input_bytes: []const u8) ![]const u8 {
@@ -16,12 +16,10 @@ pub fn verify_ssz(allocator: std.mem.Allocator, input_bytes: []const u8) ![]cons
         .chain_config = .{
             .chain_id = 0,
             .active_fork = .{
-                .fork = 0,
                 .activation = .{
                     .block_number = try .init(allocator),
                     .timestamp = try .init(allocator),
                 },
-                .blob_schedule = try .init(allocator),
             },
         },
         .new_payload_request_root = @splat(0),
@@ -119,6 +117,7 @@ pub fn verify(allocator: std.mem.Allocator, input: types.StatelessInput) !void {
 
 fn assertAccountCodeIsInWitness(committed: *const CommittedState, addr: u160) !void {
     const acc = try committed.account(addr);
+    if (std.mem.eql(u8, &acc.code_hash, &zevm.types.empty_code_hash)) return;
     _ = try committed.code(acc.code_hash);
 }
 
