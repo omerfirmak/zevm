@@ -7,7 +7,6 @@ const storage = @import("../evm/storage.zig");
 const EvmSpec = @import("../evm/spec.zig");
 const State = @import("../evm/state.zig").State;
 const ChainSpec = @import("chainspec.zig").ChainSpec;
-const secp256k1 = @import("zig-eth-secp256k1");
 const keccak256 = @import("../evm/crypto/hash.zig").keccak256;
 const sha256 = @import("../evm/crypto/hash.zig").sha256;
 const blobBaseFee = @import("../blob_fee.zig").blobBaseFee;
