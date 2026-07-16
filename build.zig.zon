@@ -41,8 +41,8 @@
             .hash = "blst-0.3.16-fvxk1cQ7MADXoMijmUkSjmt0wXV-piV7weQEgHI-K_ts",
         },
         .ckzg_4844 = .{
-            .url = "git+https://github.com/ethereum/c-kzg-4844.git#e1c5705613ff0f4f2bababd67b721b9e989a5905",
-            .hash = "ckzg_4844-0.0.0-I7LPWFMvEQBkUTBYYmPmfogEUEIyQWrruA5E7aHe8hMY",
+            .url = "git+https://github.com/ethereum/c-kzg-4844.git?ref=v2.1.8#e125905e5e01186e6ccb7a0ced4845bf7eddbcfe",
+            .hash = "ckzg_4844-0.0.0-I7LPWMw0EQBnqYagHE3VRwTrTAYpH0u6ZBPtfAeJsuDa",
         },
         .mcl = .{
             .url = "git+https://github.com/herumi/mcl.git#877aa82ecc55dc111922492ad600e177d78dfc29",
@@ -53,12 +53,12 @@
             .hash = "clap-0.12.0-oBajB7foAQDqlSwaSG5g0yq7xGbQARUsBk5T64gAOqP5",
         },
         .rlp = .{
-            .url = "git+https://github.com/omerfirmak/zig-rlp.git#7b7568229e19abfc615caf91ad35f7daa3300fe9",
-            .hash = "rlp-0.1.0-7i0JtFKpAAA0xZg_mhLAOCbwvqeCRjpdJulfzfYdPb17",
+            .url = "git+https://github.com/gballet/zig-rlp.git?ref=v0.1.3#5c587256d58489f09abcf74720c364294a5ce5dd",
+            .hash = "rlp-0.1.0-7i0JtEyrAAAV1g5lBksi4p9HvnowZehPgUgWVGSdk_zL",
         },
         .ssz = .{
-            .url = "git+https://github.com/omerfirmak/ssz.zig.git#39d2eb30cf259a93ee8d6ba136cd02c44d88274e",
-            .hash = "ssz-0.0.9-Lfwd66i_AwDn44wrPJNFYF8rZR5qzuDm1unen5T33H9K",
+            .url = "git+https://github.com/blockblaz/ssz.zig.git?ref=v0.0.11#d50b0319735fe18021ad543877d25ea940543b28",
+            .hash = "ssz-0.0.9-Lfwd68m_AwAFGpz2g1kHvokWjp_UsvqDb3Z2D46w5s_-",
         },
         .zisk = .{
             .url = "git+https://github.com/0xPolygonHermez/zisk?ref=v1.0.0-alpha#4b9f758fabc4955cac20af837019ccc31b803a46",
