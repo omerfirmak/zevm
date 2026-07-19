@@ -275,11 +275,11 @@ pub const EVM = struct {
         self.state_gas_used = 0;
         self.pre_state.clearRetainingCapacity();
         self.warm_accounts.dirties.clearRetainingCapacity();
-        self.warm_accounts.journal.clearRetainingCapacity();
+        self.warm_accounts.journal.items.len = 0;
         self.warm_slots.dirties.clearRetainingCapacity();
-        self.warm_slots.journal.clearRetainingCapacity();
+        self.warm_slots.journal.items.len = 0;
         self.created_accounts.dirties.clearRetainingCapacity();
-        self.created_accounts.journal.clearRetainingCapacity();
+        self.created_accounts.journal.items.len = 0;
     }
 
     pub fn chargeStateGas(self: *Self, gas_left: u64, amount: u64) !u64 {
