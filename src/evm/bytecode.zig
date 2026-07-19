@@ -86,9 +86,7 @@ pub fn readBytesToValue(self: *const Bytecode, ip: InstructionPointer, comptime 
     comptime std.debug.assert(size <= 32);
 
     const start = ip - self.threaded_code.ptr;
-    const end = @min(self.bytes.len, start + size);
-
-    ops.readBeSliceToU256(self.bytes[start..end], size, value);
+    ops.readBeSliceToU256(self.bytes[start..], size, value);
 }
 
 pub fn readByte(self: *const Bytecode, ip: InstructionPointer) u8 {

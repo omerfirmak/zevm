@@ -420,10 +420,7 @@ pub fn Ops(comptime cfg: Config) type {
                 args[0] = 0;
             } else {
                 const index: usize = @intCast(args[0]);
-                const end = @min(frame.calldata.len, index + 32);
-                const bytes = frame.calldata[index..end];
-
-                readBeSliceToU256(bytes, 32, &args[0]);
+                readBeSliceToU256(frame.calldata[index..], 32, &args[0]);
             }
             return next(next_ip, gas, fork.constantGas(.CALLDATALOAD), new_stack_head, frame);
         }
@@ -1197,13 +1194,19 @@ fn tracing_hook(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *
 
 /// Reads `bytes` as the leading bytes of a big-endian value of `total_size` bytes (1–32),
 /// zero-padding the trailing bytes, and writes the result into `value`.
-pub fn readBeSliceToU256(bytes: []const u8, total_size: usize, value: *u256) void {
-    std.debug.assert(bytes.len <= total_size and total_size <= 32);
-    value.* = 0;
-    const buf: *[32]u8 = std.mem.asBytes(value);
-    if (@import("builtin").cpu.arch.endian() == .big) {
-        for (0..bytes.len) |i| buf[32 - total_size + i] = bytes[i];
+pub fn readBeSliceToU256(bytes: []const u8, comptime total_size: usize, value: *u256) void {
+    comptime std.debug.assert(total_size <= 32);
+    if (bytes.len >= total_size) {
+        value.* = std.mem.readInt(std.meta.Int(.unsigned, total_size * 8), bytes[0..total_size], .big);
     } else {
-        for (0..bytes.len) |i| buf[total_size - 1 - i] = bytes[i];
+        value.* = 0;
+        const buf: *[32]u8 = std.mem.asBytes(value);
+        if (total_size > 0) {
+            if (@import("builtin").cpu.arch.endian() == .big) {
+                for (0..bytes.len) |i| buf[32 - total_size + i] = bytes[i];
+            } else {
+                for (0..bytes.len) |i| buf[total_size - 1 - i] = bytes[i];
+            }
+        }
     }
 }
