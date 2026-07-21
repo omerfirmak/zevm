@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-BASE="https://pub-5345007fbd06486bbb7cbbe9f3112c45.r2.dev/devnets/glamsterdam-devnet-5"
+BASE="https://pub-df22334654034ebab51bc096137a59d8.r2.dev/devnets/glamsterdam-devnet-7"
 OUT_DIR="${1:-zk_fixtures}"
-COUNT="${2:-10}"
+COUNT="${2:-1000}"
 GUEST="./zig-out/bin/zevm-guest"
 
 mkdir -p "$OUT_DIR"
