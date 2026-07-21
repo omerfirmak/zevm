@@ -87,7 +87,7 @@ pub fn verify(allocator: std.mem.Allocator, input: types.StatelessInput) !void {
     var state = try zevm.state.State.init(
         allocator,
         &committed,
-        stateCapacities(spec, block.bal.?, block.block.header.gas_used),
+        stateCapacities(spec, block.bal.?, input.witness.codes, block.block.transactions, block.block.header.gas_used),
     );
 
     // processBlock doesn't touch the code of these contracts, assert they exist in the witness here
@@ -207,7 +207,7 @@ fn makeBlock(
     };
 }
 
-fn stateCapacities(comptime spec: Spec, bal: zevm.types.BlockAccessLists, gas_limit: u64) Spec.StateCapacities {
+fn stateCapacities(comptime spec: Spec, bal: zevm.types.BlockAccessLists, codes: anytype, txs: []const zevm.types.Transaction, gas_limit: u64) Spec.StateCapacities {
     var caps = spec.stateCapacities(gas_limit);
 
     var slots_num: usize = 0;
@@ -217,6 +217,30 @@ fn stateCapacities(comptime spec: Spec, bal: zevm.types.BlockAccessLists, gas_li
 
     caps.contract_dirties = @intCast(slots_num + 128);
     caps.account_dirties = @intCast(bal.len + 16);
+
+    const fn_size = @sizeOf(usize);
+    const delegation_code_len = 23; // 3-byte prefix + 20-byte address
+    var num_codes: usize = 0;
+    var code_bytes: usize = 0;
+    for (codes.constSlice()) |*code| {
+        num_codes += 1;
+        code_bytes += code.constSlice().len;
+    }
+    for (bal) |acc| {
+        for (acc.code_changes) |cc| {
+            num_codes += 1;
+            code_bytes += cc.code.len;
+        }
+    }
+    for (txs) |tx| {
+        if (tx == .set_code) {
+            num_codes += tx.set_code.auth_list.len;
+            code_bytes += tx.set_code.auth_list.len * delegation_code_len;
+        }
+    }
+
+    caps.code_slots = @intCast(num_codes + 128);
+    caps.bytecode_buf = code_bytes * (1 + fn_size) + num_codes * 512;
     return caps;
 }
 
