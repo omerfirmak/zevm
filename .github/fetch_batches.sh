@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-BASE="https://pub-5345007fbd06486bbb7cbbe9f3112c45.r2.dev/devnets/glamsterdam-devnet-5"
+BASE="https://pub-df22334654034ebab51bc096137a59d8.r2.dev/devnets/glamsterdam-devnet-7"
 OUT_DIR="${1:-zk_fixtures}"
-COUNT="${2:-10}"
+COUNT="${2:-1000}"
 GUEST="./zig-out/bin/zevm-guest"
 
 mkdir -p "$OUT_DIR"
@@ -37,9 +37,8 @@ echo ""
 # ── 2. Extract chainId and build native guest ─────────────────────────────────
 
 FIRST_BATCH=$(ls "$OUT_DIR"/*.tar.zst | sort -V | head -1)
-FIRST_JSON=$(zstd -d "$FIRST_BATCH" --stdout | tar -t | grep '\.json\.zst$' | head -1)
-CHAIN_ID=$(zstd -d "$FIRST_BATCH" --stdout | tar -xO "$FIRST_JSON" | zstd -d --stdout \
-    | python3 -c "import sys,json; print(json.load(sys.stdin)['chainId'])")
+CHAIN_ID=$(zstd -d "$FIRST_BATCH" --stdout | tar -xO .meta/manifest.json \
+    | python3 -c "import sys,json; print(json.load(sys.stdin)['artifacts'][0]['chainId'])")
 
 echo "chainId = $CHAIN_ID — building native guest..."
 zig build guest -Dchainid="$CHAIN_ID" -Doptimize=ReleaseSafe
@@ -55,10 +54,9 @@ for tarball in "$OUT_DIR"/*.tar.zst; do
     trap 'rm -rf "$tmp"' EXIT
     zstd -d "$tarball" --stdout | tar -x -C "$tmp"
 
-    for json_zst in $(find "$tmp" -name '*.json.zst' | sort); do
-        block=$(basename "$json_zst" | cut -d- -f1)
-        stderr=$(zstd -d --stdout "$json_zst" \
-            | jq -r '.statelessInputBytes[2:]' \
+    for json in $(find "$tmp/blockchain_tests" -name '*.json' | sort); do
+        block=$(basename "$json" | cut -d- -f1)
+        stderr=$(jq -r '.[].blocks[].statelessInputBytes[2:]' "$json" \
             | xxd -r -p \
             | "$GUEST" 2>&1 >/dev/null || true)
         if [[ -z "$stderr" ]]; then
