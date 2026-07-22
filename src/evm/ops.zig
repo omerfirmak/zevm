@@ -87,8 +87,10 @@ pub fn Ops(comptime cfg: Config) type {
         pub fn sdiv(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 2, 1);
             if (args[0] == 0) {
+                @branchHint(.unlikely);
                 args[0] = 0;
             } else {
+                @branchHint(.likely);
                 const sign_a = 0 -% (args[1] >> 255);
                 const sign_b = 0 -% (args[0] >> 255);
                 const abs_a = (args[1] ^ sign_a) +% (sign_a & 1);
@@ -108,8 +110,10 @@ pub fn Ops(comptime cfg: Config) type {
         pub fn smod(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 2, 1);
             if (args[0] == 0) {
+                @branchHint(.unlikely);
                 args[0] = 0;
             } else {
+                @branchHint(.likely);
                 const sign_a = 0 -% (args[1] >> 255);
                 const sign_b = 0 -% (args[0] >> 255);
                 const abs_a = (args[1] ^ sign_a) +% (sign_a & 1);
@@ -232,8 +236,10 @@ pub fn Ops(comptime cfg: Config) type {
         pub fn byte(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 2, 1);
             if (args[1] > 31) {
+                @branchHint(.unlikely);
                 args[0] = 0;
             } else {
+                @branchHint(.likely);
                 // EVM is big-endian: byte 0 is the most significant byte (bits 255–248)
                 const index = 31 - @as(u8, @intCast(args[1]));
                 args[0] = @as(u8, @truncate(args[0] >> (index * 8)));
@@ -244,8 +250,10 @@ pub fn Ops(comptime cfg: Config) type {
         pub fn shl(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 2, 1);
             if (args[1] >= 256) {
+                @branchHint(.unlikely);
                 args[0] = 0;
             } else {
+                @branchHint(.likely);
                 args[0] = args[0] << @intCast(args[1]);
             }
             return next(next_ip, gas, fork.constantGas(.SHL), new_stack_head, frame);
@@ -254,8 +262,10 @@ pub fn Ops(comptime cfg: Config) type {
         pub fn shr(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 2, 1);
             if (args[1] >= 256) {
+                @branchHint(.unlikely);
                 args[0] = 0;
             } else {
+                @branchHint(.likely);
                 args[0] = args[0] >> @intCast(args[1]);
             }
             return next(next_ip, gas, fork.constantGas(.SHR), new_stack_head, frame);
@@ -265,8 +275,10 @@ pub fn Ops(comptime cfg: Config) type {
             const new_stack_head, const args = try frame.stackPop(stack_head, 2, 1);
             const value = @as(i256, @bitCast(args[0]));
             if (args[1] >= 256) {
+                @branchHint(.unlikely);
                 args[0] = if (value >= 0) 0 else std.math.maxInt(u256);
             } else {
+                @branchHint(.likely);
                 args[0] = @bitCast(value >> @intCast(args[1]));
             }
             return next(next_ip, gas, fork.constantGas(.SAR), new_stack_head, frame);
@@ -300,6 +312,7 @@ pub fn Ops(comptime cfg: Config) type {
 
         pub fn opGas(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             if (gas < fork.constantGas(.GAS)) {
+                @branchHint(.unlikely);
                 return evm.Errors.OutOfGas;
             }
             const remaining_gas = gas - fork.constantGas(.GAS);
@@ -392,6 +405,7 @@ pub fn Ops(comptime cfg: Config) type {
             const target: u160 = @truncate(args[0]);
             const dynamic_cost = frame.evm.accessAccountCost(fork, target);
             if (gas < dynamic_cost) {
+                @branchHint(.unlikely);
                 return evm.Errors.OutOfGas;
             }
 
@@ -460,6 +474,7 @@ pub fn Ops(comptime cfg: Config) type {
             const target: u160 = @truncate(args[0]);
             const cost = frame.evm.accessAccountCost(fork, target) + fork.constantGas(.EXTCODEHASH);
             if (gas < cost) {
+                @branchHint(.unlikely);
                 return evm.Errors.OutOfGas;
             }
 
@@ -473,6 +488,7 @@ pub fn Ops(comptime cfg: Config) type {
             const target: u160 = @truncate(args[0]);
             const cost = frame.evm.accessAccountCost(fork, target) + fork.constantGas(.EXTCODESIZE);
             if (gas < cost) {
+                @branchHint(.unlikely);
                 return evm.Errors.OutOfGas;
             }
 
@@ -492,6 +508,7 @@ pub fn Ops(comptime cfg: Config) type {
             const access_cost = frame.evm.accessAccountCost(fork, target);
             const cost = fork.constantGas(.EXTCODECOPY) + mem.toWordSize(args[0]) * 3 + access_cost;
             if (available_gas < cost) {
+                @branchHint(.unlikely);
                 return evm.Errors.OutOfGas;
             }
             available_gas -= cost;
@@ -625,6 +642,7 @@ pub fn Ops(comptime cfg: Config) type {
             const new_stack_head, const args = try frame.stackPop(stack_head, 1, 1);
             const dynamic_gas, _ = frame.evm.accessSlotCost(fork, frame.target, args[0]);
             if (gas < dynamic_gas) {
+                @branchHint(.unlikely);
                 return evm.Errors.OutOfGas;
             }
             const remaining_gas = gas - dynamic_gas;
@@ -697,12 +715,21 @@ pub fn Ops(comptime cfg: Config) type {
         }
 
         pub fn sstore(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
-            if (frame.is_static) return evm.Errors.WriteProtection;
-            if (gas <= fork.call_stipend) return evm.Errors.OutOfGas;
+            if (frame.is_static) {
+                @branchHint(.unlikely);
+                return evm.Errors.WriteProtection;
+            }
+            if (gas <= fork.call_stipend) {
+                @branchHint(.unlikely);
+                return evm.Errors.OutOfGas;
+            }
             const new_stack_head, const args = try frame.stackPop(stack_head, 2, 0);
             const lookup: types.StorageLookup = .{ .address = frame.target, .slot = args[1] };
             const access_cost, const is_warm = frame.evm.accessSlotCost(fork, frame.target, args[1]);
-            if (gas < access_cost) return evm.Errors.OutOfGas;
+            if (gas < access_cost) {
+                @branchHint(.unlikely);
+                return evm.Errors.OutOfGas;
+            }
             const old_value, _ = try frame.state.contract_state.write(lookup, args[0]);
             // lazily record the pre-tx value on first write; subsequent writes don't update it
             const original_value_entry = frame.evm.pre_state.getOrPutAssumeCapacity(lookup);
@@ -714,6 +741,7 @@ pub fn Ops(comptime cfg: Config) type {
 
             const regular_cost = fork.constantGas(.SSTORE) + dynamic_gas;
             if (gas < regular_cost) {
+                @branchHint(.unlikely);
                 return evm.Errors.OutOfGas;
             }
             var remaining_regular_gas = gas - regular_cost;
@@ -732,7 +760,10 @@ pub fn Ops(comptime cfg: Config) type {
         }
 
         pub fn tstore(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
-            if (frame.is_static) return evm.Errors.WriteProtection;
+            if (frame.is_static) {
+                @branchHint(.unlikely);
+                return evm.Errors.WriteProtection;
+            }
             const new_stack_head, const args = try frame.stackPop(stack_head, 2, 0);
             _ = try frame.state.transient_storage.write(.{ .address = frame.target, .slot = args[1] }, args[0]);
             return next(next_ip, gas, fork.constantGas(.TSTORE), new_stack_head, frame);
@@ -753,7 +784,10 @@ pub fn Ops(comptime cfg: Config) type {
         pub fn create_variant(comptime variant: Opcode) Fn {
             return struct {
                 pub fn create(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
-                    if (frame.is_static) return evm.Errors.WriteProtection;
+                    if (frame.is_static) {
+                        @branchHint(.unlikely);
+                        return evm.Errors.WriteProtection;
+                    }
 
                     // Stack layout (args[0]=bottom, args[n-1]=top):
                     //   CREATE  (3): size offset value
@@ -766,19 +800,28 @@ pub fn Ops(comptime cfg: Config) type {
                     const size = args[n_args - 3];
 
                     // EIP-3860: reject oversized initcode
-                    if (size > 2 * fork.max_code_size) return evm.Errors.OutOfGas;
+                    if (size > 2 * fork.max_code_size) {
+                        @branchHint(.unlikely);
+                        return evm.Errors.OutOfGas;
+                    }
 
                     var available_gas = try frame.memory.growToFit(offset, size, gas);
 
                     // Deduct base cost and EIP-3860 initcode word cost
                     const initcode_word_cost: u64 = mem.toWordSize(size) * 2;
-                    if (available_gas < fork.constantGas(variant) + initcode_word_cost) return evm.Errors.OutOfGas;
+                    if (available_gas < fork.constantGas(variant) + initcode_word_cost) {
+                        @branchHint(.unlikely);
+                        return evm.Errors.OutOfGas;
+                    }
                     available_gas -= fork.constantGas(variant) + initcode_word_cost;
 
                     // CREATE2 hashes initcode: keccak_word_gas per word
                     if (variant == .CREATE2) {
                         const hash_cost: u64 = mem.toWordSize(size) * fork.keccak_word_gas;
-                        if (available_gas < hash_cost) return evm.Errors.OutOfGas;
+                        if (available_gas < hash_cost) {
+                            @branchHint(.unlikely);
+                            return evm.Errors.OutOfGas;
+                        }
                         available_gas -= hash_cost;
                     }
 
@@ -815,8 +858,10 @@ pub fn Ops(comptime cfg: Config) type {
                             frame.depth,
                         );
                         available_gas += leftover_gas;
-                        if (created_addr == 0)
+                        if (created_addr == 0) {
+                            @branchHint(.unlikely);
                             available_gas = frame.evm.creditStateGasRefund(available_gas, create_state_gas);
+                        }
                         args[0] = created_addr;
                     } else args[0] = 0;
                     return next(next_ip, available_gas, 0, new_stack_head, frame);
@@ -859,13 +904,17 @@ pub fn Ops(comptime cfg: Config) type {
 
                     const value_is_positive = value > 0;
                     // Only CALL is forbidden to transfer value in static context; CALLCODE/DELEGATECALL do not actually move ETH
-                    if (frame.is_static and value_is_positive and variant == .CALL) return evm.Errors.WriteProtection;
+                    if (frame.is_static and value_is_positive and variant == .CALL) {
+                        @branchHint(.unlikely);
+                        return evm.Errors.WriteProtection;
+                    }
 
                     const positive_value_cost = if ((variant == .CALL or variant == .CALLCODE) and value_is_positive)
                         fork.call_value_gas
                     else
                         0;
                     if (available_gas < address_access_cost + positive_value_cost) {
+                        @branchHint(.unlikely);
                         return evm.Errors.OutOfGas;
                     }
 
@@ -880,6 +929,7 @@ pub fn Ops(comptime cfg: Config) type {
                     const delegation_cost = try frame.evm.delegationAccessCost(cfg, addr, frame.state);
                     const dynamic_cost = address_access_cost + delegation_cost + positive_value_cost + positive_value_to_new_acc_cost;
                     if (available_gas < dynamic_cost) {
+                        @branchHint(.unlikely);
                         return evm.Errors.OutOfGas;
                     }
                     available_gas -= dynamic_cost;
@@ -892,6 +942,7 @@ pub fn Ops(comptime cfg: Config) type {
 
                     frame.evm.return_data_size = 0;
                     if (frame.depth + 1 <= 1024) {
+                        @branchHint(.likely);
                         // EIP-150: forward at most (denom-1)/denom of remaining gas to sub-calls
                         const forwarded_gas = @min(call_gas, available_gas - @divFloor(available_gas, fork.gas_forward_denom));
                         available_gas -= forwarded_gas;
@@ -916,6 +967,7 @@ pub fn Ops(comptime cfg: Config) type {
                         args[0] = if (err != null) 0 else 1;
                         available_gas += leftover_gas;
                     } else {
+                        @branchHint(.cold);
                         args[0] = 0;
                         available_gas += stipend;
                     }
@@ -934,7 +986,10 @@ pub fn Ops(comptime cfg: Config) type {
                     _, const args = try frame.stackPop(stack_head, 2, 0);
                     const available_gas = try frame.memory.growToFit(args[1], args[0], gas);
                     const remaining = available_gas - fork.constantGas(variant);
-                    if (remaining < 0) return evm.Errors.OutOfGas;
+                    if (remaining < 0) {
+                        @branchHint(.unlikely);
+                        return evm.Errors.OutOfGas;
+                    }
 
                     if (args[0] > 0) {
                         const source = frame.memory.slice(@intCast(args[1]), @intCast(args[0]));
@@ -966,6 +1021,7 @@ pub fn Ops(comptime cfg: Config) type {
 
             const end = std.math.add(u256, args[1], args[0]) catch return evm.Errors.ReturnDataOutOfBounds;
             if (end > frame.evm.return_data_size) {
+                @branchHint(.unlikely);
                 return evm.Errors.ReturnDataOutOfBounds;
             }
 
@@ -976,7 +1032,10 @@ pub fn Ops(comptime cfg: Config) type {
         }
 
         pub fn selfdestruct(_: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
-            if (frame.is_static) return evm.Errors.WriteProtection;
+            if (frame.is_static) {
+                @branchHint(.unlikely);
+                return evm.Errors.WriteProtection;
+            }
 
             _, const args = try frame.stackPop(stack_head, 1, 0);
             const beneficiary: u160 = @truncate(args[0]);
@@ -986,6 +1045,7 @@ pub fn Ops(comptime cfg: Config) type {
 
             const cost = access_cost + fork.constantGas(.SELFDESTRUCT);
             if (gas < cost) {
+                @branchHint(.unlikely);
                 return evm.Errors.OutOfGas;
             }
             var remaining = gas - cost;
@@ -1014,6 +1074,7 @@ pub fn Ops(comptime cfg: Config) type {
             }
 
             if (remaining < empty_account_cost) {
+                @branchHint(.unlikely);
                 return evm.Errors.OutOfGas;
             }
             remaining -= empty_account_cost;
@@ -1029,7 +1090,10 @@ pub fn Ops(comptime cfg: Config) type {
         pub fn log_variant(comptime variant: Opcode) Fn {
             return struct {
                 pub fn log(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
-                    if (frame.is_static) return evm.Errors.WriteProtection;
+                    if (frame.is_static) {
+                        @branchHint(.unlikely);
+                        return evm.Errors.WriteProtection;
+                    }
                     const topic_count = variant.byte() - Opcode.LOG0.byte();
                     const num_args = 2 + topic_count;
                     // stackPop returns bottom-to-top: args[0] is deepest, args[n-1] is top.
@@ -1197,8 +1261,10 @@ fn tracing_hook(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *
 pub fn readBeSliceToU256(bytes: []const u8, comptime total_size: usize, value: *u256) void {
     comptime std.debug.assert(total_size <= 32);
     if (bytes.len >= total_size) {
+        @branchHint(.likely);
         value.* = std.mem.readInt(std.meta.Int(.unsigned, total_size * 8), bytes[0..total_size], .big);
     } else {
+        @branchHint(.unlikely);
         value.* = 0;
         const buf: *[32]u8 = std.mem.asBytes(value);
         if (total_size > 0) {
