@@ -36,7 +36,8 @@ echo ""
 
 # ── 2. Extract chainId and build native guest ─────────────────────────────────
 
-FIRST_BATCH=$(ls "$OUT_DIR"/*.tar.zst | sort -V | head -1)
+SORTED_BATCHES=$(ls "$OUT_DIR"/*.tar.zst | sort -V)
+FIRST_BATCH=${SORTED_BATCHES%%$'\n'*}
 CHAIN_ID=$(zstd -d "$FIRST_BATCH" --stdout | tar -xO .meta/manifest.json \
     | python3 -c "import sys,json; print(json.load(sys.stdin)['artifacts'][0]['chainId'])")
 
@@ -63,7 +64,7 @@ for tarball in "$OUT_DIR"/*.tar.zst; do
             echo "  block $block: ok"
             ok=$((ok + 1))
         else
-            echo "  block $block: FAIL -- $(echo "$stderr" | head -1)"
+            echo "  block $block: FAIL -- ${stderr%%$'\n'*}"
             fail=$((fail + 1))
         fi
     done
