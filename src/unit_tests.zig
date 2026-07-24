@@ -6,4 +6,5 @@ comptime {
     _ = @import("trie/trie.zig");
     _ = @import("evm/crypto/ripemd160.zig");
     _ = @import("devp2p/allocator.zig");
+    _ = @import("devp2p/enode.zig");
 }
