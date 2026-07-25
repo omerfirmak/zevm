@@ -297,7 +297,7 @@ pub fn Ops(comptime cfg: Config) type {
         pub fn jump(_: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 1, 0);
             const dest = frame.code.isValidJumpDest(args[0]) orelse return evm.Errors.InvalidJumpDest;
-            return next(dest, gas, fork.constantGas(.JUMP), new_stack_head, frame);
+            return next(dest + 1, gas, fork.constantGas(.JUMP) + fork.constantGas(.JUMPDEST), new_stack_head, frame);
         }
 
         pub fn jumpi(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
@@ -307,7 +307,7 @@ pub fn Ops(comptime cfg: Config) type {
             }
 
             const dest = frame.code.isValidJumpDest(args[1]) orelse return evm.Errors.InvalidJumpDest;
-            return next(dest, gas, fork.constantGas(.JUMPI), new_stack_head, frame);
+            return next(dest + 1, gas, fork.constantGas(.JUMPI) + fork.constantGas(.JUMPDEST), new_stack_head, frame);
         }
 
         pub fn opGas(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
