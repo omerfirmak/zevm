@@ -18,13 +18,23 @@ threaded_code: []?ops.FnOpaquePtr,
 // Creates a new Bytecode instance by first building a threaded code from the given
 // raw bytecode and jumptable
 pub fn init(gpa: std.mem.Allocator, bytes: []const u8, comptime cfg: Config) !Bytecode {
-    const jump_table = comptime ops.Ops(cfg).table();
-    var threaded_code = try gpa.alloc(?ops.Fn, bytes.len + 33);
+    const threaded_code = try gpa.alloc(?ops.Fn, bytes.len + 33);
+    const bytecode: Bytecode = .{
+        .bytes = bytes,
+        .threaded_code = @ptrCast(threaded_code),
+    };
+
+    var last_push_immediate: ?[]const u8 = null;
+    const op_impl = comptime ops.Ops(cfg);
+    const jump_table = comptime op_impl.table();
+    const static_jump_impl = comptime op_impl.control_flow(true);
+
     var pc: usize = 0;
     while (pc < bytes.len) : (pc += 1) {
         const opcode = bytes[pc];
         threaded_code[pc] = jump_table[opcode];
-        // Skip push data, leave the function pointer null
+        const known_stack_top = last_push_immediate;
+        last_push_immediate = null;
 
         switch (opcode) {
             Opcode.PUSH1.byte()...Opcode.PUSH32.byte() => {
@@ -34,6 +44,7 @@ pub fn init(gpa: std.mem.Allocator, bytes: []const u8, comptime cfg: Config) !By
                 for (threaded_code[pc + 1 .. data_end]) |*slot| {
                     slot.* = null;
                 }
+                last_push_immediate = bytes[pc + 1 .. data_end];
                 // land on the last data byte; loop increment moves to next opcode
                 pc = data_end - 1;
             },
@@ -50,15 +61,21 @@ pub fn init(gpa: std.mem.Allocator, bytes: []const u8, comptime cfg: Config) !By
                     }
                 }
             },
+            inline Opcode.JUMP.byte(), Opcode.JUMPI.byte() => |op| {
+                if (known_stack_top) |top| {
+                    const static_jumpdest = std.mem.readVarInt(u256, top, .big);
+                    // a one-pass bytecode analysis can only statically validate backward jumps
+                    if (static_jumpdest < pc and bytecode.isValidJumpDest(static_jumpdest, false) != null) {
+                        threaded_code[pc] = if (op == Opcode.JUMP.byte()) static_jump_impl.jump else static_jump_impl.jumpi;
+                    }
+                }
+            },
             else => {},
         }
     }
     @memset(threaded_code[pc..], jump_table[Opcode.STOP.byte()]);
 
-    return .{
-        .bytes = bytes,
-        .threaded_code = @ptrCast(threaded_code),
-    };
+    return bytecode;
 }
 
 pub fn deinit(self: *const Bytecode, gpa: std.mem.Allocator) void {
@@ -66,7 +83,10 @@ pub fn deinit(self: *const Bytecode, gpa: std.mem.Allocator) void {
 }
 
 // Checks if the given program counter is a valid jump destionation
-pub fn isValidJumpDest(self: *const Bytecode, pc: u256) ?InstructionPointer {
+pub fn isValidJumpDest(self: *const Bytecode, pc: u256, comptime static_validation: bool) ?InstructionPointer {
+    if (static_validation)
+        return self.threaded_code[@intCast(pc)..].ptr; // static: pc is a pre-validated constant
+
     if (pc >= self.bytes.len) {
         @branchHint(.unlikely);
         return null;

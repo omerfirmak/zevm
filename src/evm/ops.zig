@@ -294,20 +294,25 @@ pub fn Ops(comptime cfg: Config) type {
             return next(next_ip, gas, fork.constantGas(.JUMPDEST), stack_head, frame);
         }
 
-        pub fn jump(_: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
-            const new_stack_head, const args = try frame.stackPop(stack_head, 1, 0);
-            const dest = frame.code.isValidJumpDest(args[0]) orelse return evm.Errors.InvalidJumpDest;
-            return next(dest + 1, gas, fork.constantGas(.JUMP) + fork.constantGas(.JUMPDEST), new_stack_head, frame);
-        }
+        pub fn control_flow(comptime static_validation: bool) struct { jump: Fn, jumpi: Fn } {
+            const impls = struct {
+                pub fn jump(_: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+                    const new_stack_head, const args = try frame.stackPop(stack_head, 1, 0);
+                    const dest = frame.code.isValidJumpDest(args[0], static_validation) orelse return evm.Errors.InvalidJumpDest;
+                    return next(dest + 1, gas, fork.constantGas(.JUMP) + fork.constantGas(.JUMPDEST), new_stack_head, frame);
+                }
 
-        pub fn jumpi(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
-            const new_stack_head, const args = try frame.stackPop(stack_head, 2, 0);
-            if (args[0] == 0) {
-                return next(next_ip, gas, fork.constantGas(.JUMPI), new_stack_head, frame);
-            }
+                pub fn jumpi(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
+                    const new_stack_head, const args = try frame.stackPop(stack_head, 2, 0);
+                    if (args[0] == 0) {
+                        return next(next_ip, gas, fork.constantGas(.JUMPI), new_stack_head, frame);
+                    }
 
-            const dest = frame.code.isValidJumpDest(args[1]) orelse return evm.Errors.InvalidJumpDest;
-            return next(dest + 1, gas, fork.constantGas(.JUMPI) + fork.constantGas(.JUMPDEST), new_stack_head, frame);
+                    const dest = frame.code.isValidJumpDest(args[1], static_validation) orelse return evm.Errors.InvalidJumpDest;
+                    return next(dest + 1, gas, fork.constantGas(.JUMPI) + fork.constantGas(.JUMPDEST), new_stack_head, frame);
+                }
+            };
+            return .{ .jump = impls.jump, .jumpi = impls.jumpi };
         }
 
         pub fn opGas(next_ip: InstructionPointer, gas: u64, stack_head: u16, frame: *evm.Frame) evm.Errors!void {
@@ -1127,6 +1132,7 @@ pub fn Ops(comptime cfg: Config) type {
 
         // Constructs a jump table for the given spec
         pub fn table() [256]Fn {
+            const dynamicly_checked_control_flow = control_flow(false);
             var t = std.enums.directEnumArrayDefault(Opcode, Fn, invalid, 256, .{
                 .STOP = stop,
                 .ADD = add,
@@ -1157,8 +1163,8 @@ pub fn Ops(comptime cfg: Config) type {
                 .SAR = sar,
                 .CLZ = clz,
                 .JUMPDEST = jumpdest,
-                .JUMP = jump,
-                .JUMPI = jumpi,
+                .JUMP = dynamicly_checked_control_flow.jump,
+                .JUMPI = dynamicly_checked_control_flow.jumpi,
                 .GAS = opGas,
                 .ADDRESS = address,
                 .BALANCE = balance,
