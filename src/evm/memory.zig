@@ -34,37 +34,37 @@ pub fn slice(self: *Memory, start: usize, size: usize) []u8 {
 
 // Tries to grow the memory to fit the given region if there is enough gas
 // Returns the remaning gas
-pub fn growToFit(self: *Memory, offset: u256, size: u256, available_gas: u64) !u64 {
+pub inline fn growToFit(self: *Memory, offset: u256, size: u256, available_gas: u64) !u64 {
     if (size == 0) {
         return available_gas;
     }
     if (offset > std.math.maxInt(usize) or size > std.math.maxInt(usize)) {
         return evm.Errors.GasOverflow;
     }
+    const mem_size = std.math.add(usize, @intCast(offset), @intCast(size)) catch
+        return evm.Errors.GasOverflow;
+    if (mem_size <= self.buf.len) return available_gas;
+    return self.grow(mem_size, available_gas);
+}
 
-    const off: usize = @intCast(offset);
-    const sz: usize = @intCast(size);
-    const mem_size = std.math.add(usize, off, sz) catch return evm.Errors.GasOverflow;
+fn grow(self: *Memory, mem_size: usize, available_gas: u64) !u64 {
     if (mem_size > max_mem_size) return evm.Errors.GasOverflow;
 
     const mem_words = (mem_size + 31) / 32;
     const padded_mem_size = mem_words * 32;
-    var cost: usize = 0;
-    if (self.buf.len < padded_mem_size) {
-        const old_len = self.buf.len;
-        // EIP-150 memory expansion cost: words²/512 + 3*words, minus what was already paid
-        cost = mem_words * mem_words / 512 + 3 * mem_words - self.costSoFar;
-        if (cost > available_gas) {
-            return evm.Errors.OutOfGas;
-        }
-
-        if (self.buf.len == 0) {
-            self.buf = self.gpa.alloc(u8, padded_mem_size) catch unreachable;
-        } else {
-            self.buf = self.gpa.realloc(self.buf, padded_mem_size) catch unreachable;
-        }
-        @memset(self.buf[old_len..padded_mem_size], 0);
+    const old_len = self.buf.len;
+    // EIP-150 memory expansion cost: words²/512 + 3*words, minus what was already paid
+    const cost = mem_words * mem_words / 512 + 3 * mem_words - self.costSoFar;
+    if (cost > available_gas) {
+        return evm.Errors.OutOfGas;
     }
+
+    if (old_len == 0) {
+        self.buf = self.gpa.alloc(u8, padded_mem_size) catch unreachable;
+    } else {
+        self.buf = self.gpa.realloc(self.buf, padded_mem_size) catch unreachable;
+    }
+    @memset(self.buf[old_len..padded_mem_size], 0);
 
     self.costSoFar += cost;
     return available_gas - @as(u64, @intCast(cost));
