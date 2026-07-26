@@ -7,7 +7,7 @@ on:
   pull_request:
 
 jobs:
-  test-and-build-example:
+  test-and-build-example-bench:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -20,6 +20,9 @@ jobs:
 
       - name: Build and run example
         run: zig build example
+
+      - name: Build bench
+        run: zig build bench
 
       - name: Test
         run: zig build test

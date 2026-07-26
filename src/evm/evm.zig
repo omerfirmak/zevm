@@ -66,8 +66,6 @@ pub const Context = struct {
     max_blobs_per_block: u64,
 
     ancestors: [256]u256,
-
-    // EIP-8037: accumulated per-tx contributions
 };
 
 pub const Frame = struct {
@@ -210,7 +208,7 @@ pub const EVM = struct {
 
     rounded_allocator: RoundedAllocator,
     msg: *const Message,
-    context: *Context,
+    context: *const Context,
 
     // LOG handling
     logs_fba: std.heap.FixedBufferAllocator,
@@ -239,7 +237,7 @@ pub const EVM = struct {
 
     pub fn init(
         gpa: std.mem.Allocator,
-        context: *Context,
+        context: *const Context,
         caps: Spec.EvmCapacities,
     ) !Self {
         var rounded_allocator = RoundedAllocator{ .backing = gpa };

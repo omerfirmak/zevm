@@ -258,9 +258,9 @@ pub fn build(b: *std.Build) void {
     example_step.dependOn(&b.addRunArtifact(example).step);
 
     // Benchmark
-    const bench_step = b.step("bench", "Run EVM benchmarks");
+    const bench_step = b.step("bench", "Build benchmarking harness");
     const bench = b.addExecutable(.{
-        .name = "bench",
+        .name = "zevm-bench",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/bench.zig"),
             .target = target,
@@ -269,11 +269,14 @@ pub fn build(b: *std.Build) void {
         .use_llvm = true,
     });
     bench.root_module.link_libcpp = true;
+    bench.root_module.omit_frame_pointer = true;
     linkDeps(bench.root_module, deps, .native);
     bench.root_module.addImport("clap", clap_dep.module("clap"));
-    const run_bench = b.addRunArtifact(bench);
-    if (b.args) |bench_args| run_bench.addArgs(bench_args);
-    bench_step.dependOn(&run_bench.step);
+    const bench_opts = b.addOptions();
+    bench_opts.addOption(State, "state", .empty);
+    bench_opts.addOption(Platform, "platform", .native);
+    bench.root_module.addOptions("build_options", bench_opts);
+    bench_step.dependOn(&b.addInstallArtifact(bench, .{}).step);
 
     const test_zevm_mod = createZevmModule(b, target, optimize, b.createModule(.{
         .root_source_file = b.path("test/committed_state.zig"),
