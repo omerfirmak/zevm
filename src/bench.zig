@@ -21,7 +21,7 @@ const BenchmarkDef = struct {
 // matching revm's `tx_gas_limit_cap = Some(u64::MAX)` config.
 const bench_fork: Config = blk: {
     var f = spec.Osaka;
-    f.max_tx_gas = std.math.maxInt(u64);
+    f.max_tx_gas = std.math.maxInt(u32);
     break :blk .{ .fork = f, .tracing_enabled = false };
 };
 
@@ -141,22 +141,20 @@ fn runBenchmark(io: std.Io, allocator: std.mem.Allocator, bench_def: BenchmarkDe
     // Benchmark — vm.process
     var times = try allocator.alloc(u64, iters);
     defer allocator.free(times);
-    var start = std.Io.Timestamp.now(io, .real);
     var gas_used: u64 = 0;
     var state_gas_used: u64 = 0;
 
     for (0..iters + warmup) |i| {
         _ = vm_arena.reset(.retain_capacity);
-        var logs: std.DoublyLinkedList = .{};
-
-        var vm = try evm.EVM.init(vm_arena.allocator(), &logs, &context, bench_fork.fork.evmCapacities());
-        start = .zero;
+        var vm = try evm.EVM.init(vm_arena.allocator(), &context, bench_fork.fork.evmCapacities());
+        const start = std.Io.Timestamp.now(io, .awake);
         gas_used, state_gas_used = vm.process(bench_fork, &msg, &state) catch |err| {
             std.debug.print("error at iter {d}: {}\n", .{ i, err });
             return;
         };
+        const elapsed = start.durationTo(std.Io.Timestamp.now(io, .awake));
         if (i >= warmup) {
-            times[i - warmup] = @intCast(std.Io.Timestamp.now(io, .real).durationTo(start).toMicroseconds());
+            times[i - warmup] = @intCast(elapsed.toNanoseconds());
         }
         std.mem.doNotOptimizeAway(&vm);
 
