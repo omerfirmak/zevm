@@ -118,7 +118,7 @@ pub const Frame = struct {
 
     // Reserves the slot on stack and returns a pointer to it.
     // Errors out if the stack is full
-    pub fn stackReserve(self: *Self, head: usize) !struct { usize, *u256 } {
+    pub fn stackReserve(self: *Self, head: usize) !struct { usize, *align(@sizeOf(u256)) u256 } {
         if (head == max_stack_size) {
             @branchHint(.cold);
             return Errors.StackOverflow;
@@ -128,7 +128,7 @@ pub const Frame = struct {
 
     // Returns `n` items from the top of the stack. Also allows last `peek` number
     // of items to be peeked in-place.
-    pub fn stackPop(self: *Self, head: usize, n: comptime_int, peek: comptime_int) !struct { usize, *[n]u256 } {
+    pub fn stackPop(self: *Self, head: usize, n: comptime_int, peek: comptime_int) !struct { usize, *align(@sizeOf(u256)) [n]u256 } {
         comptime std.debug.assert(n >= peek);
 
         if (head < n) {
