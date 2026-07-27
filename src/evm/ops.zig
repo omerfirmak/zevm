@@ -1064,7 +1064,7 @@ pub fn Ops(comptime cfg: Config) type {
                     beneficiary_account.balance += transferred_value;
                     (try frame.state.accounts.update(frame.target)).balance = 0;
                     if (fork.isEnabled(.Amsterdam)) {
-                        frame.evm.pushTransferLog(frame.target, beneficiary, transferred_value);
+                        try frame.evm.pushTransferLog(frame.target, beneficiary, transferred_value);
                     }
                 } else if (is_new_account and !fork.isEnabled(.Amsterdam)) {
                     (try frame.state.accounts.update(frame.target)).balance = 0;
@@ -1109,7 +1109,7 @@ pub fn Ops(comptime cfg: Config) type {
                     var topics: [4]u256 = undefined;
                     for (0..topic_count) |i| topics[i] = args[topic_count - 1 - i];
 
-                    frame.evm.pushLog(frame.target, topics[0..topic_count], data);
+                    try frame.evm.pushLog(frame.target, topics[0..topic_count], data);
 
                     return next(next_ip, available_gas, fork.constantGas(variant) + dynamic_gas, new_stack_head, frame);
                 }

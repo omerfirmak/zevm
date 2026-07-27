@@ -60,9 +60,9 @@ fn grow(self: *Memory, mem_size: usize, available_gas: u64) !u64 {
     }
 
     if (old_len == 0) {
-        self.buf = self.gpa.alloc(u8, padded_mem_size) catch unreachable;
+        self.buf = try self.gpa.alloc(u8, padded_mem_size);
     } else {
-        self.buf = self.gpa.realloc(self.buf, padded_mem_size) catch unreachable;
+        self.buf = try self.gpa.realloc(self.buf, padded_mem_size);
     }
     @memset(self.buf[old_len..padded_mem_size], 0);
 

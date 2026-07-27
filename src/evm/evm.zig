@@ -47,7 +47,7 @@ pub const Errors = error{
     InvalidPrecompileInput,
     MissingAncestorHash,
     CreateCollision,
-} || @import("committed_state.zig").Errors;
+} || @import("committed_state.zig").Errors || std.mem.Allocator.Error;
 
 pub const Context = struct {
     chainid: u64,
@@ -634,7 +634,7 @@ pub const EVM = struct {
             }
             caller_account.balance -= value;
             (try state.accounts.update(target)).balance += value;
-            if (cfg.fork.isEnabled(.Amsterdam) and caller != target) self.pushTransferLog(caller, target, value);
+            if (cfg.fork.isEnabled(.Amsterdam) and caller != target) try self.pushTransferLog(caller, target, value);
         }
 
         if (cfg.fork.getPrecompile(code_addr)) |precompile_handler| {
@@ -646,7 +646,7 @@ pub const EVM = struct {
             );
         } else if (try resolveCode(code_addr, state, cfg)) |code| {
             const allocator = self.rounded_allocator.allocator();
-            var frame = allocator.create(Frame) catch unreachable;
+            var frame = try allocator.create(Frame);
             defer allocator.destroy(frame);
             frame.* = Frame{
                 .evm = self,
@@ -745,14 +745,14 @@ pub const EVM = struct {
         new_contract_acc.nonce = 1; // EIP-161
         new_contract_acc.balance += value;
         if (cfg.fork.isEnabled(.Amsterdam)) {
-            if (value > 0) self.pushTransferLog(creator, new_addr, value);
+            if (value > 0) try self.pushTransferLog(creator, new_addr, value);
         }
 
         const allocator = self.rounded_allocator.allocator();
         // Compile and execute initcode
-        const initcode_bytecode = Bytecode.init(allocator, initcode, cfg) catch unreachable;
+        const initcode_bytecode = try Bytecode.init(allocator, initcode, cfg);
         defer initcode_bytecode.deinit(allocator);
-        var frame = allocator.create(Frame) catch unreachable;
+        var frame = try allocator.create(Frame);
         defer allocator.destroy(frame);
         frame.* = Frame{
             .evm = self,
@@ -807,13 +807,13 @@ pub const EVM = struct {
             return .{ 0, 0, Errors.OutOfGas };
         }
         frame.gas -= deposit_regular_gas;
-        frame.gas = self.chargeStateGas(frame.gas, deposit_state_gas) catch unreachable; // if check above guards against an underflow
+        frame.gas = try self.chargeStateGas(frame.gas, deposit_state_gas); // if check above guards against an underflow
 
         // Store deployed code and update account code hash
         var code_hash: [32]u8 = types.empty_code_hash;
         if (deployed_len > 0) {
             code_hash = keccak256(deployed_code);
-            state.deploy_code(code_hash, deployed_code, cfg);
+            try state.deploy_code(code_hash, deployed_code, cfg);
         }
         (try state.accounts.update(new_addr)).code_hash = code_hash;
         // created_accounts was registered before frame.enter(); SELFDESTRUCT may have marked it false — don't overwrite.
@@ -822,13 +822,13 @@ pub const EVM = struct {
 
     pub const LogNode = struct { log: Log, node: std.DoublyLinkedList.Node };
 
-    pub fn pushLog(self: *Self, address: u160, topics: []const u256, data: []const u8) void {
+    pub fn pushLog(self: *Self, address: u160, topics: []const u256, data: []const u8) !void {
         const allocator = self.logs_fba.allocator();
-        const ln = allocator.create(LogNode) catch unreachable;
+        const ln = try allocator.create(LogNode);
         ln.* = LogNode{ .log = .{
             .address = address,
-            .topics = allocator.dupe(u256, topics) catch unreachable,
-            .data = allocator.dupe(u8, data) catch unreachable,
+            .topics = try allocator.dupe(u256, topics),
+            .data = try allocator.dupe(u8, data),
         }, .node = .{} };
         self.logs.append(&ln.node);
         self.num_logs += 1;
@@ -846,11 +846,11 @@ pub const EVM = struct {
         }
     }
 
-    pub fn pushTransferLog(self: *Self, from: u160, to: u160, amount: u256) void {
+    pub fn pushTransferLog(self: *Self, from: u160, to: u160, amount: u256) !void {
         const transfer_topic: u256 = 0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef;
         var data: [32]u8 = undefined;
         std.mem.writeInt(u256, &data, amount, .big);
-        self.pushLog(SYSTEM_ADDRESS, &[_]u256{ transfer_topic, from, to }, &data);
+        try self.pushLog(SYSTEM_ADDRESS, &[_]u256{ transfer_topic, from, to }, &data);
     }
 
     pub fn accessAccount(self: *Self, addr: u160) bool {
@@ -949,7 +949,7 @@ pub const EVM = struct {
                 const dg_hash = delegationCodeHash(auth.address);
                 if (state.code_storage.get(dg_hash) == null) {
                     const dg_code = delegationCode(auth.address);
-                    state.deploy_code(dg_hash, &dg_code, cfg);
+                    try state.deploy_code(dg_hash, &dg_code, cfg);
                 }
                 auth_mutable.code_hash = dg_hash;
             }

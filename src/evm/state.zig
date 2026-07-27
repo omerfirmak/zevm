@@ -88,14 +88,14 @@ pub const State = struct {
             return b;
         }
         const code = try self.committed_state.code(hash);
-        self.deploy_code(hash, code, cfg);
+        try self.deploy_code(hash, code, cfg);
         return self.code_storage.get(hash) orelse unreachable;
     }
 
-    pub fn deploy_code(self: *Self, hash: [32]u8, code: []const u8, comptime cfg: Config) void {
+    pub fn deploy_code(self: *Self, hash: [32]u8, code: []const u8, comptime cfg: Config) !void {
         const allocator = self.deployed_bytecode_allocator.allocator();
-        const code_bytes = allocator.dupe(u8, code) catch unreachable;
-        const bytecode = Bytecode.init(allocator, code_bytes, cfg) catch unreachable;
+        const code_bytes = try allocator.dupe(u8, code);
+        const bytecode = try Bytecode.init(allocator, code_bytes, cfg);
         self.code_storage.putAssumeCapacity(hash, bytecode);
     }
 };
