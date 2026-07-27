@@ -95,7 +95,7 @@ fn runBenchmark(io: std.Io, allocator: std.mem.Allocator, bench_def: BenchmarkDe
 
     var code_hash: [32]u8 = undefined;
     std.crypto.hash.sha3.Keccak256.hash(bytecode, &code_hash, .{});
-    state.deploy_code(code_hash, bytecode, bench_fork);
+    try state.deploy_code(code_hash, bytecode, bench_fork);
 
     _ = try state.accounts.write(BENCH_TARGET, .{
         .nonce = 1,
