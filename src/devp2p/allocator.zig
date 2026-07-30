@@ -9,7 +9,7 @@ fn Slab(comptime Size: usize) type {
     };
 }
 
-const SlabAllocator = struct {
+pub const SlabAllocator = struct {
     const Self = @This();
 
     parent: std.mem.Allocator,
