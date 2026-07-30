@@ -21,6 +21,8 @@ pub const Spec = struct {
     pub fn fromFork(fork: Fork, comptime chain_id: u64) Spec {
         return override(switch (fork) {
             .Osaka => Osaka,
+            .BPO1 => BPO1,
+            .BPO2 => BPO2,
             .Amsterdam => Amsterdam,
         }, .{
             .chain_id = chain_id,
@@ -54,9 +56,20 @@ fn override(base: anytype, changes: anytype) @TypeOf(base) {
     return result;
 }
 
-pub const Amsterdam = override(Osaka, .{
-    .fork = .Amsterdam,
+pub const BPO1 = override(Osaka, .{
+    .fork = .BPO1,
+    .blob_base_fee_update_fraction = 8346193,
+    .target_blobs_per_block = 10,
+    .max_blobs_per_block = 15,
+});
+
+pub const BPO2 = override(BPO1, .{
+    .fork = .BPO2,
     .blob_base_fee_update_fraction = 11684671,
     .target_blobs_per_block = 14,
     .max_blobs_per_block = 21,
+});
+
+pub const Amsterdam = override(BPO2, .{
+    .fork = .Amsterdam,
 });
