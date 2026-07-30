@@ -223,7 +223,7 @@ pub const Spec = struct {
 
     pub fn fromFork(fork: Fork) Spec {
         return switch (fork) {
-            .Osaka => Osaka,
+            .Osaka, .BPO1, .BPO2 => Osaka,
             .Amsterdam => Amsterdam,
         };
     }
