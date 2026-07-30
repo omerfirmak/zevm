@@ -8,4 +8,5 @@ comptime {
     _ = @import("devp2p/allocator.zig");
     _ = @import("devp2p/enode.zig");
     _ = @import("devp2p/enr.zig");
+    _ = @import("devp2p/discv5.zig");
 }
