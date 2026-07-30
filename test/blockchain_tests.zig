@@ -136,7 +136,7 @@ fn prepareBlock(
     };
 }
 
-fn runBlockchainTest(gpa: std.mem.Allocator, test_case: *const BlockchainTest, comptime chainspec: zevm.chainspec.ChainSpec) !void {
+fn runBlockchainTest(gpa: std.mem.Allocator, test_case: *const BlockchainTest, comptime spec: zevm.processor.Spec) !void {
     var committed = try utils.buildCommittedState(gpa, test_case.pre);
     defer committed.deinit();
 
@@ -185,7 +185,7 @@ fn runBlockchainTest(gpa: std.mem.Allocator, test_case: *const BlockchainTest, c
 
             const proc_err: ?anyerror = if (zevm.processor.processBlock(
                 arena.allocator(),
-                chainspec,
+                spec,
                 &p,
                 &parent.header,
                 ancestors,
@@ -256,7 +256,7 @@ fn runBlockchainTestFile(io: std.Io, allocator: std.mem.Allocator, dir: std.Io.D
 
         switch (fork_enum) {
             inline else => |f| {
-                runBlockchainTest(allocator, &test_case, zevm.chainspec.chainSpecByFork(f, 1)) catch |err| {
+                runBlockchainTest(allocator, &test_case, zevm.processor.Spec.fromFork(f, 1)) catch |err| {
                     std.debug.print("{s}: FAIL: {}\n", .{ name, err });
                     any_failed = true;
                 };

@@ -3,7 +3,7 @@ const zevm = @import("zevm");
 const evm = zevm.evm;
 const state_mod = zevm.state;
 const types = zevm.types;
-const spec = zevm.spec;
+const Spec = zevm.spec.Spec;
 const rlp = @import("rlp");
 const CommittedState = @import("committed_state").CommittedState;
 const utils = @import("utils.zig");
@@ -187,15 +187,15 @@ fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []con
                 inline else => |t| @intCast(t.gas_limit),
             };
             state = try state_mod.State.init(arena_allocator, &committed, switch (fork_enum) {
-                inline else => |f| (comptime spec.specByFork(f)).stateCapacities(@min(30_000_000, gas_limit)),
+                inline else => |f| (comptime Spec.fromFork(f)).stateCapacities(@min(30_000_000, gas_limit)),
             });
             vm = try evm.EVM.init(arena_allocator, &context, switch (fork_enum) {
-                inline else => |f| (comptime spec.specByFork(f)).evmCapacities(),
+                inline else => |f| (comptime Spec.fromFork(f)).evmCapacities(),
             });
 
             const msg = zevm.processor.messageFromTx(arena_allocator, &decoded_tx, sender) catch |e| break :blk e;
             break :blk switch (fork_enum) {
-                inline else => |f| if (vm.process(.{ .fork = spec.specByFork(f), .tracing_enabled = trace }, &msg, &state)) |_| null else |err| err,
+                inline else => |f| if (vm.process(.{ .fork = Spec.fromFork(f), .tracing_enabled = trace }, &msg, &state)) |_| null else |err| err,
             };
         };
 

@@ -4,9 +4,9 @@ const evm = @import("../evm/evm.zig");
 const rlp = @import("rlp");
 const EVM = evm.EVM;
 const storage = @import("../evm/storage.zig");
-const EvmSpec = @import("../evm/spec.zig");
+const EvmSpec = @import("../evm/spec.zig").Spec;
 const State = @import("../evm/state.zig").State;
-const ChainSpec = @import("chainspec.zig").ChainSpec;
+pub const Spec = @import("spec.zig").Spec;
 const keccak256 = @import("../evm/crypto/hash.zig").keccak256;
 const sha256 = @import("../evm/crypto/hash.zig").sha256;
 const blobBaseFee = @import("../blob_fee.zig").blobBaseFee;
@@ -66,7 +66,7 @@ pub const PreprocessedBlock = struct {
 
 pub fn processBlock(
     gpa: std.mem.Allocator,
-    comptime spec: ChainSpec,
+    comptime spec: Spec,
     p_block: *PreprocessedBlock,
     parent: *const types.BlockHeader,
     ancestors: [256]u256,
@@ -74,7 +74,7 @@ pub fn processBlock(
 ) !void {
     try validateBlock(spec, p_block, parent);
 
-    const evm_spec = comptime EvmSpec.specByFork(spec.fork);
+    const evm_spec = comptime spec.evmSpec();
 
     var prepared_bal: bal.Prepared = undefined;
     if (evm_spec.isEnabled(.Amsterdam))
@@ -152,7 +152,7 @@ pub fn processBlock(
 fn computeRequestsHash(
     allocator: std.mem.Allocator,
     vm: *evm.EVM,
-    comptime spec: ChainSpec,
+    comptime spec: Spec,
     state: *State,
     logs: *const std.DoublyLinkedList,
 ) ![32]u8 {
@@ -256,13 +256,13 @@ fn serializeDepositLog(buf: []u8, data: []const u8) !bool {
 fn hashSystemCall(
     allocator: std.mem.Allocator,
     vm: *evm.EVM,
-    comptime spec: ChainSpec,
+    comptime spec: Spec,
     target: u160,
     type_byte: u8,
     state: *State,
 ) !?[32]u8 {
     const calldata: []u8 = &.{};
-    const evm_spec = comptime EvmSpec.specByFork(spec.fork);
+    const evm_spec = comptime spec.evmSpec();
     vm.state_gas_reservoir = evm.STATE_BYTES_PER_STORAGE_SLOT * evm_spec.cpsb * SYSTEM_MAX_SSTORES_PER_CALL;
     _, const call_err = vm.call(
         .{
@@ -332,7 +332,7 @@ fn freeLogs(logs: *std.DoublyLinkedList, allocator: std.mem.Allocator) void {
     }
 }
 
-pub fn validateBlock(comptime spec: ChainSpec, p_block: *const PreprocessedBlock, parent: *const types.BlockHeader) Errors!void {
+pub fn validateBlock(comptime spec: Spec, p_block: *const PreprocessedBlock, parent: *const types.BlockHeader) Errors!void {
     const block = p_block.block;
 
     if (p_block.rlp_size > spec.max_rlp_size) return Errors.BlockRlpTooBig;
@@ -376,7 +376,7 @@ pub fn validateBlock(comptime spec: ChainSpec, p_block: *const PreprocessedBlock
 }
 
 pub fn contextFromBlock(
-    comptime spec: ChainSpec,
+    comptime spec: Spec,
     block: *const types.Block,
     ancestors: [256]u256,
 ) evm.Context {
@@ -564,7 +564,7 @@ fn applyEip2935(header: *const types.BlockHeader, state: *State) !void {
     _ = try state.contract_state.write(.{ .address = HISTORY_CONTRACT, .slot = slot }, value);
 }
 
-fn calcExcessBlobGas(comptime spec: ChainSpec, parent: *const types.BlockHeader) u64 {
+fn calcExcessBlobGas(comptime spec: Spec, parent: *const types.BlockHeader) u64 {
     const excess_blob_gas = parent.excess_blob_gas + parent.blob_gas_used;
     const target_gas = spec.target_blobs_per_block * GAS_PER_BLOB;
 

@@ -220,14 +220,14 @@ pub const Spec = struct {
     pub inline fn isEnabled(comptime self: Self, comptime fork: Fork) bool {
         return @intFromEnum(self.fork) >= @intFromEnum(fork);
     }
-};
 
-pub fn specByFork(fork: Fork) Spec {
-    return switch (fork) {
-        .Osaka => Osaka,
-        .Amsterdam => Amsterdam,
-    };
-}
+    pub fn fromFork(fork: Fork) Spec {
+        return switch (fork) {
+            .Osaka => Osaka,
+            .Amsterdam => Amsterdam,
+        };
+    }
+};
 
 // Osaka hardfork spec
 pub const Osaka = Spec{

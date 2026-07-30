@@ -8,7 +8,6 @@ pub const AccountTrie = @import("trie/account_trie.zig").AccountTrie;
 pub const trie = @import("trie/trie.zig");
 pub const Trie = trie.Trie;
 
-pub const chainspec = @import("processor/chainspec.zig");
 pub const processor = @import("processor/processor.zig");
 
 pub const types = @import("types.zig");
