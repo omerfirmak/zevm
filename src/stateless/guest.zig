@@ -62,7 +62,7 @@ pub fn verify(allocator: std.mem.Allocator, input: types.StatelessInput) !void {
     if (bn.len > 0 and payload.block_number < bn[0]) return error.InactiveForkConfig;
     if (ts.len > 0 and payload.timestamp < ts[0]) return error.InactiveForkConfig;
 
-    const spec = zevm.spec.Amsterdam;
+    const spec = comptime zevm.processor.Spec.fromFork(.Amsterdam, @import("build_options").chain_id);
     const headers = try allocator.alloc(zevm.types.BlockHeader, input.witness.headers.len());
     const header_hashes = try allocator.alloc([32]u8, input.witness.headers.len());
     for (input.witness.headers.constSlice(), 0..) |*header_bytes, i| {
@@ -87,7 +87,7 @@ pub fn verify(allocator: std.mem.Allocator, input: types.StatelessInput) !void {
     var state = try zevm.state.State.init(
         allocator,
         &committed,
-        stateCapacities(spec, block.bal.?, input.witness.codes, block.block.transactions, block.block.header.gas_used),
+        stateCapacities(spec.evmSpec(), block.bal.?, input.witness.codes, block.block.transactions, block.block.header.gas_used),
     );
 
     // processBlock doesn't touch the code of these contracts, assert they exist in the witness here
@@ -96,7 +96,7 @@ pub fn verify(allocator: std.mem.Allocator, input: types.StatelessInput) !void {
 
     try zevm.processor.processBlock(
         allocator,
-        zevm.chainspec.chainSpecByFork(spec.fork, @import("build_options").chain_id),
+        zevm.processor.Spec.fromFork(spec.fork, @import("build_options").chain_id),
         &block,
         parent,
         ancestors,

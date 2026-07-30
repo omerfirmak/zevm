@@ -1,7 +1,8 @@
 const std = @import("std");
+const EvmSpec = @import("../evm/spec.zig").Spec;
 const Fork = @import("../forks.zig").Fork;
 
-pub const ChainSpec = struct {
+pub const Spec = struct {
     fork: Fork,
     chain_id: u64,
 
@@ -16,18 +17,22 @@ pub const ChainSpec = struct {
     target_blobs_per_block: u64,
     max_blobs_per_block: u64,
     blob_base_fee_update_fraction: u64,
+
+    pub fn fromFork(fork: Fork, comptime chain_id: u64) Spec {
+        return override(switch (fork) {
+            .Osaka => Osaka,
+            .Amsterdam => Amsterdam,
+        }, .{
+            .chain_id = chain_id,
+        });
+    }
+
+    pub fn evmSpec(comptime self: Spec) EvmSpec {
+        return EvmSpec.fromFork(self.fork);
+    }
 };
 
-pub fn chainSpecByFork(fork: Fork, comptime chain_id: u64) ChainSpec {
-    return override(switch (fork) {
-        .Osaka => Osaka,
-        .Amsterdam => Amsterdam,
-    }, .{
-        .chain_id = chain_id,
-    });
-}
-
-pub const Osaka: ChainSpec = .{
+pub const Osaka: Spec = .{
     .fork = .Osaka,
     .chain_id = 1,
     .base_fee_elasticity_multiplier = 2,
