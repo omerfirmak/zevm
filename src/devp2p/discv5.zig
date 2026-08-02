@@ -2,6 +2,7 @@ const std = @import("std");
 const rlp = @import("rlp");
 const Enode = @import("enode.zig").Enode;
 const enr = @import("enr.zig");
+const ForkId = @import("../forks.zig").Id;
 const Secp256k1 = std.crypto.ecc.Secp256k1;
 const Ecdsa = std.crypto.sign.ecdsa.EcdsaSecp256k1Sha256;
 const HkdfSha256 = std.crypto.kdf.hkdf.HkdfSha256;
@@ -25,8 +26,8 @@ const StaticHeader = struct {
     authdata_size: [2]u8,
 };
 
-const max_sessions = 4096;
-const max_initiated = 1024;
+const max_sessions = 8192;
+const max_initiated = 4096;
 
 pub const Server = struct {
     const Self = @This();
@@ -363,7 +364,7 @@ const Sessions = struct {
         return false;
     }
 
-    pub fn fillRecords(self: *Self, io: std.Io, out: []enr.Record) []enr.Record {
+    pub fn fillRecords(self: *Self, io: std.Io, out: []enr.Record, eth: ?ForkId) []enr.Record {
         self.lock.lockUncancelable(io);
         defer self.lock.unlock(io);
         if (self.map.size == 0 or out.len == 0) return out[0..0];
@@ -376,6 +377,7 @@ const Sessions = struct {
         while (it.next()) |s| : (i += 1) {
             if (i < start) continue;
             if (s.record) |r| {
+                if (!std.meta.eql(r.eth, eth)) continue;
                 out[count] = r;
                 count += 1;
                 if (count == out.len) return out[0..count];
@@ -386,6 +388,8 @@ const Sessions = struct {
         while (it2.next()) |s| : (i += 1) {
             if (i >= start) break;
             if (s.record) |r| {
+                if (!std.meta.eql(r.eth, eth)) continue;
+
                 out[count] = r;
                 count += 1;
                 if (count == out.len) return out[0..count];

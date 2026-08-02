@@ -1,6 +1,7 @@
 const std = @import("std");
 const rlp = @import("rlp");
 const Enode = @import("enode.zig").Enode;
+const ForkId = @import("../forks.zig").Id;
 const Secp256k1 = std.crypto.ecc.Secp256k1;
 const Ecdsa = std.crypto.sign.ecdsa.EcdsaSecp256k1Sha256;
 const Keccak256 = std.crypto.hash.sha3.Keccak256;
@@ -14,16 +15,30 @@ pub const Record = struct {
     ip4: ?[4]u8 = null,
     udp: ?u16 = null,
     tcp: ?u16 = null,
+    eth: ?ForkId = null,
+
+    pub fn uncompressedPubkey(self: *const Record) ![64]u8 {
+        const unc = (try Secp256k1.fromSec1(&self.pubkey)).toUncompressedSec1();
+        return unc[1..65].*;
+    }
 
     pub fn pubkeyAndUdp(self: *const Record) !struct { [64]u8, ?std.Io.net.IpAddress } {
-        const unc = (try Secp256k1.fromSec1(&self.pubkey)).toUncompressedSec1();
         var addr: ?std.Io.net.IpAddress = null;
         if (self.ip4) |ip| {
             if (self.udp) |port| {
                 addr = std.Io.net.IpAddress{ .ip4 = .{ .bytes = ip, .port = port } };
             }
         }
-        return .{ unc[1..65].*, addr };
+        return .{ try self.uncompressedPubkey(), addr };
+    }
+
+    pub fn tcpAddr(self: *const Record) ?std.Io.net.IpAddress {
+        if (self.ip4) |ip| {
+            if (self.tcp) |port| {
+                return std.Io.net.IpAddress{ .ip4 = .{ .bytes = ip, .port = port } };
+            }
+        }
+        return null;
     }
 };
 
@@ -65,6 +80,10 @@ pub fn decode(bytes: []const u8) !Record {
         } else if (std.mem.eql(u8, k, "tcp")) {
             if (v.len > 2) return error.InvalidPort;
             rec.tcp = std.mem.readVarInt(u16, v, .big);
+        } else if (std.mem.eql(u8, k, "eth")) {
+            var id: ForkId = undefined;
+            _ = rlp.deserialize(ForkId, undefined, v, &id) catch continue;
+            rec.eth = id;
         }
     }
     if (!have_pubkey) return error.MissingPubkey;
