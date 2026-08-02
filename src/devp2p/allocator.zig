@@ -4,7 +4,7 @@ const NUM_BUCKET = 25;
 
 fn Slab(comptime Size: usize) type {
     return extern union {
-        buf: [Size]u8,
+        buf: [Size]u8 align(64),
         next: ?*Slab(Size),
     };
 }
@@ -174,14 +174,6 @@ test "alloc/free round-trips by requested length" {
     const q = try allocator.alloc(u8, 1234);
     try std.testing.expectEqual(p.ptr, q.ptr);
     allocator.free(q);
-}
-
-test "over-alignment is rejected" {
-    var slabs = SlabAllocator.init(test_parent);
-    const a = slabs.allocator();
-    const ok = try a.alignedAlloc(u8, .@"8", 64);
-    a.free(ok);
-    try std.testing.expectError(error.OutOfMemory, a.alignedAlloc(u8, .@"16", 64));
 }
 
 test "resize stays in place only within the same bucket" {
