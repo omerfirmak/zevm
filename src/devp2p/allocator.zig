@@ -1,6 +1,6 @@
 const std = @import("std");
 
-const NUM_BUCKET = 25;
+const NUM_BUCKET = 26;
 
 fn Slab(comptime Size: usize) type {
     return extern union {

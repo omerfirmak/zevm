@@ -57,8 +57,8 @@
             .hash = "clap-0.12.0-oBajB7foAQDqlSwaSG5g0yq7xGbQARUsBk5T64gAOqP5",
         },
         .rlp = .{
-            .url = "git+https://github.com/omerfirmak/zig-rlp.git#8e03632d54c47bca9ed6648799f6bd1d5b3484fd",
-            .hash = "rlp-0.1.0-7i0JtDeuAAAux12e1nFHssQ1Wq03bg45JGLTcgWNDV5v",
+            .url = "git+https://github.com/omerfirmak/zig-rlp.git#d8b8e3eb9a242105861c2952f84fcb7614888f6e",
+            .hash = "rlp-0.1.0-7i0JtLWyAABqqdFZs95Uieh0X_W_FwzkmceQ2Z3hCSrn",
         },
         .ssz = .{
             .url = "git+https://github.com/blockblaz/ssz.zig.git?ref=v0.0.11#d50b0319735fe18021ad543877d25ea940543b28",
@@ -67,6 +67,10 @@
         .zisk = .{
             .url = "git+https://github.com/0xPolygonHermez/zisk?ref=v1.0.0-alpha#4b9f758fabc4955cac20af837019ccc31b803a46",
             .hash = "N-V-__8AAChMVQLy5i6uaFOW7JF6Or48QvpUzMjHoJ14YG7c",
+        },
+        .snappy = .{
+            .url = "git+https://github.com/ChainSafe/snappy.zig#713942410426051da6107a955b29f3f152815622",
+            .hash = "snappy-0.1.0-n4AaquQ4AADQScvw9-i6SJvZTTagvxmGgGKnat4T_a4e",
         },
     },
     .paths = .{
