@@ -7,6 +7,7 @@ pub const StorageTrie = @import("trie/storage_trie.zig").StorageTrie;
 pub const AccountTrie = @import("trie/account_trie.zig").AccountTrie;
 pub const trie = @import("trie/trie.zig");
 pub const Trie = trie.Trie;
+pub const range_proof = @import("trie/range_proof.zig");
 
 pub const processor = @import("processor/processor.zig");
 
