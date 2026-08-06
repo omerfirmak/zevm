@@ -1,6 +1,5 @@
 const std = @import("std");
 const evm = @import("zevm");
-const stateless_trie = @import("trie.zig");
 const List = @import("ssz").utils.List;
 
 const MAX_BYTES_PER_WITNESS_NODE = 1 << 10;
@@ -13,8 +12,8 @@ pub const Errors = error{
 };
 
 pub const CommittedState = struct {
-    nodes: stateless_trie.HashMap,
-    codes: stateless_trie.HashMap,
+    nodes: evm.trie.NodesHashMap,
+    codes: evm.trie.NodesHashMap,
     state_trie: evm.AccountTrie,
     account_tries: std.AutoHashMapUnmanaged(u160, evm.StorageTrie),
 
@@ -25,7 +24,7 @@ pub const CommittedState = struct {
         bytecodes: List(List(u8, MAX_BYTES_PER_CODE), MAX_WITNESS_CODES),
         bal: *const evm.types.BlockAccessLists,
     ) !CommittedState {
-        var codes: stateless_trie.HashMap = .empty;
+        var codes: evm.trie.NodesHashMap = .empty;
         try codes.ensureTotalCapacityContext(allocator, @intCast(bytecodes.len()), .{});
 
         for (bytecodes.constSlice()) |*bytecode| {
@@ -33,7 +32,7 @@ pub const CommittedState = struct {
             codes.putAssumeCapacityContext(code_hash, bytecode.constSlice(), .{});
         }
 
-        var nodes: stateless_trie.HashMap = .empty;
+        var nodes: evm.trie.NodesHashMap = .empty;
         try nodes.ensureTotalCapacityContext(allocator, @intCast(state.len()), .{});
 
         for (state.constSlice()) |*node| {
@@ -42,7 +41,7 @@ pub const CommittedState = struct {
         }
 
         const state_trie = evm.AccountTrie.initFromTrie(
-            try stateless_trie.initFromWitness(allocator, parent_state_root, &nodes),
+            try evm.trie.loadFromNodesMap(allocator, parent_state_root, &nodes),
         );
 
         var account_tries: std.AutoHashMapUnmanaged(u160, evm.StorageTrie) = .empty;
@@ -51,7 +50,7 @@ pub const CommittedState = struct {
         for (bal.*) |entry| {
             const storage_hash = (try state_trie.get(keccakOfU160(entry.addr))).storage_hash;
             account_tries.putAssumeCapacity(entry.addr, evm.StorageTrie.initFromTrie(
-                try stateless_trie.initFromWitness(allocator, storage_hash, &nodes),
+                try evm.trie.loadFromNodesMap(allocator, storage_hash, &nodes),
             ));
         }
 
