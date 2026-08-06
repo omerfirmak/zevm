@@ -468,7 +468,7 @@ pub const Trie = struct {
     }
 };
 
-fn writeHexKey(key: []const u8, buf: *[64]u8) []u8 {
+pub fn writeHexKey(key: []const u8, buf: *[64]u8) []u8 {
     for (key, 0..) |b, i| {
         buf[i * 2] = b / 16;
         buf[i * 2 + 1] = b % 16;
