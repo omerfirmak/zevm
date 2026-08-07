@@ -104,12 +104,16 @@ pub const Capability = struct {
 };
 
 pub const RegisteredCapability = struct {
+    pub const QueuedPayload = struct { peer: *Peer, id: u64, payload: []u8 };
+
     cap: Capability,
     message_count: usize,
     required: bool,
 
     ctx: *anyopaque,
-    handler: *const fn (*anyopaque, std.Io, std.mem.Allocator, *Peer, u8, []const u8) void,
+    on_connected: *const fn (*anyopaque, *Peer) void,
+    on_disconnected: *const fn (*anyopaque, *Peer) void,
+    queue: *std.Io.Queue(QueuedPayload),
 
     fn lessThan(_: void, left: RegisteredCapability, right: RegisteredCapability) bool {
         return Capability.lessThan({}, left.cap, right.cap);
@@ -124,6 +128,8 @@ pub const Server = struct {
             Occupied,
             Ready,
             Active,
+            Exiting,
+            Closing,
         }) = .init(.Empty),
         peer: Peer,
     };
@@ -309,6 +315,17 @@ pub const Server = struct {
 
     fn drop_peer(self: *Self, index: usize) void {
         const slot = &self.slots[index];
+        if (slot.peer.ref_count.load(.acquire) != 0) {
+            slot.status.store(.Exiting, .release);
+            return;
+        }
+
+        if (slot.peer.status == .active) {
+            for (slot.peer.status.active.caps) |c| {
+                const handler = &self.proto_handlers[c];
+                handler.on_disconnected(handler.ctx, &slot.peer);
+            }
+        }
         slot.peer.deinit(self.allocator, self.io);
         slot.peer = undefined;
         slot.status.store(.Empty, .release);
@@ -316,7 +333,13 @@ pub const Server = struct {
 
     fn allocate_slot(self: *Self) !*PeerSlot {
         for (0..3) |_| {
-            for (self.slots) |*slot| {
+            for (self.slots, 0..) |*slot, index| {
+                if (slot.status.load(.acquire) == .Exiting and slot.peer.ref_count.load(.acquire) == 0) {
+                    if (slot.status.cmpxchgStrong(.Exiting, .Closing, .acq_rel, .acquire) == null) {
+                        self.drop_peer(index);
+                    }
+                }
+
                 if (slot.status.cmpxchgStrong(.Empty, .Occupied, .acq_rel, .acquire) == null)
                     return slot;
             }
@@ -394,6 +417,7 @@ pub const Peer = struct {
         pending_frame: ?usize = null, // header read, awaiting body of this size
     };
 
+    ref_count: std.atomic.Value(usize),
     server: *Server,
     stream: std.Io.net.Stream,
 
@@ -428,6 +452,7 @@ pub const Peer = struct {
             .read_iov = .{&.{}},
             .status = .{ .accepted = {} },
             .record = null,
+            .ref_count = .init(0),
         };
     }
 
@@ -440,6 +465,15 @@ pub const Peer = struct {
         }
         self.stream.close(io);
         allocator.free(self.rbuf);
+    }
+
+    pub fn ref(self: *Peer) *Peer {
+        _ = self.ref_count.fetchAdd(1, .seq_cst);
+        return self;
+    }
+
+    pub fn deref(self: *Peer) void {
+        _ = self.ref_count.fetchSub(1, .seq_cst);
     }
 
     fn write(self: *Peer, io: std.Io, buf: []const u8) !void {
@@ -525,6 +559,10 @@ pub const Peer = struct {
                             if (hello.version < p2p_version) return error.IncompatibleVersion;
                             const caps = try self.server.sharedCaps(allocator, hello.caps);
                             self.status = .{ .active = .{ .session = session.*, .caps = caps } };
+                            for (caps) |c| {
+                                const handler = &self.server.proto_handlers[c];
+                                handler.on_connected(handler.ctx, self);
+                            }
                         },
                         .disconnect => return error.Disconnected,
                         else => return error.UnexpectedBeforeHello,
@@ -536,6 +574,7 @@ pub const Peer = struct {
                     const n = try snappy.uncompressedLength(f.payload);
                     if (n > max_frame_size) return error.FrameTooLarge;
                     const payload = try allocator.alloc(u8, n);
+                    errdefer allocator.free(payload);
                     _ = try snappy.uncompress(f.payload, payload);
 
                     if (f.id < 0x10) {
@@ -545,9 +584,19 @@ pub const Peer = struct {
                             .pong => {},
                             else => {},
                         }
+                        allocator.free(payload);
                     } else {
                         const matched = self.server.matchCap(state.caps, f.id) orelse return error.UnknownMessage;
-                        matched.reg.handler(matched.reg.ctx, io, allocator, self, @intCast(f.id - matched.offset), payload);
+                        const self_ref = self.ref();
+                        const queued = matched.reg.queue.put(io, &.{.{
+                            .peer = self_ref,
+                            .id = f.id - matched.offset,
+                            .payload = payload,
+                        }}, 0) catch 0;
+                        if (queued == 0) {
+                            self_ref.deref();
+                            allocator.free(payload);
+                        }
                     }
                 },
             }
