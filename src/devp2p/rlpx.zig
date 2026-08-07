@@ -224,7 +224,7 @@ pub const Server = struct {
     }
 
     pub fn run(self: *Self) !void {
-        var peer_listener = try self.io.concurrent(Self.listen_peers, .{self});
+        var peer_listener = try self.io.concurrent(Self.listenPeers, .{self});
         defer peer_listener.cancel(self.io) catch {};
 
         while (true) {
@@ -235,21 +235,21 @@ pub const Server = struct {
                 else => continue,
             };
 
-            self.accept_peer(stream) catch {
+            self.acceptPeer(stream) catch {
                 stream.close(self.io);
                 continue;
             };
         }
     }
 
-    fn accept_peer(self: *Self, stream: std.Io.net.Stream) !void {
-        const slot = try self.allocate_slot();
+    fn acceptPeer(self: *Self, stream: std.Io.net.Stream) !void {
+        const slot = try self.allocateSlot();
         errdefer slot.status.store(.Empty, .release);
         slot.peer = try .init(self.allocator, stream, self);
         slot.status.store(.Ready, .release);
     }
 
-    fn listen_peers(self: *Self) !void {
+    fn listenPeers(self: *Self) !void {
         const storage = try self.allocator.alloc(std.Io.Operation.Storage, self.slots.len);
         defer self.allocator.free(storage);
 
@@ -259,7 +259,7 @@ pub const Server = struct {
             for (self.slots, 0..) |*slot, index| {
                 const slot_status = slot.status.cmpxchgStrong(.Ready, .Active, .acq_rel, .acquire);
                 if (slot_status == null) {
-                    slot.peer.read_iov = .{slot.peer.read_buffer()};
+                    slot.peer.read_iov = .{slot.peer.readBuffer()};
                     batch.addAt(@intCast(index), .{
                         .file_read_streaming = .{ //todo: workaround for https://codeberg.org/ziglang/zig/issues/36190
                             .file = .{
@@ -284,7 +284,7 @@ pub const Server = struct {
             while (batch.next()) |completed| {
                 const size = completed.result.file_read_streaming catch |e| {
                     if (e == std.Io.Cancelable.Canceled) break;
-                    self.drop_peer(completed.index); // eof or read error
+                    self.dropPeer(completed.index); // eof or read error
                     continue;
                 };
 
@@ -293,13 +293,13 @@ pub const Server = struct {
                 if (size != 0) {
                     peer.handle(self.io, self.allocator, size) catch |e| {
                         if (e != error.NotEnoughData) {
-                            self.drop_peer(completed.index);
+                            self.dropPeer(completed.index);
                             continue;
                         }
                     };
                 }
 
-                peer.read_iov = .{peer.read_buffer()};
+                peer.read_iov = .{peer.readBuffer()};
                 batch.addAt(@intCast(completed.index), .{
                     .file_read_streaming = .{
                         .file = .{
@@ -313,7 +313,7 @@ pub const Server = struct {
         }
     }
 
-    fn drop_peer(self: *Self, index: usize) void {
+    fn dropPeer(self: *Self, index: usize) void {
         const slot = &self.slots[index];
         if (slot.peer.ref_count.load(.acquire) != 0) {
             slot.status.store(.Exiting, .release);
@@ -331,12 +331,12 @@ pub const Server = struct {
         slot.status.store(.Empty, .release);
     }
 
-    fn allocate_slot(self: *Self) !*PeerSlot {
+    fn allocateSlot(self: *Self) !*PeerSlot {
         for (0..3) |_| {
             for (self.slots, 0..) |*slot, index| {
                 if (slot.status.load(.acquire) == .Exiting and slot.peer.ref_count.load(.acquire) == 0) {
                     if (slot.status.cmpxchgStrong(.Exiting, .Closing, .acq_rel, .acquire) == null) {
-                        self.drop_peer(index);
+                        self.dropPeer(index);
                     }
                 }
 
@@ -351,7 +351,7 @@ pub const Server = struct {
         const remote_addr = record.tcpAddr();
         if (remote_addr == null) return error.NoTcpEndpoint;
 
-        const slot = try self.allocate_slot();
+        const slot = try self.allocateSlot();
         errdefer slot.status.store(.Empty, .release);
 
         var init_nonce: [32]u8 = undefined;
@@ -506,7 +506,7 @@ pub const Peer = struct {
         return buf;
     }
 
-    fn read_buffer(self: *Peer) []u8 {
+    fn readBuffer(self: *Peer) []u8 {
         return self.rbuf[self.rbuf_tail..];
     }
 
