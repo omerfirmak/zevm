@@ -259,6 +259,7 @@ pub const Server = struct {
             for (self.slots, 0..) |*slot, index| {
                 const slot_status = slot.status.cmpxchgStrong(.Ready, .Active, .acq_rel, .acquire);
                 if (slot_status == null) {
+                    _ = slot.peer.ref();
                     slot.peer.read_iov = .{slot.peer.readBuffer()};
                     batch.addAt(@intCast(index), .{
                         .file_read_streaming = .{ //todo: workaround for https://codeberg.org/ziglang/zig/issues/36190
@@ -282,18 +283,18 @@ pub const Server = struct {
             };
 
             while (batch.next()) |completed| {
+                const peer = &self.slots[completed.index].peer;
+
                 const size = completed.result.file_read_streaming catch |e| {
                     if (e == std.Io.Cancelable.Canceled) break;
-                    self.dropPeer(completed.index); // eof or read error
+                    self.dropPeer(peer); // eof or read error
                     continue;
                 };
-
-                const peer = &self.slots[completed.index].peer;
 
                 if (size != 0) {
                     peer.handle(self.io, self.allocator, size) catch |e| {
                         if (e != error.NotEnoughData) {
-                            self.dropPeer(completed.index);
+                            self.dropPeer(peer);
                             continue;
                         }
                     };
@@ -313,32 +314,39 @@ pub const Server = struct {
         }
     }
 
-    fn dropPeer(self: *Self, index: usize) void {
-        const slot = &self.slots[index];
-        if (slot.peer.ref_count.load(.acquire) != 0) {
-            slot.status.store(.Exiting, .release);
-            return;
-        }
-
-        if (slot.peer.status == .active) {
-            for (slot.peer.status.active.caps) |c| {
-                const handler = &self.proto_handlers[c];
-                handler.on_disconnected(handler.ctx, &slot.peer);
+    pub fn requestDrop(self: *Self, peer: *Peer) void {
+        const slot: *PeerSlot = @alignCast(@fieldParentPtr("peer", peer));
+        if (slot.status.cmpxchgStrong(.Active, .Exiting, .acq_rel, .acquire) == null) {
+            peer.stream.shutdown(self.io, .recv) catch {};
+            if (slot.peer.status == .active) {
+                for (slot.peer.status.active.caps) |c| {
+                    const handler = &self.proto_handlers[c];
+                    handler.on_disconnected(handler.ctx, &slot.peer);
+                }
             }
         }
-        slot.peer.deinit(self.allocator, self.io);
-        slot.peer = undefined;
-        slot.status.store(.Empty, .release);
+    }
+
+    fn dropPeer(self: *Self, peer: *Peer) void {
+        self.requestDrop(peer);
+        const slot: *PeerSlot = @alignCast(@fieldParentPtr("peer", peer));
+        peer.deref();
+        self.clearSlot(slot);
+    }
+
+    fn clearSlot(self: *Self, slot: *PeerSlot) void {
+        if (slot.status.load(.acquire) != .Exiting) return;
+        if (slot.peer.ref_count.load(.acquire) == 0 and slot.status.cmpxchgStrong(.Exiting, .Closing, .acq_rel, .acquire) == null) {
+            slot.peer.deinit(self.allocator, self.io);
+            slot.peer = undefined;
+            slot.status.store(.Empty, .release);
+        }
     }
 
     fn allocateSlot(self: *Self) !*PeerSlot {
         for (0..3) |_| {
-            for (self.slots, 0..) |*slot, index| {
-                if (slot.status.load(.acquire) == .Exiting and slot.peer.ref_count.load(.acquire) == 0) {
-                    if (slot.status.cmpxchgStrong(.Exiting, .Closing, .acq_rel, .acquire) == null) {
-                        self.dropPeer(index);
-                    }
-                }
+            for (self.slots) |*slot| {
+                self.clearSlot(slot);
 
                 if (slot.status.cmpxchgStrong(.Empty, .Occupied, .acq_rel, .acquire) == null)
                     return slot;
