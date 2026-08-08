@@ -138,8 +138,6 @@ pub const Server = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
 
-    mutex: std.Io.Mutex = .init,
-
     keypair: Ecdsa.KeyPair,
     hello: HelloMessage,
     secp: secp256k1.Secp256k1,
@@ -175,8 +173,6 @@ pub const Server = struct {
     }
 
     pub fn deinit(self: *Self) void {
-        self.mutex.lockUncancelable(self.io);
-        defer self.mutex.unlock(self.io);
         self.allocator.free(self.slots);
         self.tcp_listener.deinit(self.io);
     }
@@ -434,6 +430,8 @@ pub const Peer = struct {
     rbuf_head: usize,
     rbuf_tail: usize,
 
+    wlock: std.Io.Mutex,
+
     status: union(enum) {
         accepted: void,
         auth_sent: HandshakeState,
@@ -461,6 +459,7 @@ pub const Peer = struct {
             .status = .{ .accepted = {} },
             .record = null,
             .ref_count = .init(0),
+            .wlock = .init,
         };
     }
 
@@ -588,6 +587,7 @@ pub const Peer = struct {
                     if (f.id < 0x10) {
                         switch (try Message.decode(allocator, f.id, payload)) {
                             .disconnect => return error.Disconnected,
+                            // todo: this might block on a big write from another thread
                             .ping => try self.sendMsg(io, allocator, &state.session.secrets, @intFromEnum(MessageId.pong), struct {}{}),
                             .pong => {},
                             else => {},
@@ -670,6 +670,9 @@ pub const Peer = struct {
     }
 
     fn writeFrame(self: *Peer, io: std.Io, allocator: std.mem.Allocator, sec: *Secrets, payload: []const u8) !void {
+        try self.wlock.lock(io);
+        defer self.wlock.unlock(io);
+
         const data_len = payload.len;
         const padded = std.mem.alignForward(usize, data_len, 16);
 
