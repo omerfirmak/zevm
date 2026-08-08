@@ -3,6 +3,7 @@ const enr = @import("enr.zig");
 const secp256k1 = @import("zig-eth-secp256k1");
 const rlp = @import("rlp");
 const snappy = @import("snappy").raw;
+const FreeList = @import("free_list.zig").FreeList;
 const Ecdsa = std.crypto.sign.ecdsa.EcdsaSecp256k1Sha256;
 const Sha256 = std.crypto.hash.sha2.Sha256;
 const HmacSha256 = std.crypto.auth.hmac.sha2.HmacSha256;
@@ -104,16 +105,16 @@ pub const Capability = struct {
 };
 
 pub const RegisteredCapability = struct {
-    pub const QueuedPayload = struct { peer: *Peer, id: u64, payload: []u8 };
+    pub const QueuedRead = struct { peer: Server.PeerId, offset: u64, id: u64, payload: []u8 };
 
     cap: Capability,
     message_count: usize,
     required: bool,
 
     ctx: *anyopaque,
-    on_connected: *const fn (*anyopaque, *Peer) void,
-    on_disconnected: *const fn (*anyopaque, *Peer) void,
-    queue: *std.Io.Queue(QueuedPayload),
+    on_connected: *const fn (*anyopaque, Server.PeerId) void,
+    on_disconnected: *const fn (*anyopaque, Server.PeerId) void,
+    queue: *std.Io.Queue(QueuedRead),
 
     fn lessThan(_: void, left: RegisteredCapability, right: RegisteredCapability) bool {
         return Capability.lessThan({}, left.cap, right.cap);
@@ -129,11 +130,30 @@ pub const Server = struct {
             Ready,
             Active,
             Exiting,
-            Closing,
         }) = .init(.Empty),
+        epoch: usize,
         peer: Peer,
     };
+    pub const PeerId = struct {
+        peer_index: usize,
+        peer_epoch: usize,
+    };
+    const QueuedWrite = struct {
+        peer_id: PeerId,
+        payload: []const u8,
+        payload_len: usize,
+    };
+    const InFlightWrite = struct {
+        peer: usize,
+        payload: []const u8,
+        payload_len: usize,
+
+        write_iov: [1][]const u8,
+        completed_len: usize = 0,
+    };
+
     const max_peers = 50;
+    const max_inflight_writes = 1024;
 
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -146,13 +166,26 @@ pub const Server = struct {
     slots: []PeerSlot,
     proto_handlers: []const RegisteredCapability,
 
+    write_queue_buf: []QueuedWrite,
+    write_queue: std.Io.Queue(QueuedWrite),
+    free_writes: FreeList(InFlightWrite),
+    batch_op_storage: []std.Io.Operation.Storage,
+    batch: std.Io.Batch,
+
     pub fn init(allocator: std.mem.Allocator, io: std.Io, identity: Ecdsa.KeyPair, port: u16, proto_handlers: []RegisteredCapability) !Self {
         const addr: std.Io.net.IpAddress = .{ .ip4 = .unspecified(port) };
         const slots = try allocator.alloc(PeerSlot, max_peers);
-        for (slots) |*s| s.status.store(.Empty, .release);
+        for (slots) |*s| {
+            s.epoch = 0;
+            s.status.store(.Empty, .release);
+        }
         std.mem.sort(RegisteredCapability, proto_handlers, {}, RegisteredCapability.lessThan);
         var caps = try allocator.alloc(Capability, proto_handlers.len);
         for (0..caps.len) |index| caps[index] = proto_handlers[index].cap;
+        const write_queue_buf = try allocator.alloc(QueuedWrite, max_inflight_writes);
+        const free_writes = try FreeList(InFlightWrite).init(allocator, max_inflight_writes);
+        const batch_storage = try allocator.alloc(std.Io.Operation.Storage, slots.len + free_writes.storage.len);
+        const batch = std.Io.Batch.init(batch_storage);
 
         return .{
             .allocator = allocator,
@@ -169,6 +202,11 @@ pub const Server = struct {
                 .listen_port = port,
                 .node_id = identity.public_key.toUncompressedSec1()[1..65].*,
             },
+            .write_queue_buf = write_queue_buf,
+            .write_queue = .init(write_queue_buf),
+            .free_writes = free_writes,
+            .batch_op_storage = batch_storage,
+            .batch = batch,
         };
     }
 
@@ -238,6 +276,14 @@ pub const Server = struct {
         }
     }
 
+    fn peerId(self: *Self, peer: *Peer) PeerId {
+        const slot: *PeerSlot = @fieldParentPtr("peer", peer);
+        return .{
+            .peer_index = slot - self.slots.ptr,
+            .peer_epoch = slot.epoch,
+        };
+    }
+
     fn acceptPeer(self: *Self, stream: std.Io.net.Stream) !void {
         const slot = try self.allocateSlot();
         errdefer slot.status.store(.Empty, .release);
@@ -246,104 +292,171 @@ pub const Server = struct {
     }
 
     fn listenPeers(self: *Self) !void {
-        const storage = try self.allocator.alloc(std.Io.Operation.Storage, self.slots.len);
-        defer self.allocator.free(storage);
-
-        var batch = std.Io.Batch.init(storage);
-
         while (true) {
-            for (self.slots, 0..) |*slot, index| {
-                const slot_status = slot.status.cmpxchgStrong(.Ready, .Active, .acq_rel, .acquire);
-                if (slot_status == null) {
-                    _ = slot.peer.ref();
-                    slot.peer.read_iov = .{slot.peer.readBuffer()};
-                    batch.addAt(@intCast(index), .{
-                        .file_read_streaming = .{ //todo: workaround for https://codeberg.org/ziglang/zig/issues/36190
-                            .file = .{
-                                .handle = slot.peer.stream.socket.handle,
-                                .flags = .{ .nonblocking = false },
-                            },
-                            .data = &slot.peer.read_iov,
-                        },
-                    });
-                }
-            }
+            self.checkPeerStatus();
+            try self.drainWriteQueue();
 
             self.io.checkCancel() catch break;
-            batch.awaitConcurrent(self.io, .{ .duration = .{
+            self.batch.awaitConcurrent(self.io, .{ .duration = .{
                 .clock = .real,
-                .raw = .fromSeconds(1),
+                .raw = .fromMilliseconds(250),
             } }) catch |e| switch (e) {
                 std.Io.Cancelable.Canceled => break,
                 else => continue,
             };
 
-            while (batch.next()) |completed| {
-                const peer = &self.slots[completed.index].peer;
+            while (self.batch.next()) |completed| {
+                try (if (completed.index < self.slots.len)
+                    self.onReadCompletion(completed)
+                else
+                    self.onWriteCompletion(completed));
+            }
+        }
+    }
 
-                const size = completed.result.file_read_streaming catch |e| {
-                    if (e == std.Io.Cancelable.Canceled) break;
-                    self.dropPeer(peer); // eof or read error
-                    continue;
-                };
-
-                if (size != 0) {
-                    peer.handle(self.io, self.allocator, size) catch |e| {
-                        if (e != error.NotEnoughData) {
-                            self.dropPeer(peer);
-                            continue;
-                        }
+    fn checkPeerStatus(self: *Self) void {
+        for (self.slots, 0..) |*slot, index| {
+            const slot_status = slot.status.cmpxchgStrong(.Ready, .Active, .acq_rel, .acquire);
+            if (slot_status) |ss| {
+                if (ss == .Exiting and slot.peer.inflight_ops == 0)
+                    self.clearSlot(slot);
+            } else {
+                if (slot.peer.status == .dialed) {
+                    self.sendHandshake(&slot.peer, index) catch {
+                        self.dropPeer(index);
+                        continue;
                     };
                 }
 
-                peer.read_iov = .{peer.readBuffer()};
-                batch.addAt(@intCast(completed.index), .{
-                    .file_read_streaming = .{
+                slot.peer.read_iov = .{slot.peer.readBuffer()};
+                slot.peer.inflight_ops += 1;
+                self.batch.addAt(@intCast(index), .{
+                    .file_read_streaming = .{ //todo: workaround for https://codeberg.org/ziglang/zig/issues/36190
                         .file = .{
-                            .handle = peer.stream.socket.handle,
+                            .handle = slot.peer.stream.socket.handle,
                             .flags = .{ .nonblocking = false },
                         },
-                        .data = &peer.read_iov,
+                        .data = &slot.peer.read_iov,
                     },
                 });
             }
         }
     }
 
-    pub fn requestDrop(self: *Self, peer: *Peer) void {
-        const slot: *PeerSlot = @alignCast(@fieldParentPtr("peer", peer));
-        if (slot.status.cmpxchgStrong(.Active, .Exiting, .acq_rel, .acquire) == null) {
-            peer.stream.shutdown(self.io, .recv) catch {};
-            if (slot.peer.status == .active) {
-                for (slot.peer.status.active.caps) |c| {
-                    const handler = &self.proto_handlers[c];
-                    handler.on_disconnected(handler.ctx, &slot.peer);
+    fn onReadCompletion(self: *Self, completed: std.Io.Batch.Completion) !void {
+        const slot = &self.slots[completed.index];
+        const peer = &slot.peer;
+
+        const size = completed.result.file_read_streaming catch |e| {
+            if (e == std.Io.Cancelable.Canceled) return e;
+            slot.peer.inflight_ops -= 1;
+            self.dropPeer(completed.index);
+            return;
+        };
+
+        if (size != 0) {
+            peer.handle(self.io, self.allocator, size) catch |e| {
+                if (e == std.Io.Cancelable.Canceled) return e;
+                if (e != error.NotEnoughData) {
+                    slot.peer.inflight_ops -= 1;
+                    self.dropPeer(completed.index);
+                    return;
                 }
-            }
+            };
+        }
+
+        peer.read_iov = .{peer.readBuffer()};
+        self.batch.addAt(@intCast(completed.index), .{
+            .file_read_streaming = .{
+                .file = .{
+                    .handle = peer.stream.socket.handle,
+                    .flags = .{ .nonblocking = false },
+                },
+                .data = &peer.read_iov,
+            },
+        });
+    }
+
+    fn onWriteCompletion(self: *Self, completed: std.Io.Batch.Completion) !void {
+        const write_index = completed.index - self.slots.len;
+        const write_slot = self.free_writes.getAt(write_index);
+        const peer_slot = &self.slots[write_slot.peer];
+
+        const written = completed.result.file_write_streaming catch |e| {
+            self.allocator.free(write_slot.payload);
+            self.free_writes.push(write_slot);
+            peer_slot.peer.inflight_ops -= 1;
+            if (e == std.Io.Cancelable.Canceled) return e;
+            self.dropPeer(write_slot.peer);
+            return;
+        };
+        const total_written = written + write_slot.completed_len;
+
+        if (total_written == write_slot.payload_len) {
+            self.free_writes.push(write_slot);
+            self.allocator.free(write_slot.payload);
+            peer_slot.peer.inflight_ops -= 1;
+            if (peer_slot.peer.inflight_ops == 0 and peer_slot.status.load(.acquire) == .Exiting)
+                self.clearSlot(peer_slot);
+        } else {
+            write_slot.completed_len = total_written;
+            write_slot.write_iov = .{write_slot.payload[total_written..write_slot.payload_len]};
+            self.batch.addAt(@intCast(completed.index), .{ .file_write_streaming = .{ .file = .{
+                .handle = peer_slot.peer.stream.socket.handle,
+                .flags = .{ .nonblocking = false },
+            }, .data = &write_slot.write_iov } });
         }
     }
 
-    fn dropPeer(self: *Self, peer: *Peer) void {
-        self.requestDrop(peer);
-        const slot: *PeerSlot = @alignCast(@fieldParentPtr("peer", peer));
-        peer.deref();
-        self.clearSlot(slot);
+    fn scheduleWrite(self: *Self, peer: usize, payload: []const u8, len: usize) !void {
+        const write_slot = self.free_writes.pop() orelse return error.TooManyInflightWrites;
+        write_slot.* = .{
+            .peer = peer,
+            .payload = payload,
+            .payload_len = len,
+
+            .write_iov = .{payload[0..len]},
+        };
+
+        const write_index = self.slots.len + self.free_writes.indexOf(write_slot);
+        const slot = &self.slots[peer];
+
+        slot.peer.inflight_ops += 1;
+        self.batch.addAt(@intCast(write_index), .{ .file_write_streaming = .{ .file = .{
+            .handle = slot.peer.stream.socket.handle,
+            .flags = .{ .nonblocking = false },
+        }, .data = &write_slot.write_iov } });
+    }
+
+    fn markPeerExiting(self: *Self, index: usize) void {
+        const slot = &self.slots[index];
+        if (slot.status.cmpxchgStrong(.Active, .Exiting, .acq_rel, .acquire) == null)
+            slot.peer.stream.shutdown(self.io, .recv) catch {};
+    }
+
+    fn dropPeer(self: *Self, index: usize) void {
+        self.markPeerExiting(index);
+        const slot = &self.slots[index];
+        if (slot.peer.inflight_ops == 0 and slot.status.load(.acquire) == .Exiting)
+            self.clearSlot(slot);
     }
 
     fn clearSlot(self: *Self, slot: *PeerSlot) void {
-        if (slot.status.load(.acquire) != .Exiting) return;
-        if (slot.peer.ref_count.load(.acquire) == 0 and slot.status.cmpxchgStrong(.Exiting, .Closing, .acq_rel, .acquire) == null) {
-            slot.peer.deinit(self.allocator, self.io);
-            slot.peer = undefined;
-            slot.status.store(.Empty, .release);
+        if (slot.peer.status == .active) {
+            for (slot.peer.status.active.caps) |c| {
+                const handler = &self.proto_handlers[c];
+                handler.on_disconnected(handler.ctx, self.peerId(&slot.peer));
+            }
         }
+        slot.peer.deinit(self.allocator, self.io);
+        slot.peer = undefined;
+        slot.epoch += 1;
+        slot.status.store(.Empty, .release);
     }
 
     fn allocateSlot(self: *Self) !*PeerSlot {
         for (0..3) |_| {
             for (self.slots) |*slot| {
-                self.clearSlot(slot);
-
                 if (slot.status.cmpxchgStrong(.Empty, .Occupied, .acq_rel, .acquire) == null)
                     return slot;
             }
@@ -358,6 +471,19 @@ pub const Server = struct {
         const slot = try self.allocateSlot();
         errdefer slot.status.store(.Empty, .release);
 
+        const stream = try remote_addr.?.connect(self.io, .{
+            .mode = .stream,
+        }); //todo: add timeout when implemented by Io.Threaded
+        errdefer stream.close(self.io);
+
+        slot.peer = try .init(self.allocator, stream, self);
+        slot.peer.record = record;
+        slot.peer.status = .{ .dialed = {} };
+        slot.status.store(.Ready, .release); // todo: notify main worker
+    }
+
+    fn sendHandshake(self: *Self, peer: *Peer, index: usize) !void {
+        const record = peer.record.?;
         var init_nonce: [32]u8 = undefined;
         self.io.random(&init_nonce);
 
@@ -389,28 +515,52 @@ pub const Server = struct {
         std.mem.writeInt(u16, encrypted_buf[0..2], @intCast(total_len - 2), .big);
 
         _ = try eciesEncrypt(self.io, encrypted_buf[2..], remote_pubkey, rlp_buf.items, encrypted_buf[0..2]);
-
-        const stream = try remote_addr.?.connect(self.io, .{
-            .mode = .stream,
-        }); //todo: add timeout when implemented by Io.Threaded
-        {
-            errdefer stream.close(self.io);
-            slot.peer = try .init(self.allocator, stream, self);
-        }
-        errdefer slot.peer.deinit(self.allocator, self.io);
-        slot.peer.record = record;
-        slot.peer.status = .{ .auth_sent = .{
+        const handshake: Peer.HandshakeState = .{
             .msg = encrypted_buf,
             .init_nonce = init_nonce,
             .eph_key = eph,
-        } };
-        try slot.peer.write(self.io, encrypted_buf);
+        };
+        const msg = try self.allocator.dupe(u8, handshake.msg);
+        errdefer self.allocator.free(msg);
+        try self.scheduleWrite(index, msg, msg.len);
+        peer.status = .{ .auth_sent = handshake };
+    }
 
-        slot.status.store(.Ready, .release);
+    pub fn queueMsg(self: *Self, peer_id: PeerId, id: u64, msg: anytype) !void {
+        const encoded, const len = try encodeMsg(self.allocator, id, msg, true);
+        const wrote = try self.write_queue.put(self.io, &[_]QueuedWrite{.{
+            .peer_id = peer_id,
+            .payload = encoded,
+            .payload_len = len,
+        }}, 0); // todo: notify main worker
+        if (wrote == 0) {
+            self.allocator.free(encoded);
+            return error.WriteQueueFull;
+        }
+    }
+
+    fn drainWriteQueue(self: *Self) !void {
+        var queued_write: QueuedWrite = undefined;
+        while (true) {
+            if (self.free_writes.empty()) break;
+            const read = try self.write_queue.get(self.io, (&queued_write)[0..1], 0);
+            if (read == 0) break;
+            defer self.allocator.free(queued_write.payload);
+
+            const slot = &self.slots[queued_write.peer_id.peer_index];
+            if (slot.epoch == queued_write.peer_id.peer_epoch) {
+                const sec = slot.peer.sessionSecrets() catch {
+                    continue;
+                };
+
+                const encrypted = encryptFrame(self.allocator, sec, queued_write.payload[0..queued_write.payload_len]) catch continue;
+                self.scheduleWrite(queued_write.peer_id.peer_index, encrypted, encrypted.len) catch unreachable;
+            }
+        }
     }
 };
 
-pub const Peer = struct {
+const Peer = struct {
     const HandshakeState = struct {
         msg: []const u8,
         init_nonce: [32]u8,
@@ -421,7 +571,6 @@ pub const Peer = struct {
         pending_frame: ?usize = null, // header read, awaiting body of this size
     };
 
-    ref_count: std.atomic.Value(usize),
     server: *Server,
     stream: std.Io.net.Stream,
 
@@ -429,11 +578,11 @@ pub const Peer = struct {
     rbuf: []u8,
     rbuf_head: usize,
     rbuf_tail: usize,
-
-    wlock: std.Io.Mutex,
+    inflight_ops: usize,
 
     status: union(enum) {
         accepted: void,
+        dialed: void,
         auth_sent: HandshakeState,
         auth_resp_length_read: struct {
             len: u16,
@@ -458,8 +607,7 @@ pub const Peer = struct {
             .read_iov = .{&.{}},
             .status = .{ .accepted = {} },
             .record = null,
-            .ref_count = .init(0),
-            .wlock = .init,
+            .inflight_ops = 0,
         };
     }
 
@@ -472,22 +620,6 @@ pub const Peer = struct {
         }
         self.stream.close(io);
         allocator.free(self.rbuf);
-    }
-
-    pub fn ref(self: *Peer) *Peer {
-        _ = self.ref_count.fetchAdd(1, .seq_cst);
-        return self;
-    }
-
-    pub fn deref(self: *Peer) void {
-        _ = self.ref_count.fetchSub(1, .seq_cst);
-    }
-
-    fn write(self: *Peer, io: std.Io, buf: []const u8) !void {
-        var stream_writer = self.stream.writer(io, &.{});
-        var writer = &stream_writer.interface;
-        try writer.writeAll(buf);
-        try writer.flush();
     }
 
     fn read(self: *Peer, n: usize) ![]u8 {
@@ -523,6 +655,7 @@ pub const Peer = struct {
         while (true) {
             switch (self.status) {
                 .accepted => return error.NotImplemented, //todo: inbound handshake (read auth, send ack)
+                .dialed => return error.WrongHandshakeOrder,
                 .auth_sent => |state| {
                     const prefix = try self.read(2);
                     const len = std.mem.readInt(u16, prefix[0..2], .big);
@@ -554,7 +687,7 @@ pub const Peer = struct {
                     );
 
                     var session: Session = .{ .secrets = sec };
-                    try self.sendMsg(io, allocator, &session.secrets, @intFromEnum(MessageId.hello), self.server.hello);
+                    try self.sendMsg(allocator, &session.secrets, @intFromEnum(MessageId.hello), self.server.hello);
                     allocator.free(state.handshake.msg);
                     self.status = .{ .hello = session };
                 },
@@ -568,7 +701,7 @@ pub const Peer = struct {
                             self.status = .{ .active = .{ .session = session.*, .caps = caps } };
                             for (caps) |c| {
                                 const handler = &self.server.proto_handlers[c];
-                                handler.on_connected(handler.ctx, self);
+                                handler.on_connected(handler.ctx, self.server.peerId(self));
                             }
                         },
                         .disconnect => return error.Disconnected,
@@ -588,21 +721,20 @@ pub const Peer = struct {
                         switch (try Message.decode(allocator, f.id, payload)) {
                             .disconnect => return error.Disconnected,
                             // todo: this might block on a big write from another thread
-                            .ping => try self.sendMsg(io, allocator, &state.session.secrets, @intFromEnum(MessageId.pong), struct {}{}),
+                            .ping => try self.sendMsg(allocator, &state.session.secrets, @intFromEnum(MessageId.pong), struct {}{}),
                             .pong => {},
                             else => {},
                         }
                         allocator.free(payload);
                     } else {
                         const matched = self.server.matchCap(state.caps, f.id) orelse return error.UnknownMessage;
-                        const self_ref = self.ref();
                         const queued = matched.reg.queue.put(io, &.{.{
-                            .peer = self_ref,
+                            .peer = self.server.peerId(self),
+                            .offset = matched.offset,
                             .id = f.id - matched.offset,
                             .payload = payload,
                         }}, 0) catch 0;
                         if (queued == 0) {
-                            self_ref.deref();
                             allocator.free(payload);
                         }
                     }
@@ -638,7 +770,7 @@ pub const Peer = struct {
         return .{ .id = id, .payload = message[off..] };
     }
 
-    pub fn sessionSecrets(self: *Peer) !*Secrets {
+    fn sessionSecrets(self: *Peer) !*Secrets {
         switch (self.status) {
             .hello => |*session| return &session.secrets,
             .active => |*state| return &state.session.secrets,
@@ -646,78 +778,14 @@ pub const Peer = struct {
         }
     }
 
-    pub fn sendMsg(self: *Peer, io: std.Io, allocator: std.mem.Allocator, sec: *Secrets, id: u64, msg: anytype) !void {
-        var payload: std.array_list.Managed(u8) = .init(allocator);
-        defer payload.deinit();
-        try payload.ensureTotalCapacity(max_frame_size);
-        try rlp.serialize(u64, allocator, id, &payload);
+    pub fn sendMsg(self: *Peer, allocator: std.mem.Allocator, sec: *Secrets, id: u64, msg: anytype) !void {
+        const encoded, const len = try encodeMsg(allocator, id, msg, self.status == .active);
+        defer allocator.free(encoded);
+        const encrypted = try encryptFrame(allocator, sec, encoded[0..len]);
+        errdefer allocator.free(encrypted);
 
-        if (self.status == .active) {
-            var body: std.array_list.Managed(u8) = .init(allocator);
-            defer body.deinit();
-            try body.ensureTotalCapacity(max_frame_size);
-            try rlp.serialize(@TypeOf(msg), allocator, msg, &body);
-
-            const id_len = payload.items.len;
-            try payload.resize(id_len + snappy.maxCompressedLength(body.items.len));
-            const n = try snappy.compress(body.items, payload.items[id_len..]);
-            payload.shrinkRetainingCapacity(id_len + n);
-        } else {
-            try rlp.serialize(@TypeOf(msg), allocator, msg, &payload);
-        }
-
-        try self.writeFrame(io, allocator, sec, payload.items);
-    }
-
-    fn writeFrame(self: *Peer, io: std.Io, allocator: std.mem.Allocator, sec: *Secrets, payload: []const u8) !void {
-        try self.wlock.lock(io);
-        defer self.wlock.unlock(io);
-
-        const data_len = payload.len;
-        const padded = std.mem.alignForward(usize, data_len, 16);
-
-        var buf = try allocator.alloc(u8, 32 + padded + 16); //todo: get rid of this allocation and copy below
-        defer allocator.free(buf);
-
-        var header: [16]u8 = @splat(0);
-        std.mem.writeInt(u24, header[0..3], @intCast(data_len), .big);
-        header[3] = 0xc2;
-        header[4] = 0x80;
-        header[5] = 0x80;
-        sec.egressEncrypt(buf[0..16], &header);
-        buf[16..32].* = sec.egressHeaderMac(buf[0..16].*);
-
-        @memcpy(buf[32..][0..payload.len], payload);
-        @memset(buf[32 + data_len ..][0 .. padded - data_len], 0);
-        sec.egressEncrypt(buf[32..][0..padded], buf[32..][0..padded]); // in place
-        buf[32 + padded ..][0..16].* = sec.egressFrameMac(buf[32..][0..padded]);
-
-        try self.write(io, buf[0 .. 32 + padded + 16]);
-    }
-
-    fn deriveSecrets(
-        ecdhe: [32]u8,
-        init_nonce: [32]u8,
-        remote_nonce: [32]u8,
-        sent_auth: []const u8,
-        recv_ack_prefix: []const u8,
-        recv_ack_body: []const u8,
-    ) Secrets {
-        const nonce_hash = keccak2(&remote_nonce, &init_nonce);
-        const shared = keccak2(&ecdhe, &nonce_hash);
-        const aes = keccak2(&ecdhe, &shared);
-        const mac = keccak2(&ecdhe, &aes);
-
-        var egress_mac = Keccak256.init(.{});
-        egress_mac.update(&xor32(mac, remote_nonce));
-        egress_mac.update(sent_auth);
-
-        var ingress_mac = Keccak256.init(.{});
-        ingress_mac.update(&xor32(mac, init_nonce));
-        ingress_mac.update(recv_ack_prefix);
-        ingress_mac.update(recv_ack_body);
-
-        return .{ .aes = aes, .mac = mac, .egress_mac = egress_mac, .ingress_mac = ingress_mac };
+        const peer_id = self.server.peerId(self);
+        try self.server.scheduleWrite(peer_id.peer_index, encrypted, encrypted.len);
     }
 };
 
@@ -777,6 +845,70 @@ const Secrets = struct {
         return self.macCompute(&self.egress_mac, seed, seed);
     }
 };
+
+fn deriveSecrets(
+    ecdhe: [32]u8,
+    init_nonce: [32]u8,
+    remote_nonce: [32]u8,
+    sent_auth: []const u8,
+    recv_ack_prefix: []const u8,
+    recv_ack_body: []const u8,
+) Secrets {
+    const nonce_hash = keccak2(&remote_nonce, &init_nonce);
+    const shared = keccak2(&ecdhe, &nonce_hash);
+    const aes = keccak2(&ecdhe, &shared);
+    const mac = keccak2(&ecdhe, &aes);
+
+    var egress_mac = Keccak256.init(.{});
+    egress_mac.update(&xor32(mac, remote_nonce));
+    egress_mac.update(sent_auth);
+
+    var ingress_mac = Keccak256.init(.{});
+    ingress_mac.update(&xor32(mac, init_nonce));
+    ingress_mac.update(recv_ack_prefix);
+    ingress_mac.update(recv_ack_body);
+
+    return .{ .aes = aes, .mac = mac, .egress_mac = egress_mac, .ingress_mac = ingress_mac };
+}
+
+pub fn encodeMsg(allocator: std.mem.Allocator, id: u64, msg: anytype, compressed: bool) !struct { []u8, usize } {
+    var payload: std.array_list.Managed(u8) = .init(allocator);
+    defer payload.deinit();
+    try payload.ensureTotalCapacity(max_frame_size);
+    try rlp.serialize(u64, allocator, id, &payload);
+    const id_len = payload.items.len;
+    try rlp.serialize(@TypeOf(msg), allocator, msg, &payload);
+
+    if (compressed) {
+        const max_size = id_len + snappy.maxCompressedLength(payload.items.len - id_len);
+        const buf = try allocator.alloc(u8, max_size);
+        @memcpy(buf[0..id_len], payload.items[0..id_len]);
+        const compressed_len = try snappy.compress(payload.items[id_len..], buf[id_len..]);
+        return .{ buf, compressed_len + id_len };
+    } else return .{ try allocator.dupe(u8, payload.items), payload.items.len };
+}
+
+fn encryptFrame(allocator: std.mem.Allocator, sec: *Secrets, payload: []const u8) ![]u8 {
+    const data_len = payload.len;
+    const padded = std.mem.alignForward(usize, data_len, 16);
+
+    var buf = try allocator.alloc(u8, 32 + padded + 16); //todo: get rid of this allocation and copy below
+
+    var header: [16]u8 = @splat(0);
+    std.mem.writeInt(u24, header[0..3], @intCast(data_len), .big);
+    header[3] = 0xc2;
+    header[4] = 0x80;
+    header[5] = 0x80;
+    sec.egressEncrypt(buf[0..16], &header);
+    buf[16..32].* = sec.egressHeaderMac(buf[0..16].*);
+
+    @memcpy(buf[32..][0..payload.len], payload);
+    @memset(buf[32 + data_len ..][0 .. padded - data_len], 0);
+    sec.egressEncrypt(buf[32..][0..padded], buf[32..][0..padded]); // in place
+    buf[32 + padded ..][0..16].* = sec.egressFrameMac(buf[32..][0..padded]);
+
+    return buf;
+}
 
 fn keccak2(a: []const u8, b: []const u8) [32]u8 {
     var h = Keccak256.init(.{});
