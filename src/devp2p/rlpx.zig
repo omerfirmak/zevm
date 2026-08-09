@@ -151,7 +151,6 @@ pub const Server = struct {
     const InFlightWrite = struct {
         peer: usize,
         payload: []const u8,
-        payload_len: usize,
 
         write_iov: [1][]const u8,
         completed_len: usize = 0,
@@ -400,13 +399,13 @@ pub const Server = struct {
         }
 
         const total_written = written + write_slot.completed_len;
-        if (total_written == write_slot.payload_len) {
+        if (total_written == write_slot.payload.len) {
             self.retireWrite(write_slot);
             if (peer_slot.peer.inflight_ops == 0 and peer_slot.status.load(.acquire) == .Exiting)
                 self.clearSlot(peer_slot);
         } else {
             write_slot.completed_len = total_written;
-            write_slot.write_iov = .{write_slot.payload[total_written..write_slot.payload_len]};
+            write_slot.write_iov = .{write_slot.payload[total_written..write_slot.payload.len]};
             self.batch.addAt(@intCast(completed.index), .{ .file_write_streaming = .{ .file = .{
                 .handle = peer_slot.peer.stream.socket.handle,
                 .flags = .{ .nonblocking = true },
@@ -420,14 +419,13 @@ pub const Server = struct {
         self.slots[write_slot.peer].peer.inflight_ops -= 1;
     }
 
-    fn scheduleWrite(self: *Self, peer: usize, payload: []const u8, len: usize) !void {
+    fn scheduleWrite(self: *Self, peer: usize, payload: []const u8) !void {
         const write_slot = self.free_writes.pop() orelse return error.TooManyInflightWrites;
         write_slot.* = .{
             .peer = peer,
             .payload = payload,
-            .payload_len = len,
 
-            .write_iov = .{payload[0..len]},
+            .write_iov = .{payload},
         };
 
         const write_index = self.slots.len + self.free_writes.indexOf(write_slot);
@@ -534,7 +532,7 @@ pub const Server = struct {
         };
         const msg = try self.allocator.dupe(u8, handshake.msg);
         errdefer self.allocator.free(msg);
-        try self.scheduleWrite(index, msg, msg.len);
+        try self.scheduleWrite(index, msg);
         peer.status = .{ .auth_sent = handshake };
     }
 
@@ -566,7 +564,7 @@ pub const Server = struct {
                 };
 
                 const encrypted = encryptFrame(self.allocator, sec, queued_write.payload[0..queued_write.payload_len]) catch continue;
-                self.scheduleWrite(queued_write.peer_id.peer_index, encrypted, encrypted.len) catch unreachable;
+                self.scheduleWrite(queued_write.peer_id.peer_index, encrypted) catch unreachable;
             }
         }
     }
@@ -796,7 +794,7 @@ const Peer = struct {
         errdefer allocator.free(encrypted);
 
         const peer_id = self.server.peerId(self);
-        try self.server.scheduleWrite(peer_id.peer_index, encrypted, encrypted.len);
+        try self.server.scheduleWrite(peer_id.peer_index, encrypted);
     }
 };
 
