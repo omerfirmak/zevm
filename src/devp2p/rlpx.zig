@@ -306,10 +306,12 @@ pub const Server = struct {
             };
 
             while (self.batch.next()) |completed| {
-                try (if (completed.index < self.slots.len)
+                (if (completed.index < self.slots.len)
                     self.onReadCompletion(completed)
                 else
-                    self.onWriteCompletion(completed));
+                    self.onWriteCompletion(completed)) catch |e| {
+                    if (e == std.Io.Cancelable.Canceled) break;
+                };
             }
         }
     }
@@ -334,7 +336,7 @@ pub const Server = struct {
                     .file_read_streaming = .{ //todo: workaround for https://codeberg.org/ziglang/zig/issues/36190
                         .file = .{
                             .handle = slot.peer.stream.socket.handle,
-                            .flags = .{ .nonblocking = false },
+                            .flags = .{ .nonblocking = true },
                         },
                         .data = &slot.peer.read_iov,
                     },
@@ -346,23 +348,19 @@ pub const Server = struct {
     fn onReadCompletion(self: *Self, completed: std.Io.Batch.Completion) !void {
         const slot = &self.slots[completed.index];
         const peer = &slot.peer;
-
-        const size = completed.result.file_read_streaming catch |e| {
-            if (e == std.Io.Cancelable.Canceled) return e;
+        errdefer {
             slot.peer.inflight_ops -= 1;
             self.dropPeer(completed.index);
-            return;
-        };
+        }
 
-        if (size != 0) {
-            peer.handle(self.io, self.allocator, size) catch |e| {
-                if (e == std.Io.Cancelable.Canceled) return e;
-                if (e != error.NotEnoughData) {
-                    slot.peer.inflight_ops -= 1;
-                    self.dropPeer(completed.index);
-                    return;
-                }
-            };
+        if (completed.result.file_read_streaming) |size| {
+            if (size != 0) {
+                peer.handle(self.io, self.allocator, size) catch |e| {
+                    if (e != error.NotEnoughData) return e;
+                };
+            }
+        } else |e| {
+            if (e != std.Io.Operation.FileReadStreaming.Error.WouldBlock) return e;
         }
 
         peer.read_iov = .{peer.readBuffer()};
@@ -370,7 +368,7 @@ pub const Server = struct {
             .file_read_streaming = .{
                 .file = .{
                     .handle = peer.stream.socket.handle,
-                    .flags = .{ .nonblocking = false },
+                    .flags = .{ .nonblocking = true },
                 },
                 .data = &peer.read_iov,
             },
@@ -382,20 +380,20 @@ pub const Server = struct {
         const write_slot = self.free_writes.getAt(write_index);
         const peer_slot = &self.slots[write_slot.peer];
 
-        const written = completed.result.file_write_streaming catch |e| {
-            self.allocator.free(write_slot.payload);
-            self.free_writes.push(write_slot);
-            peer_slot.peer.inflight_ops -= 1;
-            if (e == std.Io.Cancelable.Canceled) return e;
-            self.dropPeer(write_slot.peer);
-            return;
-        };
-        const total_written = written + write_slot.completed_len;
+        var written: usize = 0;
+        if (completed.result.file_write_streaming) |size| {
+            written = size;
+        } else |e| {
+            if (e != std.Io.Operation.FileWriteStreaming.Error.WouldBlock) {
+                self.retireWrite(write_slot);
+                self.dropPeer(write_slot.peer);
+                return e;
+            }
+        }
 
+        const total_written = written + write_slot.completed_len;
         if (total_written == write_slot.payload_len) {
-            self.free_writes.push(write_slot);
-            self.allocator.free(write_slot.payload);
-            peer_slot.peer.inflight_ops -= 1;
+            self.retireWrite(write_slot);
             if (peer_slot.peer.inflight_ops == 0 and peer_slot.status.load(.acquire) == .Exiting)
                 self.clearSlot(peer_slot);
         } else {
@@ -403,9 +401,15 @@ pub const Server = struct {
             write_slot.write_iov = .{write_slot.payload[total_written..write_slot.payload_len]};
             self.batch.addAt(@intCast(completed.index), .{ .file_write_streaming = .{ .file = .{
                 .handle = peer_slot.peer.stream.socket.handle,
-                .flags = .{ .nonblocking = false },
+                .flags = .{ .nonblocking = true },
             }, .data = &write_slot.write_iov } });
         }
+    }
+
+    fn retireWrite(self: *Self, write_slot: *InFlightWrite) void {
+        self.free_writes.push(write_slot);
+        self.allocator.free(write_slot.payload);
+        self.slots[write_slot.peer].peer.inflight_ops -= 1;
     }
 
     fn scheduleWrite(self: *Self, peer: usize, payload: []const u8, len: usize) !void {
@@ -424,7 +428,7 @@ pub const Server = struct {
         slot.peer.inflight_ops += 1;
         self.batch.addAt(@intCast(write_index), .{ .file_write_streaming = .{ .file = .{
             .handle = slot.peer.stream.socket.handle,
-            .flags = .{ .nonblocking = false },
+            .flags = .{ .nonblocking = true },
         }, .data = &write_slot.write_iov } });
     }
 
