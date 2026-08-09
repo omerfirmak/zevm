@@ -105,20 +105,25 @@ pub const Capability = struct {
 };
 
 pub const RegisteredCapability = struct {
-    pub const QueuedRead = struct { peer: Server.PeerId, offset: u64, id: u64, payload: []u8 };
+    pub const QueuedRead = struct { peer: Server.PeerId, id: u64, payload: []u8 };
 
     cap: Capability,
     message_count: usize,
     required: bool,
 
     ctx: *anyopaque,
-    on_connected: *const fn (*anyopaque, Server.PeerId) void,
+    on_connected: *const fn (*anyopaque, Server.PeerId, usize) void,
     on_disconnected: *const fn (*anyopaque, Server.PeerId) void,
     queue: *std.Io.Queue(QueuedRead),
 
     fn lessThan(_: void, left: RegisteredCapability, right: RegisteredCapability) bool {
         return Capability.lessThan({}, left.cap, right.cap);
     }
+};
+
+pub const SharedCap = struct {
+    registered_cap_index: usize,
+    starting_offset: usize,
 };
 
 pub const Server = struct {
@@ -215,13 +220,14 @@ pub const Server = struct {
         self.tcp_listener.deinit(self.io);
     }
 
-    fn sharedCaps(self: *const Self, allocator: std.mem.Allocator, peer_caps: []const Capability) ![]usize {
+    fn sharedCaps(self: *const Self, allocator: std.mem.Allocator, peer_caps: []const Capability) ![]SharedCap {
         const registered = self.proto_handlers;
 
-        const shared = try allocator.alloc(usize, registered.len);
+        const shared = try allocator.alloc(SharedCap, registered.len);
         errdefer allocator.free(shared);
 
         var len: usize = 0;
+        var offset: usize = 0x10;
         var best: ?usize = null;
 
         for (registered, 0..) |*r, i| {
@@ -237,22 +243,24 @@ pub const Server = struct {
 
             const m = best orelse continue;
             best = null;
-            shared[len] = m;
+            shared[len] = .{
+                .registered_cap_index = m,
+                .starting_offset = offset,
+            };
+            offset += registered[m].message_count;
             len += 1;
         }
 
         return allocator.realloc(shared, len);
     }
 
-    fn matchCap(self: *const Self, caps: []const usize, id: u64) ?struct {
+    fn matchCap(self: *const Self, caps: []SharedCap, id: u64) ?struct {
         reg: *const RegisteredCapability,
         offset: u64,
     } {
-        var offset: u64 = 0x10;
         for (caps) |c| {
-            const reg = &self.proto_handlers[c];
-            if (id < offset + reg.message_count) return .{ .reg = reg, .offset = offset };
-            offset += reg.message_count;
+            const reg = &self.proto_handlers[c.registered_cap_index];
+            if (id < c.starting_offset + reg.message_count) return .{ .reg = reg, .offset = c.starting_offset };
         }
         return null;
     }
@@ -448,7 +456,7 @@ pub const Server = struct {
     fn clearSlot(self: *Self, slot: *PeerSlot) void {
         if (slot.peer.status == .active) {
             for (slot.peer.status.active.caps) |c| {
-                const handler = &self.proto_handlers[c];
+                const handler = &self.proto_handlers[c.registered_cap_index];
                 handler.on_disconnected(handler.ctx, self.peerId(&slot.peer));
             }
         }
@@ -594,7 +602,7 @@ const Peer = struct {
         },
         hello: Session,
         active: struct {
-            caps: []usize,
+            caps: []SharedCap,
             session: Session,
         },
     },
@@ -704,8 +712,8 @@ const Peer = struct {
                             const caps = try self.server.sharedCaps(allocator, hello.caps);
                             self.status = .{ .active = .{ .session = session.*, .caps = caps } };
                             for (caps) |c| {
-                                const handler = &self.server.proto_handlers[c];
-                                handler.on_connected(handler.ctx, self.server.peerId(self));
+                                const handler = &self.server.proto_handlers[c.registered_cap_index];
+                                handler.on_connected(handler.ctx, self.server.peerId(self), c.starting_offset);
                             }
                         },
                         .disconnect => return error.Disconnected,
@@ -734,7 +742,6 @@ const Peer = struct {
                         const matched = self.server.matchCap(state.caps, f.id) orelse return error.UnknownMessage;
                         const queued = matched.reg.queue.put(io, &.{.{
                             .peer = self.server.peerId(self),
-                            .offset = matched.offset,
                             .id = f.id - matched.offset,
                             .payload = payload,
                         }}, 0) catch 0;
