@@ -730,7 +730,6 @@ const Peer = struct {
                     if (f.id < 0x10) {
                         switch (try Message.decode(allocator, f.id, payload)) {
                             .disconnect => return error.Disconnected,
-                            // todo: this might block on a big write from another thread
                             .ping => try self.sendMsg(allocator, &state.session.secrets, @intFromEnum(MessageId.pong), struct {}{}),
                             .pong => {},
                             else => {},
