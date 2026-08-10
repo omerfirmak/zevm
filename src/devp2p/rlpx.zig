@@ -271,7 +271,7 @@ pub const Server = struct {
         while (true) {
             const stream = self.tcp_listener.accept(self.io) catch |e| switch (e) {
                 std.Io.Cancelable.Canceled, std.Io.net.Server.AcceptError.SocketNotListening => {
-                    break;
+                    return e;
                 },
                 else => continue,
             };
@@ -308,7 +308,7 @@ pub const Server = struct {
                 .clock = .real,
                 .raw = .fromMilliseconds(250),
             } }) catch |e| switch (e) {
-                std.Io.Cancelable.Canceled => break,
+                std.Io.Cancelable.Canceled => return e,
                 else => continue,
             };
 
@@ -317,7 +317,7 @@ pub const Server = struct {
                     self.onReadCompletion(completed)
                 else
                     self.onWriteCompletion(completed)) catch |e| {
-                    if (e == std.Io.Cancelable.Canceled) break;
+                    if (e == std.Io.Cancelable.Canceled) return e;
                 };
             }
         }
