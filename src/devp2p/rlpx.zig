@@ -104,16 +104,15 @@ pub const Capability = struct {
     }
 };
 
+pub const QueuedRead = struct { peer: Server.PeerId, id: u64, payload: []u8 };
 pub const RegisteredCapability = struct {
-    pub const QueuedRead = struct { peer: Server.PeerId, id: u64, payload: []u8 };
-
     cap: Capability,
     message_count: usize,
     required: bool,
 
     ctx: *anyopaque,
-    on_connected: *const fn (*anyopaque, Server.PeerId, usize) void,
-    on_disconnected: *const fn (*anyopaque, Server.PeerId) void,
+    onConnected: *const fn (*anyopaque, Server.PeerId, usize) void,
+    onDisconnected: *const fn (*anyopaque, Server.PeerId) void,
     queue: *std.Io.Queue(QueuedRead),
 
     fn lessThan(_: void, left: RegisteredCapability, right: RegisteredCapability) bool {
@@ -156,7 +155,7 @@ pub const Server = struct {
         completed_len: usize = 0,
     };
 
-    const max_peers = 50;
+    pub const max_peers = 50;
     const max_inflight_writes = 1024;
 
     allocator: std.mem.Allocator,
@@ -455,7 +454,7 @@ pub const Server = struct {
         if (slot.peer.status == .active) {
             for (slot.peer.status.active.caps) |c| {
                 const handler = &self.proto_handlers[c.registered_cap_index];
-                handler.on_disconnected(handler.ctx, self.peerId(&slot.peer));
+                handler.onDisconnected(handler.ctx, self.peerId(&slot.peer));
             }
         }
         slot.peer.deinit(self.allocator, self.io);
@@ -711,7 +710,7 @@ const Peer = struct {
                             self.status = .{ .active = .{ .session = session.*, .caps = caps } };
                             for (caps) |c| {
                                 const handler = &self.server.proto_handlers[c.registered_cap_index];
-                                handler.on_connected(handler.ctx, self.server.peerId(self), c.starting_offset);
+                                handler.onConnected(handler.ctx, self.server.peerId(self), c.starting_offset);
                             }
                         },
                         .disconnect => return error.Disconnected,
