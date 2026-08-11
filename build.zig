@@ -158,6 +158,8 @@ pub fn build(b: *std.Build) void {
     const rlp_dep = b.dependency("rlp", .{ .target = target, .optimize = optimize });
     const ssz_dep = b.dependency("ssz", .{ .target = target, .optimize = optimize });
     const zisk_dep = b.dependency("zisk", .{});
+    const snappy_dep = b.dependency("snappy", .{ .target = target, .optimize = optimize });
+    const cache_dep = b.dependency("cache", .{ .target = target, .optimize = optimize });
 
     const mcl_lib = buildMcl(b, mcl_dep, target);
     const mcl = b.addTranslateC(.{
@@ -228,6 +230,8 @@ pub fn build(b: *std.Build) void {
     native_opts.addOption(Platform, "platform", .native);
     unit_tests.root_module.addOptions("build_options", native_opts);
     linkDeps(unit_tests.root_module, deps, .native);
+    unit_tests.root_module.addImport("cache", cache_dep.module("cache"));
+    unit_tests.root_module.addImport("snappy", snappy_dep.module("snappy"));
     test_step.dependOn(&b.addRunArtifact(unit_tests).step);
 
     // Example user

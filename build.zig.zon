@@ -72,6 +72,10 @@
             .url = "git+https://github.com/ChainSafe/snappy.zig#713942410426051da6107a955b29f3f152815622",
             .hash = "snappy-0.1.0-n4AaquQ4AADQScvw9-i6SJvZTTagvxmGgGKnat4T_a4e",
         },
+        .cache = .{
+            .url = "git+https://github.com/karlseguin/cache.zig.git#51b9d77bec8d9f3717349e9a007ff689959f3479",
+            .hash = "cache-0.0.0-winRwJu4AAD4Kf1LLubro_8Pf66vN8U4ARd0U4imAOI5",
+        },
     },
     .paths = .{
         "build.zig",

@@ -12,4 +12,5 @@ comptime {
     _ = @import("devp2p/discv5.zig");
     _ = @import("devp2p/rlpx.zig");
     _ = @import("devp2p/free_list.zig");
+    _ = @import("db/file.zig");
 }
