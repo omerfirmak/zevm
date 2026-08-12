@@ -3,7 +3,7 @@ const rlp = @import("rlp");
 const rlpx = @import("rlpx.zig");
 const proto = @import("proto.zig");
 
-const MessageId = enum(u8) {
+pub const MessageId = enum(u8) {
     get_account_range = 0,
     account_rage = 1,
     get_storage_ranges = 2,
@@ -16,7 +16,7 @@ const MessageId = enum(u8) {
     access_lists = 9,
 };
 
-const GetAccountRange = struct {
+pub const GetAccountRange = struct {
     id: u64,
     root: [32]u8,
     origin: [32]u8,
@@ -24,13 +24,13 @@ const GetAccountRange = struct {
     bytes: u64 = 10_000_000,
 };
 
-const AccountRange = struct {
+pub const AccountRange = struct {
     id: u64,
     accounts: []rlp.RawValue,
     proof: [][]u8,
 };
 
-const Message = union(MessageId) {
+pub const Message = union(MessageId) {
     get_account_range: GetAccountRange,
     account_rage: AccountRange,
     get_storage_ranges: rlp.RawValue,

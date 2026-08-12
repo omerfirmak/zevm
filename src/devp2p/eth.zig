@@ -41,7 +41,7 @@ pub const BlockRangeUpdate = struct {
     latest_block_hash: [32]u8,
 };
 
-const Message = union(MessageId) {
+pub const Message = union(MessageId) {
     status: Status,
     new_block_hashes: rlp.RawValue,
     transactions: Transactions,
