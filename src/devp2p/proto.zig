@@ -134,5 +134,14 @@ pub fn Provider(comptime cfg: Config) type {
 
             return error.FailedSending;
         }
+
+        pub fn peerCount(self: *Self) usize {
+            var count: usize = 0;
+            for (0..self.peers.len) |index| {
+                if (self.peers[index].load(.acquire).offset != 0) count += 1;
+            }
+
+            return count;
+        }
     };
 }
