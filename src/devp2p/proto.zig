@@ -23,6 +23,7 @@ pub fn Provider(comptime cfg: Config) type {
         queue: std.Io.Queue(rlpx.QueuedRead),
         req_id: std.atomic.Value(u64),
         server: ?*rlpx.Server,
+        hello: ?cfg.Message,
 
         pub fn init(allocator: std.mem.Allocator) !Self {
             const peers = try allocator.alloc(std.atomic.Value(Peer), rlpx.Server.max_peers);
@@ -34,6 +35,7 @@ pub fn Provider(comptime cfg: Config) type {
                 .req_id = .init(0),
                 .server = null,
                 .next_random_peer = .init(0),
+                .hello = null,
             };
         }
 
@@ -75,6 +77,8 @@ pub fn Provider(comptime cfg: Config) type {
         pub fn onConnected(ctx: *anyopaque, peer: rlpx.Server.PeerId, offset: usize) void {
             var self: *Self = @ptrCast(@alignCast(ctx));
             self.peers[peer.peer_index].store(.{ .epoch = peer.peer_epoch, .offset = offset }, .release);
+            if (self.hello) |hello|
+                self.send(peer, hello) catch {}; //todo: log
         }
 
         pub fn onDisconnected(ctx: *anyopaque, peer: rlpx.Server.PeerId) void {
