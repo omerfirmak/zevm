@@ -68,4 +68,4 @@ pub const Config: proto.Config = .{
     .Message = Message,
 };
 
-pub const Eth = proto.Provider(Config);
+pub const Provider = proto.Provider(Config);
