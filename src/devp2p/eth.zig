@@ -41,12 +41,59 @@ pub const BlockRangeUpdate = struct {
     latest_block_hash: [32]u8,
 };
 
+pub const HashOrNumber = union(enum) {
+    hash: [32]u8,
+    number: u64,
+
+    pub fn encodeToRLP(self: *const HashOrNumber, allocator: std.mem.Allocator, list: *std.array_list.Managed(u8)) !void {
+        return switch (self.*) {
+            .hash => |hash| rlp.serialize([32]u8, allocator, hash, list),
+            .number => |number| rlp.serialize(u64, allocator, number, list),
+        };
+    }
+
+    pub fn decodeFromRLP(self: *HashOrNumber, allocator: std.mem.Allocator, serialized: []const u8) !usize {
+        if (serialized.len == 32) {
+            self.* = .{ .hash = undefined };
+            return rlp.deserialize([32]u8, allocator, serialized, &self.hash);
+        } else if (serialized.len == 8) {
+            self.* = .{ .number = 0 };
+            return rlp.deserialize(u64, allocator, serialized, &self.number);
+        } else {
+            return error.UnexpectedSerializedLen;
+        }
+    }
+};
+
+pub fn Request(comptime T: type) type {
+    return struct {
+        request_id: u64,
+        request: T,
+    };
+}
+
+pub fn Response(comptime T: type) type {
+    return struct {
+        request_id: u64,
+        request: T,
+    };
+}
+
+pub const GetBlockHeaders = Request(struct {
+    origin: HashOrNumber,
+    amount: u64,
+    skip: u64,
+    reverse: bool,
+});
+
+pub const BlockHeaders = Response([]rlp.RawValue);
+
 pub const Message = union(MessageId) {
     status: Status,
     new_block_hashes: rlp.RawValue,
     transactions: Transactions,
-    get_block_headers: rlp.RawValue,
-    block_headers: rlp.RawValue,
+    get_block_headers: GetBlockHeaders,
+    block_headers: BlockHeaders,
     get_block_bodies: rlp.RawValue,
     block_bodies: rlp.RawValue,
     new_block: rlp.RawValue,
