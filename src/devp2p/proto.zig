@@ -54,7 +54,10 @@ pub fn Provider(comptime cfg: Config) type {
             };
         }
 
-        pub fn next(self: *Self, io: std.Io, allocator: std.mem.Allocator, frame_allocator: std.mem.Allocator) !struct { cfg.Message, rlpx.QueuedRead } {
+        pub fn next(self: *Self, io: std.Io, allocator: std.mem.Allocator, frame_allocator: std.mem.Allocator) !struct {
+            msg: cfg.Message,
+            read: rlpx.QueuedRead,
+        } {
             const read = try self.queue.getOne(io);
             errdefer frame_allocator.free(read.payload);
 
@@ -67,8 +70,8 @@ pub fn Provider(comptime cfg: Config) type {
                     var field: FieldType = undefined;
                     _ = try rlp.deserialize(FieldType, allocator, read.payload, &field);
                     return .{
-                        @unionInit(cfg.Message, tag_name, field),
-                        read,
+                        .msg = @unionInit(cfg.Message, tag_name, field),
+                        .read = read,
                     };
                 },
             }
