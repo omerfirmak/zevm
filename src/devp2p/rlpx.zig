@@ -413,13 +413,13 @@ pub const Server = struct {
     }
 
     fn retireWrite(self: *Self, write_slot: *InFlightWrite) void {
-        self.free_writes.push(write_slot);
+        self.free_writes.list().push(write_slot);
         self.allocator.free(write_slot.payload);
         self.slots[write_slot.peer].peer.inflight_ops -= 1;
     }
 
     fn scheduleWrite(self: *Self, peer: usize, payload: []const u8) !void {
-        const write_slot = self.free_writes.pop() orelse return error.TooManyInflightWrites;
+        const write_slot = self.free_writes.list().pop() orelse return error.TooManyInflightWrites;
         write_slot.* = .{
             .peer = peer,
             .payload = payload,
@@ -551,7 +551,7 @@ pub const Server = struct {
     fn drainWriteQueue(self: *Self) !void {
         var queued_write: QueuedWrite = undefined;
         while (true) {
-            if (self.free_writes.empty()) break;
+            if (self.free_writes.list().empty()) break;
             const read = try self.write_queue.get(self.io, (&queued_write)[0..1], 0);
             if (read == 0) break;
             defer self.allocator.free(queued_write.payload);
