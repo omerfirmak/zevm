@@ -10,6 +10,7 @@ const Table = enum(u8) {
 };
 
 var max_file_size: u32 = 3 * 1024 * 1024 * 1024;
+const tail_size = @sizeOf(u64);
 
 const IndexEntry = struct {
     const size = 6;
@@ -57,9 +58,8 @@ pub const Storage = struct {
     datadir: std.Io.Dir,
 
     next_indexes: [std.enums.values(Table).len]IndexEntry,
+    ranges: [std.enums.values(Table).len]?struct { tail: u64, head: u64 },
     file_pool: cache.Cache(PooledFile),
-    tail: ?u64,
-    head: ?u64,
 
     lock: std.Io.RwLock,
 
@@ -68,14 +68,13 @@ pub const Storage = struct {
         var s = Self{
             .datadir = datadir,
             .next_indexes = undefined,
+            .ranges = @splat(null),
             .file_pool = try .init(io, allocator, .{ .max_size = 64 }),
-            .tail = null,
-            .head = null,
             .lock = .init,
         };
         errdefer s.deinit(io, allocator) catch unreachable;
 
-        s.tail, s.head = try s.initialRange(io);
+        try s.initRanges(io);
         const tables = std.enums.values(Table);
         for (tables) |table| {
             s.next_indexes[@intFromEnum(table)] = try s.initialNextIndex(io, table);
@@ -85,31 +84,46 @@ pub const Storage = struct {
     }
 
     pub fn deinit(self: *Self, io: std.Io, _: std.mem.Allocator) !void {
-        self.file_pool.deinit();
-        if (self.tail != null) {
-            const range_file = try self.datadir.createFile(io, "range", .{});
-            defer range_file.close(io);
+        defer self.file_pool.deinit();
+        for (self.ranges, 0..) |range, index| {
+            if (range) |r| {
+                const table: Table = @enumFromInt(index);
+                const index_file = try self.openIndexFile(io, table);
+                defer index_file.release();
 
-            var encoded_range: [16]u8 = undefined;
-            std.mem.writeInt(u64, encoded_range[0..8], self.tail.?, .big);
-            std.mem.writeInt(u64, encoded_range[8..16], self.head.?, .big);
-            try range_file.writeStreamingAll(io, &encoded_range);
+                var buf: [tail_size]u8 = @splat(0);
+                std.mem.writeInt(u64, &buf, r.tail, .big);
+                try index_file.value.file.writePositionalAll(io, &buf, 0);
+            }
         }
     }
 
-    fn initialRange(self: *Self, io: std.Io) !struct { ?u64, ?u64 } {
-        const range = try self.datadir.createFile(io, "range", .{ .read = true, .truncate = false });
-        defer range.close(io);
+    fn initRanges(self: *Self, io: std.Io) !void {
+        for (&self.ranges, 0..) |*range, index| {
+            const table: Table = @enumFromInt(index);
+            const index_file = try self.openIndexFile(io, table);
+            defer index_file.release();
+            const index_file_len = try index_file.value.file.length(io);
 
-        var buf: [16]u8 = undefined;
-        const size = try range.readPositionalAll(io, &buf, 0);
-        if (size == 16) {
-            return .{
-                std.mem.readInt(u64, buf[0..8], .big),
-                std.mem.readInt(u64, buf[8..16], .big),
-            };
-        } else if (size != 0) return error.CorruptedStartFile;
-        return .{ null, null };
+            var buf: [tail_size]u8 = @splat(0);
+            if (index_file_len == 0) {
+                try index_file.value.file.writePositionalAll(io, &buf, 0);
+            } else if (index_file_len > tail_size) {
+                const entry_bytes = index_file_len - tail_size;
+                if (entry_bytes % IndexEntry.size != 0) return error.CorruptedIndexFile;
+
+                const size = try index_file.value.file.readPositionalAll(io, &buf, 0);
+                if (size != tail_size) return error.RangeReadError;
+                const tail = std.mem.readInt(u64, buf[0..tail_size], .big);
+
+                const entry_count = entry_bytes / IndexEntry.size;
+                if (entry_count == 0) continue;
+
+                range.* = .{ .tail = tail, .head = tail + entry_count - 1 };
+            } else if (index_file_len < tail_size) {
+                return error.CorruptedIndexFile;
+            }
+        }
     }
 
     fn initialNextIndex(self: *Self, io: std.Io, table: Table) !IndexEntry {
@@ -118,7 +132,7 @@ pub const Storage = struct {
 
         const index_file_size = try index_file.value.file.length(io);
 
-        if (index_file_size >= IndexEntry.size) {
+        if (index_file_size >= tail_size + IndexEntry.size) {
             var last_entry_bytes: [6]u8 = undefined;
 
             const read = try index_file.value.file.readPositionalAll(io, &last_entry_bytes, index_file_size - IndexEntry.size);
@@ -161,17 +175,14 @@ pub const Storage = struct {
         self.lock.lockUncancelable(io);
         defer self.lock.unlock(io);
 
-        const prev_head = self.head;
-        if (prev_head) |head| {
-            if (head + 1 != number) return error.OutOfOrderPut;
+        const prev_range = self.ranges[@intFromEnum(table)];
+        if (prev_range) |range| {
+            if (range.head + 1 != number) return error.OutOfOrderPut;
         } else {
-            self.tail = number;
+            self.ranges[@intFromEnum(table)] = .{ .tail = number, .head = number };
         }
-        self.head = number;
-        errdefer {
-            self.head = prev_head;
-            if (prev_head == null) self.tail = null;
-        }
+        self.ranges[@intFromEnum(table)].?.head = number;
+        errdefer self.ranges[@intFromEnum(table)] = prev_range;
 
         const max_size = snappy.maxCompressedLength(data.len);
         const compressed_buf = try allocator.alloc(u8, max_size);
@@ -215,10 +226,15 @@ pub const Storage = struct {
         self.lock.lockSharedUncancelable(io);
         defer self.lock.unlockShared(io);
 
-        if (self.tail == null or self.tail.? > number or self.head.? < number) return error.NotFound;
+        var offset = number;
+        if (self.ranges[@intFromEnum(table)]) |range| {
+            if (range.tail > number or range.head < number) return error.NotFound;
+            offset -= range.tail;
+        } else {
+            return error.NotFound;
+        }
 
-        const offset = number - self.tail.?;
-        const index_offset = offset * IndexEntry.size;
+        const index_offset = (offset * IndexEntry.size) + tail_size;
 
         const index_file = try self.openIndexFile(io, table);
         defer index_file.release();
@@ -281,8 +297,9 @@ test "empty dir" {
     {
         var storage = try Storage.init(std.testing.io, std.testing.allocator, path[0..size]);
         defer storage.deinit(std.testing.io, std.testing.allocator) catch unreachable;
-        try std.testing.expect(storage.tail == null);
-        try std.testing.expect(storage.head == null);
+        for (storage.ranges) |range| {
+            try std.testing.expect(range == null);
+        }
 
         for (storage.next_indexes) |ni| {
             try std.testing.expect(ni.file_no == 0 and ni.offset == 0);
@@ -296,8 +313,8 @@ test "empty dir" {
 
     var second_storage = try Storage.init(std.testing.io, std.testing.allocator, path[0..size]);
     defer second_storage.deinit(std.testing.io, std.testing.allocator) catch unreachable;
-    try std.testing.expect(second_storage.tail.? == 44);
-    try std.testing.expect(second_storage.head.? == 44);
+    try std.testing.expect(second_storage.ranges[@intFromEnum(Table.bals)].?.head == 44);
+    try std.testing.expect(second_storage.ranges[@intFromEnum(Table.bals)].?.tail == 44);
 
     const read = try second_storage.get(std.testing.io, std.testing.allocator, .bals, 44);
     defer std.testing.allocator.free(read);
