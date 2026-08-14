@@ -65,28 +65,14 @@ pub const HashOrNumber = union(enum) {
     }
 };
 
-pub fn Request(comptime T: type) type {
-    return struct {
-        request_id: u64,
-        request: T,
-    };
-}
-
-pub fn Response(comptime T: type) type {
-    return struct {
-        request_id: u64,
-        request: T,
-    };
-}
-
-pub const GetBlockHeaders = Request(struct {
+pub const GetBlockHeaders = proto.Request(struct {
     origin: HashOrNumber,
     amount: u64,
     skip: u64,
     reverse: bool,
 });
 
-pub const BlockHeaders = Response([]rlp.RawValue);
+pub const BlockHeaders = proto.Response([]rlp.RawValue);
 
 pub const Message = union(MessageId) {
     status: Status,

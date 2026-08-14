@@ -2,6 +2,20 @@ const std = @import("std");
 const rlpx = @import("rlpx.zig");
 const rlp = @import("rlp");
 
+pub fn Request(comptime T: type) type {
+    return struct {
+        id: u64,
+        query: T,
+    };
+}
+
+pub fn Response(comptime T: type) type {
+    return struct {
+        request_id: u64,
+        data: T,
+    };
+}
+
 pub const Config = struct {
     name: []const u8,
     version: u64,
