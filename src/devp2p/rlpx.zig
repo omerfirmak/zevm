@@ -14,6 +14,7 @@ const modes = std.crypto.core.modes;
 
 const p2p_version = 5;
 const max_frame_size = 1 << 24;
+const max_handshake_size = 2048;
 const ecies_overhead = 65 + 16 + 32; // ephemeral pubkey + IV + HMAC-SHA256 tag
 
 const DisconnectReason = enum(u8) {
@@ -532,7 +533,72 @@ pub const Server = struct {
         const msg = try self.allocator.dupe(u8, handshake.msg);
         errdefer self.allocator.free(msg);
         try self.scheduleWrite(index, msg);
+        peer.remote_pubkey = remote_pubkey;
         peer.status = .{ .auth_sent = handshake };
+    }
+
+    fn recvHandshake(self: *Self, peer: *Peer, index: usize, prefix: [2]u8, blob: []const u8) !Peer.Session {
+        var plain_buf: [max_handshake_size]u8 = undefined;
+        const plain = try eciesDecrypt(self.keypair.secret_key.toBytes(), &plain_buf, blob, &prefix);
+
+        var auth: AuthMessage = undefined;
+        _ = try rlp.deserialize(AuthMessage, undefined, plain, &auth);
+        if (auth.version < 4) return error.IncompatibleVersion;
+        if (std.mem.eql(u8, &auth.pubkey, &self.hello.node_id)) return error.SelfIdentity;
+
+        const token = try sharedSecret(self.keypair.secret_key.toBytes(), auth.pubkey);
+        const remote_eph = try self.secp.recoverPubkey(xor32(token, auth.nonce), auth.sig);
+
+        var ack_nonce: [32]u8 = undefined;
+        self.io.random(&ack_nonce);
+        const eph = Ecdsa.KeyPair.generate(self.io);
+
+        const ack_msg = AuthRespMessage{
+            .eph_pub = eph.public_key.toUncompressedSec1()[1..65].*,
+            .nonce = ack_nonce,
+            .version = 4,
+        };
+
+        var rlp_buf: std.array_list.Managed(u8) = .init(self.allocator);
+        defer rlp_buf.deinit();
+        try rlp_buf.ensureTotalCapacity(max_handshake_size);
+        try rlp.serialize(AuthRespMessage, self.allocator, ack_msg, &rlp_buf);
+
+        var padSize: u8 = undefined;
+        self.io.random((&padSize)[0..1]);
+
+        try rlp_buf.appendNTimes(0, padSize % 100 + 100);
+
+        const total_len = rlp_buf.items.len + ecies_overhead + 2;
+        const ack = try self.allocator.alloc(u8, total_len);
+        defer self.allocator.free(ack);
+        std.mem.writeInt(u16, ack[0..2], @intCast(total_len - 2), .big);
+
+        _ = try eciesEncrypt(self.io, ack[2..], auth.pubkey, rlp_buf.items, ack[0..2]);
+
+        const ecdhe = try sharedSecret(eph.secret_key.toBytes(), remote_eph[1..65].*);
+        var session: Peer.Session = .{ .secrets = deriveSecrets(
+            ecdhe,
+            auth.nonce,
+            ack_nonce,
+            &.{ack},
+            &.{ &prefix, blob },
+            .recipient,
+        ) };
+
+        const encoded, const len = try encodeMsg(self.allocator, @intFromEnum(MessageId.hello), self.hello, false);
+        defer self.allocator.free(encoded);
+        const hello_frame = try encryptFrame(self.allocator, &session.secrets, encoded[0..len]);
+        defer self.allocator.free(hello_frame);
+
+        const out = try self.allocator.alloc(u8, ack.len + hello_frame.len);
+        errdefer self.allocator.free(out);
+        @memcpy(out[0..ack.len], ack);
+        @memcpy(out[ack.len..], hello_frame);
+
+        try self.scheduleWrite(index, out);
+        peer.remote_pubkey = auth.pubkey;
+        return session;
     }
 
     pub fn queueMsg(self: *Self, peer_id: PeerId, id: u64, msg: anytype) !void {
@@ -597,6 +663,7 @@ const Peer = struct {
             len: u16,
             handshake: HandshakeState,
         },
+        auth_read: u16,
         hello: Session,
         active: struct {
             caps: []SharedCap,
@@ -605,6 +672,7 @@ const Peer = struct {
     },
 
     record: ?enr.Record,
+    remote_pubkey: ?[64]u8,
 
     fn init(allocator: std.mem.Allocator, stream: std.Io.net.Stream, server: *Server) !Peer {
         return .{
@@ -616,6 +684,7 @@ const Peer = struct {
             .read_iov = .{&.{}},
             .status = .{ .accepted = {} },
             .record = null,
+            .remote_pubkey = null,
             .inflight_ops = 0,
         };
     }
@@ -663,12 +732,28 @@ const Peer = struct {
 
         while (true) {
             switch (self.status) {
-                .accepted => return error.NotImplemented, //todo: inbound handshake (read auth, send ack)
+                .accepted => {
+                    const prefix = try self.read(2);
+                    const len = std.mem.readInt(u16, prefix[0..2], .big);
+                    if (len < ecies_overhead or len > max_handshake_size) {
+                        return error.AuthMessageTooBig;
+                    }
+                    self.status = .{ .auth_read = len };
+                },
+                .auth_read => |len| {
+                    const blob = try self.read(len);
+
+                    var s2: [2]u8 = undefined;
+                    std.mem.writeInt(u16, &s2, len, .big);
+
+                    const index = self.server.peerId(self).peer_index;
+                    self.status = .{ .hello = try self.server.recvHandshake(self, index, s2, blob) };
+                },
                 .dialed => return error.WrongHandshakeOrder,
                 .auth_sent => |state| {
                     const prefix = try self.read(2);
                     const len = std.mem.readInt(u16, prefix[0..2], .big);
-                    if (len > 2048) {
+                    if (len > max_handshake_size) {
                         return error.AuthRespMessageTooBig;
                     }
                     self.status = .{ .auth_resp_length_read = .{ .len = len, .handshake = state } };
@@ -679,7 +764,7 @@ const Peer = struct {
                     var s2: [2]u8 = undefined;
                     std.mem.writeInt(u16, &s2, state.len, .big);
 
-                    var plain_buf: [2048]u8 = undefined;
+                    var plain_buf: [max_handshake_size]u8 = undefined;
                     const plain = try eciesDecrypt(self.server.keypair.secret_key.toBytes(), &plain_buf, blob, &s2);
 
                     var resp: AuthRespMessage = undefined;
@@ -690,9 +775,9 @@ const Peer = struct {
                         ecdhe,
                         state.handshake.init_nonce,
                         resp.nonce,
-                        state.handshake.msg,
-                        &s2,
-                        blob,
+                        &.{state.handshake.msg},
+                        &.{ &s2, blob },
+                        .initiator,
                     );
 
                     var session: Session = .{ .secrets = sec };
@@ -853,27 +938,33 @@ const Secrets = struct {
     }
 };
 
+const Role = enum { initiator, recipient };
+
 fn deriveSecrets(
     ecdhe: [32]u8,
-    init_nonce: [32]u8,
-    remote_nonce: [32]u8,
-    sent_auth: []const u8,
-    recv_ack_prefix: []const u8,
-    recv_ack_body: []const u8,
+    initiator_nonce: [32]u8,
+    recipient_nonce: [32]u8,
+    sent: []const []const u8,
+    received: []const []const u8,
+    role: Role,
 ) Secrets {
-    const nonce_hash = keccak2(&remote_nonce, &init_nonce);
+    const nonce_hash = keccak2(&recipient_nonce, &initiator_nonce);
     const shared = keccak2(&ecdhe, &nonce_hash);
     const aes = keccak2(&ecdhe, &shared);
     const mac = keccak2(&ecdhe, &aes);
 
+    const our_nonce, const their_nonce = switch (role) {
+        .initiator => .{ initiator_nonce, recipient_nonce },
+        .recipient => .{ recipient_nonce, initiator_nonce },
+    };
+
     var egress_mac = Keccak256.init(.{});
-    egress_mac.update(&xor32(mac, remote_nonce));
-    egress_mac.update(sent_auth);
+    egress_mac.update(&xor32(mac, their_nonce));
+    for (sent) |part| egress_mac.update(part);
 
     var ingress_mac = Keccak256.init(.{});
-    ingress_mac.update(&xor32(mac, init_nonce));
-    ingress_mac.update(recv_ack_prefix);
-    ingress_mac.update(recv_ack_body);
+    ingress_mac.update(&xor32(mac, our_nonce));
+    for (received) |part| ingress_mac.update(part);
 
     return .{ .aes = aes, .mac = mac, .egress_mac = egress_mac, .ingress_mac = ingress_mac };
 }
