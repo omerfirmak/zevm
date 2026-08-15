@@ -154,6 +154,11 @@ fn makeBlock(
     var bal: zevm.types.BlockAccessLists = undefined;
     _ = try rlp.deserialize(zevm.types.BlockAccessLists, allocator, request.execution_payload.block_access_list.constSlice(), &bal);
     const bal_hash = zevm.crypto.hash.keccak256(request.execution_payload.block_access_list.constSlice());
+    var extra_data: zevm.types.ExtraData = undefined;
+    const extra_data_slice = payload.extra_data.constSlice();
+    @memcpy(extra_data.buf[0..extra_data_slice.len], extra_data_slice);
+    extra_data.len = extra_data_slice.len;
+
     const header = zevm.types.BlockHeader{
         .parent_hash = payload.parent_hash,
         .ommers_hash = zevm.types.empty_ommers_hash,
@@ -167,7 +172,7 @@ fn makeBlock(
         .gas_limit = payload.gas_limit,
         .gas_used = payload.gas_used,
         .timestamp = payload.timestamp,
-        .extra_data = payload.extra_data.constSlice(),
+        .extra_data = extra_data,
         .mix_hash = payload.prev_randao,
         .nonce = [_]u8{0} ** 8, // post-merge: always zero
         .base_fee_per_gas = @intCast(payload.base_fee_per_gas),

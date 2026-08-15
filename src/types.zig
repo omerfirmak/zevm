@@ -51,6 +51,24 @@ pub const Account = struct {
     }
 };
 
+pub const ExtraData = struct {
+    buf: [32]u8,
+    len: usize,
+
+    pub fn decodeFromRLP(self: *ExtraData, _: std.mem.Allocator, serialized: []const u8) !usize {
+        var slice: []const u8 = undefined;
+        const consumed = try rlp.deserialize([]const u8, undefined, serialized, &slice);
+        if (slice.len > 32) return error.ExtraDataTooLong;
+        self.len = slice.len;
+        @memcpy(self.buf[0..self.len], slice);
+        return consumed;
+    }
+
+    pub fn encodeToRLP(self: ExtraData, allocator: std.mem.Allocator, list: *std.array_list.Managed(u8)) !void {
+        try rlp.serialize([]const u8, allocator, self.buf[0..self.len], list);
+    }
+};
+
 pub const BlockHeader = struct {
     parent_hash: [32]u8,
     ommers_hash: [32]u8,
@@ -64,7 +82,7 @@ pub const BlockHeader = struct {
     gas_limit: u64,
     gas_used: u64,
     timestamp: u64,
-    extra_data: []const u8,
+    extra_data: ExtraData,
     mix_hash: [32]u8,
     nonce: [8]u8,
     base_fee_per_gas: u64,
@@ -75,11 +93,33 @@ pub const BlockHeader = struct {
     requests_hash: [32]u8,
     block_access_list_hash: ?[32]u8,
     slot_number: ?u64,
+
+    pub fn encodeToRLP(self: BlockHeader, allocator: std.mem.Allocator, list: *std.array_list.Managed(u8)) !void {
+        if (self.block_access_list_hash == null) {
+            const pre_amsterdam_header = stripLast(BlockHeader, 2, self);
+            try rlp.serialize(@TypeOf(pre_amsterdam_header), allocator, pre_amsterdam_header, list);
+        } else {
+            const header = stripLast(BlockHeader, 0, self);
+            try rlp.serialize(@TypeOf(header), allocator, header, list);
+        }
+    }
+
+    pub fn hash(self: BlockHeader) [32]u8 {
+        var buf: [2048]u8 = undefined;
+        var fba = std.heap.FixedBufferAllocator.init(&buf);
+        var list = std.array_list.Managed(u8).init(fba.allocator());
+
+        _ = rlp.serialize(BlockHeader, fba.allocator(), self, &list) catch unreachable;
+
+        var h: [32]u8 = undefined;
+        std.crypto.hash.sha3.Keccak256.hash(list.items, &h, .{});
+        return h;
+    }
 };
 
 test "header decode encode" {
     const allocator = std.testing.allocator;
-    const hex = "f90259a00000000000000000000000000000000000000000000000000000000000000000a01dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347940000000000000000000000000000000000000000a0f62f562b9be5b076ad074beee3d34e25ecda5ad7e0a615067dba4c37174a8afba056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421b901000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000080808407270e00808000a0000000000000000000000000000000000000000000000000000000000000000088000000000000000007a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b4218080a00000000000000000000000000000000000000000000000000000000000000000a0e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b8558080";
+    const hex = "f90257a00000000000000000000000000000000000000000000000000000000000000000a01dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347940000000000000000000000000000000000000000a0f62f562b9be5b076ad074beee3d34e25ecda5ad7e0a615067dba4c37174a8afba056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421b901000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000080808407270e00808000a0000000000000000000000000000000000000000000000000000000000000000088000000000000000007a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b4218080a00000000000000000000000000000000000000000000000000000000000000000a0e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
     const bytes = try allocator.alloc(u8, hex.len / 2);
     defer allocator.free(bytes);
@@ -100,7 +140,7 @@ test "header decode encode" {
     try std.testing.expectEqual(header.gas_limit, 0x07270e00);
     try std.testing.expectEqual(header.gas_used, 0);
     try std.testing.expectEqual(header.timestamp, 0);
-    try std.testing.expectEqualSlices(u8, header.extra_data, &[1]u8{0});
+    try std.testing.expectEqualSlices(u8, header.extra_data.buf[0..header.extra_data.len], &[1]u8{0});
     try std.testing.expectEqualStrings(&std.fmt.bytesToHex(header.mix_hash, .lower), "0000000000000000000000000000000000000000000000000000000000000000");
     try std.testing.expectEqual(std.mem.readInt(u64, &header.nonce, .big), 0);
     try std.testing.expectEqual(header.base_fee_per_gas, 0x7);
