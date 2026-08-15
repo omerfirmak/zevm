@@ -555,10 +555,8 @@ pub const EVM = struct {
         }
 
         const is_positive_transfer = msg.value > 0;
-        if (is_positive_transfer and is_create) {
-            total += cfg.fork.transfer_log_cost;
-        } else if (is_positive_transfer and !is_self_transfer) {
-            total += cfg.fork.transfer_log_cost + cfg.fork.tx_value_cost;
+        if (is_positive_transfer and !is_self_transfer and !is_create) {
+            total += cfg.fork.tx_value_cost;
         }
 
         return total;
