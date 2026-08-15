@@ -70,7 +70,10 @@ pub const Server = struct {
     }
 
     pub fn run(self: *Self, bootnodes: []const Enode) !void {
-        for (bootnodes) |enode| try self.initiateSession(nodeId(enode.pubkey), enode.pubkey, enode.addr, null);
+        for (bootnodes) |enode| {
+            if (enode.udp != null)
+                try self.initiateSession(nodeId(enode.pubkey), enode.pubkey, enode.udp.?, null);
+        }
         while (true) {
             //todo: walk the network periodically and refresh sessions
             const msg = self.socket.receive(self.io, &self.rx_buf) catch |e| {

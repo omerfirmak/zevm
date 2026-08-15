@@ -2,7 +2,8 @@ const std = @import("std");
 
 pub const Enode = struct {
     pubkey: [64]u8,
-    addr: std.Io.net.IpAddress,
+    tcp: std.Io.net.IpAddress,
+    udp: ?std.Io.net.IpAddress,
 
     pub fn parse(s: []const u8) !Enode {
         const uri = try std.Uri.parse(s);
@@ -16,19 +17,21 @@ pub const Enode = struct {
 
         const host = uri.host orelse return error.MissingHost;
 
-        var port = uri.port orelse return error.MissingPort;
+        const port = uri.port orelse return error.MissingPort;
+        var udp_port: ?u16 = undefined;
         if (uri.query) |q| {
             const query = componentRaw(q);
             if (std.mem.indexOf(u8, query, "discport=")) |d| {
                 const v = query[d + "discport=".len ..];
                 const end = std.mem.indexOfScalar(u8, v, '&') orelse v.len;
-                port = try std.fmt.parseInt(u16, v[0..end], 10);
+                udp_port = try std.fmt.parseInt(u16, v[0..end], 10);
             }
         }
 
         return .{
             .pubkey = pubkey,
-            .addr = try std.Io.net.IpAddress.parse(componentRaw(host), port),
+            .tcp = try std.Io.net.IpAddress.parse(componentRaw(host), port),
+            .udp = if (udp_port == null) null else try std.Io.net.IpAddress.parse(componentRaw(host), udp_port.?),
         };
     }
 
@@ -42,8 +45,9 @@ pub const Enode = struct {
 test "parse" {
     const s = "enode://2c82017536b1b74b62aa2a81769f4a1213ac9edd3a1df43af5fd008f3305e92bfd9351db9881c9c09de2afc79d3f7f6c271cf2f7231f9021926c0674dc02035c@159.223.116.60:4437?discport=30303";
     const e = try Enode.parse(s);
-    try std.testing.expectEqual([4]u8{ 159, 223, 116, 60 }, e.addr.ip4.bytes);
-    try std.testing.expectEqual(@as(u16, 30303), e.addr.ip4.port);
+    try std.testing.expectEqual([4]u8{ 159, 223, 116, 60 }, e.tcp.ip4.bytes);
+    try std.testing.expectEqual(@as(u16, 4437), e.tcp.ip4.port);
+    try std.testing.expectEqual(@as(u16, 30303), e.udp.?.ip4.port);
     try std.testing.expectEqual(@as(u8, 0x2c), e.pubkey[0]);
     try std.testing.expectEqual(@as(u8, 0x5c), e.pubkey[63]);
 }
