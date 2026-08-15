@@ -8,6 +8,12 @@ const Keccak256 = std.crypto.hash.sha3.Keccak256;
 
 const secp256k1_order: u256 = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141;
 
+const base64 = std.base64.url_safe_no_pad;
+
+pub const max_record_len = 300;
+pub const text_prefix = "enr:";
+pub const max_text_len = text_prefix.len + base64.Encoder.calcSize(max_record_len);
+
 pub const Record = struct {
     seq: u64,
     pubkey: [33]u8,
@@ -41,6 +47,18 @@ pub const Record = struct {
         return null;
     }
 };
+
+pub fn decodeText(text: []const u8) !Record {
+    if (!std.mem.startsWith(u8, text, text_prefix)) return error.MissingEnrPrefix;
+    const body = std.mem.trimEnd(u8, text[text_prefix.len..], "=");
+
+    var buf: [max_record_len]u8 = undefined;
+    const len = try base64.Decoder.calcSizeForSlice(body);
+    if (len > buf.len) return error.RecordTooLarge;
+    try base64.Decoder.decode(buf[0..len], body);
+
+    return decode(buf[0..len]);
+}
 
 pub fn decode(bytes: []const u8) !Record {
     var scratch: [2048]u8 = undefined;
@@ -108,8 +126,24 @@ fn rlpItem(alloc: std.mem.Allocator, comptime T: type, val: T) ![]const u8 {
     return l.items;
 }
 
+pub fn encodeText(
+    buf: *[max_text_len]u8,
+    static_key: [32]u8,
+    seq: u64,
+    ip4: ?[4]u8,
+    udp: ?u16,
+    tcp: ?u16,
+) ![]u8 {
+    var record_buf: [max_record_len]u8 = undefined;
+    const record = try encode(&record_buf, static_key, seq, ip4, udp, tcp);
+
+    @memcpy(buf[0..text_prefix.len], text_prefix);
+    const body = base64.Encoder.encode(buf[text_prefix.len..], record);
+    return buf[0 .. text_prefix.len + body.len];
+}
+
 pub fn encode(
-    buf: *[300]u8,
+    buf: *[max_record_len]u8,
     static_key: [32]u8,
     seq: u64,
     ip4: ?[4]u8,
@@ -185,6 +219,27 @@ test "reject a tampered record" {
         "82765f");
     bytes[bytes.len - 1] ^= 0xff;
     try std.testing.expectError(error.SignatureVerificationFailed, decode(&bytes));
+}
+
+test "decode text" {
+    const rec = try decodeText("enr:-IS4QHCYrYZbAKWCBRlAy5zzaDZXJBGkcnh4MHcBFZntXNFrdvJjX04jRzjzCBOonrkTf" ++
+        "j499SZuOh8R33Ls8RRcy5wBgmlkgnY0gmlwhH8AAAGJc2VjcDI1NmsxoQPKY0yuDUmstAHYpMa2_oxVtw0RW_QAdpzBQA8yWM0xOIN1ZHCCdl8");
+
+    try std.testing.expectEqual(@as(u64, 1), rec.seq);
+    try std.testing.expectEqual([4]u8{ 127, 0, 0, 1 }, rec.ip4.?);
+    try std.testing.expectEqual(@as(u16, 30303), rec.udp.?);
+    try std.testing.expectEqualSlices(u8, &h("a448f24c6d18e575453db13171562b71999873db5b286df957af199ec94617f7"), &rec.node_id);
+}
+
+test "encode text round trip" {
+    const static_key = h("b71c71a67e1177ad4e901695e1b4b9ee17ae16c6668d313eac2f96dbcda3f291");
+    var buf: [max_text_len]u8 = undefined;
+    const text = try encodeText(&buf, static_key, 1, [4]u8{ 127, 0, 0, 1 }, 30303, 30303);
+    try std.testing.expect(std.mem.startsWith(u8, text, text_prefix));
+
+    const rec = try decodeText(text);
+    try std.testing.expectEqual(@as(u16, 30303), rec.tcp.?);
+    try std.testing.expectEqualSlices(u8, &h("a448f24c6d18e575453db13171562b71999873db5b286df957af199ec94617f7"), &rec.node_id);
 }
 
 test "encode round trip" {
