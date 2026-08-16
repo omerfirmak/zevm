@@ -460,7 +460,6 @@ pub const Amsterdam = override(Osaka, .{
     .max_code_size = 0x10000,
     .cpsb = 1530,
     .bal_item_cost = 2000,
-    .tx_create_gas = 30000,
     .call_new_account_gas = 0,
     .per_empty_account_cost = 0,
     .selfdestruct_empty_target_gas = 9000,
