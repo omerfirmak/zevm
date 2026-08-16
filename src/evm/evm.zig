@@ -88,6 +88,7 @@ pub const Frame = struct {
 
     // vm state
     gas: u64,
+    state_gas_spillover: u64,
     stack: [max_stack_size]u256 align(@sizeOf(u256)),
     memory: Memory,
 
@@ -178,7 +179,6 @@ const Snapshot = struct {
     created: usize,
     num_logs: usize,
     state_gas_reservoir: u64,
-    total_spillover: u64,
     state_gas_used: i64,
 };
 
@@ -232,7 +232,6 @@ pub const EVM = struct {
     created_accounts: storage.CreatedAccounts,
     // EIP-8037: state gas book keeping
     state_gas_reservoir: u64,
-    total_spillover: u64 = 0,
     state_gas_used: i64 = 0,
 
     pub fn init(
@@ -269,7 +268,6 @@ pub const EVM = struct {
         self.gas_refund = 0;
         self.num_logs = 0;
         self.state_gas_reservoir = 0;
-        self.total_spillover = 0;
         self.state_gas_used = 0;
         self.pre_state.clearRetainingCapacity();
         self.warm_accounts.dirties.clearRetainingCapacity();
@@ -280,22 +278,20 @@ pub const EVM = struct {
         self.created_accounts.journal.items.len = 0;
     }
 
-    pub fn chargeStateGas(self: *Self, gas_left: u64, amount: u64) !u64 {
+    pub fn chargeStateGas(self: *Self, gas_left: u64, total_spillover: u64, amount: u64) !struct { u64, u64 } {
         const from_reservoir = @min(amount, self.state_gas_reservoir);
         const spillover = amount - from_reservoir;
         if (gas_left < spillover) return Errors.OutOfGas;
         self.state_gas_reservoir -= from_reservoir;
-        self.total_spillover += spillover;
         self.state_gas_used += @intCast(amount);
-        return gas_left - spillover;
+        return .{ gas_left - spillover, total_spillover + spillover };
     }
 
-    pub fn creditStateGasRefund(self: *Self, gas_left: u64, amount: u64) u64 {
-        const to_gas_left = @min(amount, self.total_spillover);
-        self.total_spillover -= to_gas_left;
+    pub fn creditStateGasRefund(self: *Self, gas_left: u64, total_spillover: u64, amount: u64) struct { u64, u64 } {
+        const to_gas_left = @min(amount, total_spillover);
         self.state_gas_reservoir += amount - to_gas_left;
         self.state_gas_used -= @intCast(amount);
-        return gas_left + to_gas_left;
+        return .{ gas_left + to_gas_left, total_spillover - to_gas_left };
     }
 
     pub fn snapshot(self: *Self) Snapshot {
@@ -306,7 +302,6 @@ pub const EVM = struct {
             .created = self.created_accounts.snapshot(),
             .num_logs = self.num_logs,
             .state_gas_reservoir = self.state_gas_reservoir,
-            .total_spillover = self.total_spillover,
             .state_gas_used = self.state_gas_used,
         };
     }
@@ -317,7 +312,6 @@ pub const EVM = struct {
         self.gas_refund = snapshot_ids.gas_refund;
         self.created_accounts.revert(snapshot_ids.created);
         self.state_gas_reservoir = snapshot_ids.state_gas_reservoir;
-        self.total_spillover = snapshot_ids.total_spillover;
         self.state_gas_used = snapshot_ids.state_gas_used;
         for (snapshot_ids.num_logs..self.num_logs) |_| self.popLog();
     }
@@ -461,12 +455,13 @@ pub const EVM = struct {
         self.applyAccessList(msg.access_list);
 
         var remaining_gas = execution_gas_limit;
+        var state_gas_spillover: u64 = 0;
         var create_state_gas: u64 = 0;
         var err: ?Errors = null;
         if (msg.target) |target| {
-            if (self.prepareDispatch(cfg, state, msg, target, remaining_gas)) |prep| {
-                remaining_gas, create_state_gas = prep;
-                remaining_gas, err = try self.call(
+            if (self.prepareDispatch(cfg, state, msg, target, remaining_gas, state_gas_spillover)) |prep| {
+                remaining_gas, create_state_gas, state_gas_spillover = prep;
+                remaining_gas, const call_spillover, err = try self.call(
                     cfg,
                     state,
                     msg.caller,
@@ -480,6 +475,7 @@ pub const EVM = struct {
                     false,
                     false,
                 );
+                state_gas_spillover += call_spillover;
             } else |e| {
                 if (e != Errors.OutOfGas) return e;
                 err = Errors.OutOfGas;
@@ -487,23 +483,25 @@ pub const EVM = struct {
         } else {
             const new_addr = createAddress(msg.caller, @intCast(caller_account.nonce - 1));
             create_state_gas = if ((try state.accounts.read(new_addr)).isEmpty()) STATE_BYTES_PER_NEW_ACCOUNT * cfg.fork.cpsb else 0;
-            if (self.chargeStateGas(remaining_gas, create_state_gas)) |g| {
-                remaining_gas, _, err = try self.create(
+            if (self.chargeStateGas(remaining_gas, state_gas_spillover, create_state_gas)) |g| {
+                remaining_gas, state_gas_spillover = g;
+                remaining_gas, const create_spillover, _, err = try self.create(
                     cfg,
                     state,
                     msg.caller,
                     new_addr,
                     msg.calldata,
                     msg.value,
-                    g,
+                    remaining_gas,
                     0,
                 );
+                state_gas_spillover += create_spillover;
             } else |_| {
                 remaining_gas = 0;
             }
         }
         if (err) |e| {
-            remaining_gas = self.creditStateGasRefund(remaining_gas, create_state_gas);
+            remaining_gas, state_gas_spillover = self.creditStateGasRefund(remaining_gas, state_gas_spillover, create_state_gas);
             if (e != Errors.Reverted) remaining_gas = 0;
         }
 
@@ -563,8 +561,17 @@ pub const EVM = struct {
     }
 
     // Hosts the pre-frame actions that take place in a top level call
-    fn prepareDispatch(self: *Self, comptime cfg: Config, state: *State, msg: *const Message, target: u160, initial_gas: u64) !struct { u64, u64 } {
+    fn prepareDispatch(
+        self: *Self,
+        comptime cfg: Config,
+        state: *State,
+        msg: *const Message,
+        target: u160,
+        initial_gas: u64,
+        state_gas_spillover: u64,
+    ) !struct { u64, u64, u64 } {
         var remaining_gas = initial_gas;
+        var total_state_gas_spillover = state_gas_spillover;
         var create_state_gas: u64 = 0;
 
         const state_snap = state.snapshot();
@@ -575,13 +582,13 @@ pub const EVM = struct {
         }
 
         // EIP-7702: process authorization list, setting delegation designators on EOAs
-        remaining_gas = try self.applyAuthList(cfg, remaining_gas, msg, state);
+        remaining_gas, total_state_gas_spillover = try self.applyAuthList(cfg, remaining_gas, total_state_gas_spillover, msg, state);
 
         _ = self.accessAccount(target);
         const target_account = try state.accounts.read(target);
         if (cfg.fork.isEnabled(.Amsterdam) and msg.value > 0 and target_account.isEmpty()) {
             create_state_gas = STATE_BYTES_PER_NEW_ACCOUNT * cfg.fork.cpsb;
-            remaining_gas = try self.chargeStateGas(remaining_gas, create_state_gas);
+            remaining_gas, total_state_gas_spillover = try self.chargeStateGas(remaining_gas, total_state_gas_spillover, create_state_gas);
         }
 
         if (!std.mem.eql(u8, &target_account.code_hash, &types.empty_code_hash)) {
@@ -596,7 +603,7 @@ pub const EVM = struct {
                 _ = try state.accounts.read(delegate);
             }
         }
-        return .{ remaining_gas, create_state_gas };
+        return .{ remaining_gas, create_state_gas, total_state_gas_spillover };
     }
 
     // Returns { remaining_gas, optional_error }. Not an error union because Reverted
@@ -617,18 +624,19 @@ pub const EVM = struct {
         return_buffer: []u8,
         skip_value_transfer: bool,
         is_static: bool,
-    ) !struct { u64, ?Errors } {
+    ) !struct { u64, u64, ?Errors } {
         const state_snap = state.snapshot();
         const evm_snap = self.snapshot();
 
         var remaining_gas = initial_gas;
+        var state_gas_spillover: u64 = 0;
         var err = @as(?Errors, null);
 
         if (!skip_value_transfer and value > 0) {
             var caller_account = try state.accounts.update(caller);
             if (caller_account.balance < value) {
                 _ = try resolveCode(code_addr, state, cfg); // todo: remove
-                return .{ remaining_gas, Errors.NotEnoughFunds };
+                return .{ remaining_gas, 0, Errors.NotEnoughFunds };
             }
             caller_account.balance -= value;
             (try state.accounts.update(target)).balance += value;
@@ -660,6 +668,7 @@ pub const EVM = struct {
                 .return_buffer = return_buffer,
 
                 .gas = remaining_gas,
+                .state_gas_spillover = 0,
                 .stack = undefined,
                 .memory = Memory.init(allocator),
                 .depth = depth + 1,
@@ -670,19 +679,20 @@ pub const EVM = struct {
                 err = frameErr;
             };
             remaining_gas = frame.gas;
+            state_gas_spillover = frame.state_gas_spillover;
         }
 
         if (err != null) {
-            const spilled = self.total_spillover - evm_snap.total_spillover;
             state.revert(state_snap);
             self.revert(evm_snap);
-            remaining_gas += spilled;
+            remaining_gas += state_gas_spillover;
+            state_gas_spillover = 0;
             if (err.? != Errors.Reverted) {
                 remaining_gas = 0;
                 self.return_data_size = 0;
             }
         }
-        return .{ remaining_gas, err };
+        return .{ remaining_gas, state_gas_spillover, err };
     }
 
     // EIP-7702: return the EIP-2929 access cost for following a delegation on code_addr, also
@@ -724,14 +734,14 @@ pub const EVM = struct {
         value: u256,
         initial_gas: u64,
         depth: usize,
-    ) !struct { u64, u160, ?Errors } {
+    ) !struct { u64, u64, u160, ?Errors } {
         // EIP-2929: warm the new address
         _ = self.accessAccount(new_addr);
 
         // EIP-7610: fail on collision (non-zero nonce or existing code or existing storage)
         const existing = try state.accounts.read(new_addr);
         if (existing.nonce != 0 or !std.mem.eql(u8, &existing.code_hash, &types.empty_code_hash) or !std.mem.eql(u8, &existing.storage_hash, &types.empty_root_hash))
-            return .{ 0, 0, Errors.CreateCollision };
+            return .{ 0, 0, 0, Errors.CreateCollision };
 
         const state_snap = state.snapshot();
         const evm_snap = self.snapshot();
@@ -764,6 +774,7 @@ pub const EVM = struct {
             .is_static = false,
             .return_buffer = &[_]u8{}, // RETURN will write to self.return_buffer anyways
             .gas = initial_gas,
+            .state_gas_spillover = 0,
             .stack = undefined,
             .memory = Memory.init(allocator),
             .depth = depth + 1,
@@ -774,15 +785,14 @@ pub const EVM = struct {
         // Use write() (journaled) so the caller's revert can undo this entry if needed.
         _ = try self.created_accounts.write(new_addr, .Created);
         frame.enter(cfg) catch |err| {
-            const spilled = self.total_spillover - evm_snap.total_spillover;
             state.revert(state_snap);
             self.revert(evm_snap);
-            frame.gas += spilled;
+            frame.gas += frame.state_gas_spillover;
             if (err != Errors.Reverted) {
                 frame.gas = 0;
                 self.return_data_size = 0;
             }
-            return .{ frame.gas, 0, err };
+            return .{ frame.gas, 0, 0, err };
         };
 
         // Collect deployed bytecode from the global return buffer
@@ -802,10 +812,10 @@ pub const EVM = struct {
         {
             state.revert(state_snap);
             self.revert(evm_snap);
-            return .{ 0, 0, Errors.OutOfGas };
+            return .{ 0, 0, 0, Errors.OutOfGas };
         }
         frame.gas -= deposit_regular_gas;
-        frame.gas = try self.chargeStateGas(frame.gas, deposit_state_gas); // if check above guards against an underflow
+        frame.gas, frame.state_gas_spillover = try self.chargeStateGas(frame.gas, frame.state_gas_spillover, deposit_state_gas); // if check above guards against an underflow
 
         // Store deployed code and update account code hash
         var code_hash: [32]u8 = types.empty_code_hash;
@@ -815,7 +825,7 @@ pub const EVM = struct {
         }
         (try state.accounts.update(new_addr)).code_hash = code_hash;
         // created_accounts was registered before frame.enter(); SELFDESTRUCT may have marked it false — don't overwrite.
-        return .{ frame.gas, new_addr, @as(?Errors, null) };
+        return .{ frame.gas, frame.state_gas_spillover, new_addr, @as(?Errors, null) };
     }
 
     pub const LogNode = struct { log: Log, node: std.DoublyLinkedList.Node };
@@ -898,9 +908,10 @@ pub const EVM = struct {
     }
 
     // EIP-7702: process authorization list, setting delegation designators on EOAs
-    pub fn applyAuthList(self: *Self, comptime cfg: Config, gas: u64, msg: *const Message, state: *State) !u64 {
+    pub fn applyAuthList(self: *Self, comptime cfg: Config, gas: u64, state_gas_spillover: u64, msg: *const Message, state: *State) !struct { u64, u64 } {
         var gas_left = gas;
-        const auth_list = msg.authorization_list orelse return gas;
+        var total_state_gas_spillover = state_gas_spillover;
+        const auth_list = msg.authorization_list orelse return .{ gas, state_gas_spillover };
 
         const alloc = self.rounded_allocator.allocator();
         var auth_base_settled: std.AutoHashMapUnmanaged(u160, bool) = .empty;
@@ -924,13 +935,13 @@ pub const EVM = struct {
 
                 // Creating a new account
                 if (auth_account.isEmpty()) {
-                    gas_left = try self.chargeStateGas(gas_left, STATE_BYTES_PER_NEW_ACCOUNT * cfg.fork.cpsb);
+                    gas_left, total_state_gas_spillover = try self.chargeStateGas(gas_left, total_state_gas_spillover, STATE_BYTES_PER_NEW_ACCOUNT * cfg.fork.cpsb);
                 }
 
                 // Writing a net-positive delegation
                 if (auth.address != 0) {
                     if (!settled_entry.value_ptr.*) {
-                        gas_left = try self.chargeStateGas(gas_left, STATE_BYTES_PER_AUTH_BASE * cfg.fork.cpsb);
+                        gas_left, total_state_gas_spillover = try self.chargeStateGas(gas_left, total_state_gas_spillover, STATE_BYTES_PER_AUTH_BASE * cfg.fork.cpsb);
                     }
                     settled_entry.value_ptr.* = true;
                 }
@@ -954,7 +965,7 @@ pub const EVM = struct {
             auth_mutable.nonce += 1;
         }
 
-        return gas_left;
+        return .{ gas_left, total_state_gas_spillover };
     }
 
     pub fn markForDestruction(self: *Self, addr: u160) bool {
