@@ -13,7 +13,9 @@ const RoundedAllocator = @import("rounded_alloc.zig").RoundedAllocator;
 const Config = @import("config.zig").Config;
 const Spec = @import("spec.zig").Spec;
 
+pub const StackPtr = [*]align(@sizeOf(u256)) u256;
 const max_stack_size = 1024;
+
 pub const STATE_BYTES_PER_NEW_ACCOUNT = 120;
 const STATE_BYTES_PER_AUTH_BASE = 23;
 pub const STATE_BYTES_PER_STORAGE_SLOT = 64;
@@ -96,7 +98,7 @@ pub const Frame = struct {
         return ops.Ops(cfg).entry(
             self.code.threaded_code[0..].ptr,
             self.gas,
-            0,
+            self.stackBottom(),
             self,
         );
     }
@@ -109,9 +111,17 @@ pub const Frame = struct {
         return self.calldata[@intCast(index)..@intCast(index + read_size)];
     }
 
+    pub inline fn stackBottom(self: *Self) StackPtr {
+        return &self.stack;
+    }
+
+    pub inline fn stackLen(self: *Self, head: StackPtr) usize {
+        return (@intFromPtr(head) - @intFromPtr(self.stackBottom())) / @sizeOf(u256);
+    }
+
     // Pushes the given value on top of the stack
     // Errors out if the stack is full
-    pub fn stackPush(self: *Self, head: usize, v: u256) !usize {
+    pub fn stackPush(self: *Self, head: StackPtr, v: u256) !StackPtr {
         const newHead, const slot = try self.stackReserve(head);
         slot.* = v;
         return newHead;
@@ -119,24 +129,24 @@ pub const Frame = struct {
 
     // Reserves the slot on stack and returns a pointer to it.
     // Errors out if the stack is full
-    pub fn stackReserve(self: *Self, head: usize) !struct { usize, *align(@sizeOf(u256)) u256 } {
-        if (head == max_stack_size) {
+    pub fn stackReserve(self: *Self, head: StackPtr) !struct { StackPtr, *align(@sizeOf(u256)) u256 } {
+        if (head == self.stackBottom() + max_stack_size) {
             @branchHint(.cold);
             return Errors.StackOverflow;
         }
-        return .{ head + 1, &self.stack[head] };
+        return .{ head + 1, @ptrCast(head) };
     }
 
     // Returns `n` items from the top of the stack. Also allows last `peek` number
     // of items to be peeked in-place.
-    pub fn stackPop(self: *Self, head: usize, n: comptime_int, peek: comptime_int) !struct { usize, *align(@sizeOf(u256)) [n]u256 } {
+    pub fn stackPop(self: *Self, head: StackPtr, n: comptime_int, peek: comptime_int) !struct { StackPtr, *align(@sizeOf(u256)) [n]u256 } {
         comptime std.debug.assert(n >= peek);
 
-        if (head < n) {
+        if (@intFromPtr(head) - @intFromPtr(self.stackBottom()) < n * @sizeOf(u256)) {
             @branchHint(.cold);
             return Errors.StackUnderflow;
         }
-        return .{ head - n + peek, @ptrCast(self.stack[head - n .. head].ptr) };
+        return .{ head - n + peek, @ptrCast(head - n) };
     }
 };
 
