@@ -93,6 +93,8 @@ pub const State = struct {
     }
 
     pub fn deploy_code(self: *Self, hash: [32]u8, code: []const u8, comptime cfg: Config) !void {
+        if (self.code_storage.contains(hash)) return;
+
         const allocator = self.deployed_bytecode_allocator.allocator();
         const code_bytes = try allocator.dupe(u8, code);
         const bytecode = try Bytecode.init(allocator, code_bytes, cfg);
