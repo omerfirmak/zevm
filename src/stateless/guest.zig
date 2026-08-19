@@ -243,6 +243,7 @@ fn stateCapacities(comptime spec: Spec, bal: zevm.types.BlockAccessLists, codes:
 
     caps.contract_dirties = @intCast(slots_num + 128);
     caps.account_dirties = @intCast(bal.len + 16);
+    caps.account_journal = @max(caps.account_journal, caps.account_dirties);
 
     const fn_size = @sizeOf(usize);
     const delegation_code_len = 23; // 3-byte prefix + 20-byte address

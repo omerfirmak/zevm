@@ -138,6 +138,7 @@ pub const Spec = struct {
         warm_accounts: u32,
         warm_slots: u32,
         created: u32,
+        created_journal: u32,
         return_buf: usize,
         logs_buf: usize,
     };
@@ -156,9 +157,22 @@ pub const Spec = struct {
         const cs: u32 = @intCast(gas_limit / sstore_min_gas + gas_limit / self.cold_sload_gas);
         const ts: u32 = @intCast(max_tx_gas / tstore_gas);
 
-        // Journal: cleared between txns, so bounded by max_tx_gas.
-        // Only value-bearing CALLs write account entries; each costs warm + call_value_gas (×2 accounts).
-        const aj: u32 = @intCast((max_tx_gas / acct_write) * 2);
+        // Journal: cleared between txns, so bounded by the regular gas a single tx can burn.
+        // EIP-8037 caps that at max_tx_gas; the state gas reservoir a tx may carry on top of that
+        // only pays for state gas, so it can't buy any of the writes below.
+        // Cheapest regular gas per account journal entry, minimized over every op that journals:
+        //   CALL with value:  warm access + call_value_gas -> 2 entries (sender, receiver)
+        //   SELFDESTRUCT:     SELFDESTRUCT                 -> 2 entries (beneficiary, target)
+        //   CREATE/CREATE2:   CREATE                       -> 4 entries (creator nonce, creator
+        //                                                     balance, new account, code hash)
+        //   EIP-7702 auth:    per_auth_base_cost           -> 1 entry  (authority)
+        const gas_per_acct_entry = @min(
+            @min(acct_write / 2, self.gas_table[Opcode.SELFDESTRUCT.byte()] / 2),
+            @min(self.gas_table[Opcode.CREATE.byte()] / 4, self.per_auth_base_cost),
+        );
+        // The slack covers the writers that journal outside of any tx: withdrawals and the
+        // EIP-7002/7251 system calls run after the last clearTxState().
+        const aj: u32 = @intCast(@min(max_tx_gas, gas_limit) / gas_per_acct_entry + 128);
         // Contract slots: re-writes to a warm dirty slot cost only warm_access_gas
         const cj: u32 = @intCast(max_tx_gas / self.warm_access_gas);
         // Transient: each TSTORE costs tstore_gas regardless of whether the slot was already dirty
@@ -178,16 +192,29 @@ pub const Spec = struct {
 
     /// Derive tight EVM pre-allocation sizes from the spec's max_tx_gas.
     pub fn evmCapacities(comptime self: Self) EvmCapacities {
-        const sstore_min = self.cold_sload_gas + self.sstore_reset_gas;
         const create_gas: u64 = self.gas_table[Opcode.CREATE.byte()];
-        // All three are per-tx (cleared in reset()), so bounded by max_tx_gas / first-access cost.
-        // warm_accounts: writeNoClobber, one entry per unique cold account
-        const wa: u32 = @intCast(self.max_tx_gas / self.cold_account_access_gas);
-        // warm_slots: writeNoClobber, one entry per unique cold slot
-        const ws: u32 = @intCast(self.max_tx_gas / self.cold_sload_gas);
-        // pre_state: getOrPut on first SSTORE per slot
-        const ps: u32 = @intCast(self.max_tx_gas / sstore_min);
+        const selfdestruct_gas: u64 = self.gas_table[Opcode.SELFDESTRUCT.byte()];
+        // All of these are per-tx (cleared in reset()), so they are bounded by the regular gas a
+        // single tx can burn: max_tx_gas. State gas (EIP-8038) is never charged for a first access,
+        // so the reservoir a tx may carry on top of max_tx_gas buys no extra entries.
+        // A slot or an account enters a tx either by paying the cold access charge or by riding in
+        // on the tx access list, whichever is cheaper.
+        const first_slot_touch = @min(self.cold_sload_gas, self.access_list_storage_key_gas);
+        const first_account_touch = @min(self.cold_account_access_gas, self.access_list_address_gas);
+        // warm_accounts: writeNoClobber, one entry per unique account. The slack is for the
+        // addresses warmed for free: precompiles, coinbase (EIP-3651), sender and target.
+        const wa: u32 = @intCast(self.max_tx_gas / first_account_touch + 64);
+        // warm_slots: writeNoClobber, one entry per unique slot
+        const ws: u32 = @intCast(self.max_tx_gas / first_slot_touch);
+        // pre_state: getOrPut on every SSTORE, keyed per slot. SSTORE has no constant cost and a
+        // no-op store to a warm slot pays only warm access, so what has to be paid for is the slot
+        // itself rather than the write, the same bound as warm_slots, which SSTORE also fills.
+        const ps: u32 = ws;
+        // created_accounts: one dirties entry per CREATE
         const ca: u32 = @intCast(self.max_tx_gas / create_gas);
+        // and one journal entry per CREATE plus one per SELFDESTRUCT of an account created in
+        // this tx, which repeats for as long as that account keeps being re-entered.
+        const cj: u32 = ca + @as(u32, @intCast(self.max_tx_gas / selfdestruct_gas));
         // Invert EIP-150 memory cost formula: words²/512 + 3*words = gas
         // => words² + 1536*words - 512*gas = 0
         // => words = (-1536 + sqrt(1536² + 2048*gas)) / 2
@@ -199,6 +226,7 @@ pub const Spec = struct {
             .warm_accounts = wa,
             .warm_slots = ws,
             .created = ca,
+            .created_journal = cj,
             .return_buf = ret,
             .logs_buf = 16 * 1024 * 1024,
         };
