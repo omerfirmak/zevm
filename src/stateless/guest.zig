@@ -138,9 +138,23 @@ fn makeBlock(
     const txs = try allocator.alloc(zevm.types.Transaction, payload.transactions.len());
     const raw_txs = try allocator.alloc(rlp.RawValue, payload.transactions.len());
     defer allocator.free(raw_txs);
+    const body_txs = try allocator.alloc(rlp.RawValue, payload.transactions.len());
+    defer allocator.free(body_txs);
+    defer for (body_txs, raw_txs) |body, raw| {
+        if (body.value.ptr != raw.value.ptr) allocator.free(body.value);
+    };
     for (payload.transactions.constSlice(), 0..) |*raw, i| {
         _ = try txs[i].decodeFromRLP(allocator, raw.constSlice());
-        raw_txs[i] = .{ .value = raw.constSlice() };
+        const bytes = raw.constSlice();
+        raw_txs[i] = .{ .value = bytes };
+        if (bytes.len > 0 and bytes[0] <= 0x7f) {
+            var wrapped = std.array_list.Managed(u8).init(allocator);
+            errdefer wrapped.deinit();
+            try rlp.serialize([]const u8, allocator, bytes, &wrapped);
+            body_txs[i] = .{ .value = try wrapped.toOwnedSlice() };
+        } else {
+            body_txs[i] = .{ .value = bytes };
+        }
     }
 
     const senders = try allocator.alloc(u160, payload.transactions.len());
@@ -201,7 +215,7 @@ fn makeBlock(
         withdrawals: []zevm.types.Withdrawal,
     }, allocator, .{
         .header = header,
-        .transactions = raw_txs,
+        .transactions = body_txs,
         .uncles = &.{},
         .withdrawals = withdrawals,
     }, &encoded);
