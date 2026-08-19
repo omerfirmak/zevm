@@ -25,6 +25,20 @@ SECTIONS
   PROVIDE(__global_pointer$ = .);
   .rodata : ALIGN(8) SUBALIGN(8) { *(.rodata .rodata.*) } >rom AT>rom :rodata
 
+  .init_array : ALIGN(8) SUBALIGN(8) {
+    PROVIDE(__init_array_start = .);
+    KEEP(*(SORT_BY_INIT_PRIORITY(.init_array.*)))
+    KEEP(*(.init_array))
+    PROVIDE(__init_array_end = .);
+  } >rom AT>rom :rodata
+
+  .fini_array : ALIGN(8) SUBALIGN(8) {
+    PROVIDE(__fini_array_start = .);
+    KEEP(*(SORT_BY_INIT_PRIORITY(.fini_array.*)))
+    KEEP(*(.fini_array))
+    PROVIDE(__fini_array_end = .);
+  } >rom AT>rom :rodata
+
   .data : ALIGN(8) SUBALIGN(8) { *(.data .data.* .sdata .sdata.*) } >ram AT>ram :data
 
   .bss : ALIGN(8) SUBALIGN(8) {
