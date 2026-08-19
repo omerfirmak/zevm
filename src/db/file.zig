@@ -222,16 +222,16 @@ pub const Storage = struct {
         return index;
     }
 
-    pub fn get(self: *Self, io: std.Io, allocator: std.mem.Allocator, table: Table, number: u64) ![]const u8 {
+    pub fn get(self: *Self, io: std.Io, allocator: std.mem.Allocator, table: Table, number: u64) !?[]const u8 {
         self.lock.lockSharedUncancelable(io);
         defer self.lock.unlockShared(io);
 
         var offset = number;
         if (self.ranges[@intFromEnum(table)]) |range| {
-            if (range.tail > number or range.head < number) return error.NotFound;
+            if (range.tail > number or range.head < number) return null;
             offset -= range.tail;
         } else {
-            return error.NotFound;
+            return null;
         }
 
         const index_offset = (offset * IndexEntry.size) + tail_size;
@@ -307,8 +307,8 @@ test "empty dir" {
 
         try storage.put(std.testing.io, std.testing.allocator, .bals, 44, &data);
         const read = try storage.get(std.testing.io, std.testing.allocator, .bals, 44);
-        defer std.testing.allocator.free(read);
-        try std.testing.expectEqualSlices(u8, &data, read);
+        defer std.testing.allocator.free(read.?);
+        try std.testing.expectEqualSlices(u8, &data, read.?);
     }
 
     var second_storage = try Storage.init(std.testing.io, std.testing.allocator, path[0..size]);
@@ -317,8 +317,8 @@ test "empty dir" {
     try std.testing.expect(second_storage.ranges[@intFromEnum(Table.bals)].?.tail == 44);
 
     const read = try second_storage.get(std.testing.io, std.testing.allocator, .bals, 44);
-    defer std.testing.allocator.free(read);
-    try std.testing.expectEqualSlices(u8, &data, read);
+    defer std.testing.allocator.free(read.?);
+    try std.testing.expectEqualSlices(u8, &data, read.?);
 }
 
 test "put after reopen appends" {
@@ -346,12 +346,12 @@ test "put after reopen appends" {
     try storage.put(std.testing.io, std.testing.allocator, .bals, 45, &second);
 
     const read_first = try storage.get(std.testing.io, std.testing.allocator, .bals, 44);
-    defer std.testing.allocator.free(read_first);
-    try std.testing.expectEqualSlices(u8, &first, read_first);
+    defer std.testing.allocator.free(read_first.?);
+    try std.testing.expectEqualSlices(u8, &first, read_first.?);
 
     const read_second = try storage.get(std.testing.io, std.testing.allocator, .bals, 45);
-    defer std.testing.allocator.free(read_second);
-    try std.testing.expectEqualSlices(u8, &second, read_second);
+    defer std.testing.allocator.free(read_second.?);
+    try std.testing.expectEqualSlices(u8, &second, read_second.?);
 }
 
 test "data file rollover" {
@@ -395,7 +395,7 @@ test "data file rollover" {
 
     for (records, 0..) |record, number| {
         const read = try storage.get(std.testing.io, std.testing.allocator, .bals, number);
-        defer std.testing.allocator.free(read);
-        try std.testing.expectEqualSlices(u8, &record, read);
+        defer std.testing.allocator.free(read.?);
+        try std.testing.expectEqualSlices(u8, &record, read.?);
     }
 }
