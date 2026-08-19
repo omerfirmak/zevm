@@ -1,24 +1,15 @@
 const std = @import("std");
-const List = @import("ssz").utils.List;
+const ssz_utils = @import("ssz").utils;
+const List = ssz_utils.List;
+const ProgressiveList = ssz_utils.ProgressiveList;
+const ProgressiveByteList = ssz_utils.ProgressiveByteList;
 
 const MAX_EXTRA_DATA_BYTES = 32;
-const MAX_BYTES_PER_TRANSACTION = 1 << 30;
-const MAX_TRANSACTIONS_PER_PAYLOAD = 1 << 20;
-const MAX_WITHDRAWALS_PER_PAYLOAD = 1 << 4;
-const MAX_BLOB_COMMITMENTS_PER_BLOCK = 4096;
-const MAX_DEPOSIT_REQUESTS_PER_PAYLOAD = 1 << 13;
-const MAX_WITHDRAWAL_REQUESTS_PER_PAYLOAD = 1 << 4;
-const MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD = 1 << 1;
-const MAX_BUILDER_DEPOSIT_REQUESTS_PER_PAYLOAD = 1 << 6;
-const MAX_BUILDER_EXIT_REQUESTS_PER_PAYLOAD = 1 << 4;
-const MAX_WITNESS_NODES = 1 << 22;
-const MAX_WITNESS_CODES = 1 << 18;
 const MAX_WITNESS_HEADERS = 256;
 const MAX_BYTES_PER_WITNESS_NODE = 1 << 10;
 const MAX_BYTES_PER_CODE = 1 << 16;
 const MAX_BYTES_PER_HEADER = 1 << 10;
-const MAX_OPTIONAL_FORK_ACTIVATION_VALUES = 1;
-const MAX_PUBLIC_KEYS = 1 << 15;
+const PUBLIC_KEY_BYTES = 65;
 
 pub const Withdrawal = struct {
     index: u64,
@@ -28,6 +19,8 @@ pub const Withdrawal = struct {
 };
 
 pub const ExecutionPayload = struct {
+    pub const ssz_progressive_container = true;
+
     parent_hash: [32]u8,
     fee_recipient: [20]u8,
     state_root: [32]u8,
@@ -41,11 +34,11 @@ pub const ExecutionPayload = struct {
     extra_data: List(u8, MAX_EXTRA_DATA_BYTES),
     base_fee_per_gas: u256,
     block_hash: [32]u8,
-    transactions: List(List(u8, MAX_BYTES_PER_TRANSACTION), MAX_TRANSACTIONS_PER_PAYLOAD),
-    withdrawals: List(Withdrawal, MAX_WITHDRAWALS_PER_PAYLOAD),
+    transactions: ProgressiveList(ProgressiveByteList),
+    withdrawals: ProgressiveList(Withdrawal),
     blob_gas_used: u64,
     excess_blob_gas: u64,
-    block_access_list: List(u8, MAX_BYTES_PER_TRANSACTION),
+    block_access_list: ProgressiveByteList,
     slot_number: u64,
 };
 
@@ -82,49 +75,38 @@ pub const BuilderExitRequest = struct {
 };
 
 pub const ExecutionRequests = struct {
-    deposits: List(DepositRequest, MAX_DEPOSIT_REQUESTS_PER_PAYLOAD),
-    withdrawals: List(WithdrawalRequest, MAX_WITHDRAWAL_REQUESTS_PER_PAYLOAD),
-    consolidations: List(ConsolidationRequest, MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD),
-    builder_deposits: List(BuilderDepositRequest, MAX_BUILDER_DEPOSIT_REQUESTS_PER_PAYLOAD),
-    builder_exits: List(BuilderExitRequest, MAX_BUILDER_EXIT_REQUESTS_PER_PAYLOAD),
+    pub const ssz_progressive_container = true;
+
+    deposits: ProgressiveList(DepositRequest),
+    withdrawals: ProgressiveList(WithdrawalRequest),
+    consolidations: ProgressiveList(ConsolidationRequest),
+    builder_deposits: ProgressiveList(BuilderDepositRequest),
+    builder_exits: ProgressiveList(BuilderExitRequest),
 };
 
 pub const NewPayloadRequest = struct {
     execution_payload: ExecutionPayload,
-    versioned_hashes: List([32]u8, MAX_BLOB_COMMITMENTS_PER_BLOCK),
+    versioned_hashes: ProgressiveList([32]u8),
     parent_beacon_block_root: [32]u8,
     execution_requests: ExecutionRequests,
 };
 
 pub const ExecutionWitness = struct {
-    state: List(List(u8, MAX_BYTES_PER_WITNESS_NODE), MAX_WITNESS_NODES),
-    codes: List(List(u8, MAX_BYTES_PER_CODE), MAX_WITNESS_CODES),
+    state: ProgressiveList(List(u8, MAX_BYTES_PER_WITNESS_NODE)),
+    codes: ProgressiveList(List(u8, MAX_BYTES_PER_CODE)),
     headers: List(List(u8, MAX_BYTES_PER_HEADER), MAX_WITNESS_HEADERS),
-};
-
-pub const ForkActivation = struct {
-    block_number: List(u64, MAX_OPTIONAL_FORK_ACTIVATION_VALUES),
-    timestamp: List(u64, MAX_OPTIONAL_FORK_ACTIVATION_VALUES),
-};
-
-pub const ForkConfig = struct {
-    activation: ForkActivation,
-};
-
-pub const ChainConfig = struct {
-    chain_id: u64,
-    active_fork: ForkConfig,
 };
 
 pub const StatelessInput = struct {
     new_payload_request: NewPayloadRequest,
     witness: ExecutionWitness,
-    chain_config: ChainConfig,
-    public_keys: List([65]u8, MAX_PUBLIC_KEYS),
+    chain_id: u64,
+    public_keys: ProgressiveList([PUBLIC_KEY_BYTES]u8),
 };
 
 pub const StatelessValidationResult = struct {
     new_payload_request_root: [32]u8,
     successful_validation: bool,
-    chain_config: ChainConfig,
+    chain_id: u64,
+    schema_id: u16,
 };

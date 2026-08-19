@@ -61,8 +61,8 @@
             .hash = "rlp-0.1.0-7i0JtH06AQBdU6PoGJ6V9HGdhn6uPirq6G6Y3yHSa8gH",
         },
         .ssz = .{
-            .url = "git+https://github.com/blockblaz/ssz.zig.git?ref=v0.0.11#d50b0319735fe18021ad543877d25ea940543b28",
-            .hash = "ssz-0.0.9-Lfwd68m_AwAFGpz2g1kHvokWjp_UsvqDb3Z2D46w5s_-",
+            .url = "git+https://github.com/omerfirmak/ssz.zig.git#32aadce1122174dbb185129c62133ef2f88156a4",
+            .hash = "ssz-0.0.9-Lfwd6-Y0BACPYd7ifVKUb8au6F9NphMMhzlJdq5f4Cvc",
         },
         .zisk = .{
             .url = "git+https://github.com/0xPolygonHermez/zisk?ref=v1.0.0-alpha#4b9f758fabc4955cac20af837019ccc31b803a46",
