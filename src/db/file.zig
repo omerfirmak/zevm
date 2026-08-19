@@ -2,13 +2,6 @@ const std = @import("std");
 const cache = @import("cache");
 const snappy = @import("snappy").raw;
 
-const Table = enum(u8) {
-    headers = 0,
-    bodies = 1,
-    receipts = 2,
-    bals = 3,
-};
-
 var max_file_size: u32 = 3 * 1024 * 1024 * 1024;
 const tail_size = @sizeOf(u64);
 
@@ -54,6 +47,12 @@ const FileOpener = struct {
 
 pub const Storage = struct {
     const Self = @This();
+    pub const Table = enum(u8) {
+        headers = 0,
+        bodies = 1,
+        receipts = 2,
+        bals = 3,
+    };
 
     datadir: std.Io.Dir,
 
@@ -313,8 +312,8 @@ test "empty dir" {
 
     var second_storage = try Storage.init(std.testing.io, std.testing.allocator, path[0..size]);
     defer second_storage.deinit(std.testing.io, std.testing.allocator) catch unreachable;
-    try std.testing.expect(second_storage.ranges[@intFromEnum(Table.bals)].?.head == 44);
-    try std.testing.expect(second_storage.ranges[@intFromEnum(Table.bals)].?.tail == 44);
+    try std.testing.expect(second_storage.ranges[@intFromEnum(Storage.Table.bals)].?.head == 44);
+    try std.testing.expect(second_storage.ranges[@intFromEnum(Storage.Table.bals)].?.tail == 44);
 
     const read = try second_storage.get(std.testing.io, std.testing.allocator, .bals, 44);
     defer std.testing.allocator.free(read.?);
@@ -340,7 +339,7 @@ test "put after reopen appends" {
     var storage = try Storage.init(std.testing.io, std.testing.allocator, path[0..size]);
     defer storage.deinit(std.testing.io, std.testing.allocator) catch unreachable;
 
-    const next_index = storage.next_indexes[@intFromEnum(Table.bals)];
+    const next_index = storage.next_indexes[@intFromEnum(Storage.Table.bals)];
     try std.testing.expect(next_index.file_no == 0 and next_index.offset > 0);
 
     try storage.put(std.testing.io, std.testing.allocator, .bals, 45, &second);
@@ -372,7 +371,7 @@ test "data file rollover" {
     };
 
     try storage.put(std.testing.io, std.testing.allocator, .bals, 0, &records[0]);
-    const record_len = storage.next_indexes[@intFromEnum(Table.bals)].offset;
+    const record_len = storage.next_indexes[@intFromEnum(Storage.Table.bals)].offset;
     try std.testing.expect(record_len > 0);
 
     const restore_max_file_size = max_file_size;
@@ -382,7 +381,7 @@ test "data file rollover" {
     try storage.put(std.testing.io, std.testing.allocator, .bals, 1, &records[1]);
     try storage.put(std.testing.io, std.testing.allocator, .bals, 2, &records[2]);
 
-    const next_index = storage.next_indexes[@intFromEnum(Table.bals)];
+    const next_index = storage.next_indexes[@intFromEnum(Storage.Table.bals)];
     try std.testing.expect(next_index.file_no == 1 and next_index.offset == record_len);
 
     const first_file = try storage.openDataFile(std.testing.io, .bals, 0);
