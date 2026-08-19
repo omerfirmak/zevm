@@ -16,6 +16,13 @@ pub const Schedule = struct {
     }
 };
 
+pub const mainnet_prague_hash = [4]u8{ 0xc3, 0x76, 0xcf, 0x8b };
+pub const mainnet_schedule = Schedule.init(.{
+    .Osaka = 1764798551,
+    .BPO1 = 1765290071,
+    .BPO2 = 1767747671,
+});
+
 pub const Id = struct {
     hash: [4]u8,
     next: u64,
@@ -36,13 +43,7 @@ pub fn calculateId(initial_hash: [4]u8, schedule: *const Schedule, now: u64) Id 
 }
 
 test "calculate" {
-    const mainnet_schedule = Schedule.init(.{
-        .Osaka = 1764798551,
-        .BPO1 = 1765290071,
-        .BPO2 = 1767747671,
-    });
-
-    const genesis = [4]u8{ 0xc3, 0x76, 0xcf, 0x8b };
+    const genesis = mainnet_prague_hash;
     // Last Prague block
     try std.testing.expectEqual(Id{ .hash = [4]u8{ 0xc3, 0x76, 0xcf, 0x8b }, .next = 1764798551 }, calculateId(genesis, &mainnet_schedule, 1764798550));
     // First Osaka block
