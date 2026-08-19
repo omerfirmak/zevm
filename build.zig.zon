@@ -65,8 +65,8 @@
             .hash = "ssz-0.0.9-Lfwd6-Y0BACPYd7ifVKUb8au6F9NphMMhzlJdq5f4Cvc",
         },
         .zisk = .{
-            .url = "git+https://github.com/0xPolygonHermez/zisk?ref=v1.0.0-alpha#459062ca8261ea6e7a522c18036fd4042844f992",
-            .hash = "N-V-__8AAFwrSwIxN7P4sdiJYnGBVC5WSh_w-eShp_RqT1HR",
+            .url = "git+https://github.com/0xPolygonHermez/zisk?ref=v1.1.0-alpha#9a5a1ac594b9b6e527fc6f54ff4313f75c4acf93",
+            .hash = "N-V-__8AAIkYtQIMQC4kxIrlhpHv17X0EDM5DkUUuiagXTax",
         },
         .snappy = .{
             .url = "git+https://github.com/ChainSafe/snappy.zig#713942410426051da6107a955b29f3f152815622",
