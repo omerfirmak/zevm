@@ -68,8 +68,8 @@ pub const HashOrNumber = union(enum) {
 pub const GetBlockHeaders = proto.Request(struct {
     origin: HashOrNumber,
     amount: u64,
-    skip: u64,
-    reverse: bool,
+    skip: u64 = 0,
+    reverse: bool = true,
 });
 
 pub const BlockHeaders = proto.Response([]rlp.RawValue);
