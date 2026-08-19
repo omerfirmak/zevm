@@ -1,8 +1,8 @@
 name: Devnet Verification
 
 on:
-  schedule:
-    - cron: '44 * * * *'
+#  schedule:
+#    - cron: '44 * * * *'
   workflow_dispatch:
 
 jobs:
