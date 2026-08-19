@@ -1,11 +1,11 @@
 const std = @import("std");
 const evm = @import("zevm");
-const List = @import("ssz").utils.List;
+const ssz_utils = @import("ssz").utils;
+const List = ssz_utils.List;
+const ProgressiveList = ssz_utils.ProgressiveList;
 
 const MAX_BYTES_PER_WITNESS_NODE = 1 << 10;
-const MAX_WITNESS_NODES = 1 << 22;
 const MAX_BYTES_PER_CODE = 1 << 16;
-const MAX_WITNESS_CODES = 1 << 18;
 
 pub const Errors = error{
     InvalidWitness,
@@ -20,8 +20,8 @@ pub const CommittedState = struct {
     pub fn init(
         allocator: std.mem.Allocator,
         parent_state_root: [32]u8,
-        state: List(List(u8, MAX_BYTES_PER_WITNESS_NODE), MAX_WITNESS_NODES),
-        bytecodes: List(List(u8, MAX_BYTES_PER_CODE), MAX_WITNESS_CODES),
+        state: ProgressiveList(List(u8, MAX_BYTES_PER_WITNESS_NODE)),
+        bytecodes: ProgressiveList(List(u8, MAX_BYTES_PER_CODE)),
         bal: *const evm.types.BlockAccessLists,
     ) !CommittedState {
         var codes: evm.trie.NodesHashMap = .empty;

@@ -13,17 +13,10 @@ const STATELESS_INPUT_SCHEMA_ID_SIZE: usize = 2;
 pub fn verify_ssz(allocator: std.mem.Allocator, input_bytes: []const u8) ![]const u8 {
     @setEvalBranchQuota(200_000);
     var res: types.StatelessValidationResult = .{
-        .chain_config = .{
-            .chain_id = 0,
-            .active_fork = .{
-                .activation = .{
-                    .block_number = try .init(allocator),
-                    .timestamp = try .init(allocator),
-                },
-            },
-        },
         .new_payload_request_root = @splat(0),
         .successful_validation = false,
+        .chain_id = 0,
+        .schema_id = 0,
     };
 
     if (input_bytes.len < STATELESS_INPUT_SCHEMA_ID_SIZE)
@@ -36,11 +29,12 @@ pub fn verify_ssz(allocator: std.mem.Allocator, input_bytes: []const u8) ![]cons
     ssz.deserialize(types.StatelessInput, input_bytes[STATELESS_INPUT_SCHEMA_ID_SIZE..], &input, allocator) catch
         return serialize_ssz_result(allocator, res);
 
-    res.chain_config = input.chain_config;
+    res.chain_id = input.chain_id;
+    res.schema_id = STATELESS_INPUT_SCHEMA_ID;
     ssz.hashTreeRoot(zevm.crypto.hash.Sha256, types.NewPayloadRequest, input.new_payload_request, &res.new_payload_request_root, allocator) catch
         return serialize_ssz_result(allocator, res);
 
-    if (input.chain_config.chain_id != @import("build_options").chain_id)
+    if (input.chain_id != @import("build_options").chain_id)
         return serialize_ssz_result(allocator, res);
 
     res.successful_validation = if (verify(allocator, input)) |_| true else |_| false;
@@ -54,14 +48,6 @@ fn serialize_ssz_result(allocator: std.mem.Allocator, res: types.StatelessValida
 }
 
 pub fn verify(allocator: std.mem.Allocator, input: types.StatelessInput) !void {
-    const act = input.chain_config.active_fork.activation;
-    const payload = input.new_payload_request.execution_payload;
-    const bn = act.block_number.constSlice();
-    const ts = act.timestamp.constSlice();
-    if (bn.len == 0 and ts.len == 0) return error.InvalidForkActivation;
-    if (bn.len > 0 and payload.block_number < bn[0]) return error.InactiveForkConfig;
-    if (ts.len > 0 and payload.timestamp < ts[0]) return error.InactiveForkConfig;
-
     const spec = comptime zevm.processor.Spec.fromFork(.Amsterdam, @import("build_options").chain_id);
     const headers = try allocator.alloc(zevm.types.BlockHeader, input.witness.headers.len());
     const header_hashes = try allocator.alloc([32]u8, input.witness.headers.len());
@@ -76,6 +62,7 @@ pub fn verify(allocator: std.mem.Allocator, input: types.StatelessInput) !void {
     if (headers.len == 0) return error.MissingParentHeader;
     const parent = &headers[headers.len - 1];
     var block = try makeBlock(allocator, &input.new_payload_request, input.public_keys.constSlice());
+    try validateVersionedHashes(&block, input.new_payload_request.versioned_hashes.constSlice());
 
     var ancestors: [256]u256 = @splat(0);
     const n = @min(header_hashes.len, 256);
@@ -113,6 +100,26 @@ pub fn verify(allocator: std.mem.Allocator, input: types.StatelessInput) !void {
     if (!std.mem.eql(u8, &computed_state_root, &block.block.header.state_root)) {
         return error.MismatchedStateRoot;
     }
+}
+
+fn validateVersionedHashes(
+    block: *const zevm.processor.PreprocessedBlock,
+    declared: []const [32]u8,
+) !void {
+    var i: usize = 0;
+    for (block.block.transactions) |*tx| {
+        const hashes = switch (tx.*) {
+            .blob => |*t| t.blob_hashes,
+            else => continue,
+        };
+        for (hashes) |*hash| {
+            if (i >= declared.len or !std.mem.eql(u8, hash[0..], declared[i][0..])) {
+                return error.InvalidVersionedHashes;
+            }
+            i += 1;
+        }
+    }
+    if (i != declared.len) return error.InvalidVersionedHashes;
 }
 
 fn assertAccountCodeIsInWitness(committed: *const CommittedState, addr: u160) !void {
