@@ -187,15 +187,18 @@ fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []con
                 inline else => |t| @intCast(t.gas_limit),
             };
             state = try state_mod.State.init(arena_allocator, &committed, switch (fork_enum) {
-                inline else => |f| (comptime Spec.fromFork(f)).stateCapacities(@min(30_000_000, gas_limit)),
+                inline .Osaka, .BPO1, .BPO2, .Amsterdam => |f| (comptime Spec.fromFork(f)).stateCapacities(@min(30_000_000, gas_limit)),
+                else => unreachable,
             });
             vm = try evm.EVM.init(arena_allocator, &context, switch (fork_enum) {
-                inline else => |f| (comptime Spec.fromFork(f)).evmCapacities(),
+                inline .Osaka, .BPO1, .BPO2, .Amsterdam => |f| (comptime Spec.fromFork(f)).evmCapacities(),
+                else => unreachable,
             });
 
             const msg = zevm.processor.messageFromTx(arena_allocator, &decoded_tx, sender) catch |e| break :blk e;
             break :blk switch (fork_enum) {
-                inline else => |f| if (vm.process(.{ .fork = Spec.fromFork(f), .tracing_enabled = trace }, &msg, &state)) |_| null else |err| err,
+                inline .Osaka, .BPO1, .BPO2, .Amsterdam => |f| if (vm.process(.{ .fork = Spec.fromFork(f), .tracing_enabled = trace }, &msg, &state)) |_| null else |err| err,
+                else => unreachable,
             };
         };
 

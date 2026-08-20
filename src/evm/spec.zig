@@ -248,10 +248,11 @@ pub const Spec = struct {
         return @intFromEnum(self.fork) >= @intFromEnum(fork);
     }
 
-    pub fn fromFork(fork: Fork) Spec {
+    pub fn fromFork(comptime fork: Fork) Spec {
         return switch (fork) {
             .Osaka, .BPO1, .BPO2 => Osaka,
             .Amsterdam => Amsterdam,
+            else => @compileError("no EVM Spec implemented for fork ." ++ @tagName(fork)),
         };
     }
 };

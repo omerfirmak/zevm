@@ -255,12 +255,13 @@ fn runBlockchainTestFile(io: std.Io, allocator: std.mem.Allocator, dir: std.Io.D
         }
 
         switch (fork_enum) {
-            inline else => |f| {
+            inline .Osaka, .BPO1, .BPO2, .Amsterdam => |f| {
                 runBlockchainTest(allocator, &test_case, zevm.processor.Spec.fromFork(f, 1)) catch |err| {
                     std.debug.print("{s}: FAIL: {}\n", .{ name, err });
                     any_failed = true;
                 };
             },
+            else => unreachable,
         }
     }
     if (any_failed) return error.BlockchainTestFailed;

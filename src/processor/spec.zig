@@ -18,12 +18,13 @@ pub const Spec = struct {
     max_blobs_per_block: u64,
     blob_base_fee_update_fraction: u64,
 
-    pub fn fromFork(fork: Fork, comptime chain_id: u64) Spec {
+    pub fn fromFork(comptime fork: Fork, comptime chain_id: u64) Spec {
         return override(switch (fork) {
             .Osaka => Osaka,
             .BPO1 => BPO1,
             .BPO2 => BPO2,
             .Amsterdam => Amsterdam,
+            else => @compileError("no processor Spec implemented for fork ." ++ @tagName(fork)),
         }, .{
             .chain_id = chain_id,
         });
