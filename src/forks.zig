@@ -61,6 +61,10 @@ pub const mainnet_schedule = Schedule.init(.{
     .BPO2 = 1767747671,
 });
 
+pub const glamsterdam_devnet8_schedule = Schedule.init(.{
+    .Amsterdam = 1_787_212_224,
+});
+
 pub const Id = struct {
     hash: [4]u8,
     next: u64,
