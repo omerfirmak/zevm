@@ -2,7 +2,7 @@ const std = @import("std");
 const rlp = @import("rlp");
 const Enode = @import("enode.zig").Enode;
 const enr = @import("enr.zig");
-const ForkId = @import("../forks.zig").Id;
+const IdFilter = @import("../forks.zig").IdFilter;
 const Secp256k1 = std.crypto.ecc.Secp256k1;
 const Ecdsa = std.crypto.sign.ecdsa.EcdsaSecp256k1Sha256;
 const HkdfSha256 = std.crypto.kdf.hkdf.HkdfSha256;
@@ -367,7 +367,7 @@ const Sessions = struct {
         return false;
     }
 
-    pub fn fillRecords(self: *Self, io: std.Io, out: []enr.Record, eth: ?ForkId) []enr.Record {
+    pub fn fillRecords(self: *Self, io: std.Io, out: []enr.Record, id_filter: ?*const IdFilter, head: u64, time: u64) []enr.Record {
         self.lock.lockUncancelable(io);
         defer self.lock.unlock(io);
         if (self.map.size == 0 or out.len == 0) return out[0..0];
@@ -380,7 +380,7 @@ const Sessions = struct {
         while (it.next()) |s| : (i += 1) {
             if (i < start) continue;
             if (s.record) |r| {
-                if (!std.meta.eql(r.eth, eth)) continue;
+                if (!compatibleForkId(id_filter, r, head, time)) continue;
                 out[count] = r;
                 count += 1;
                 if (count == out.len) return out[0..count];
@@ -391,7 +391,7 @@ const Sessions = struct {
         while (it2.next()) |s| : (i += 1) {
             if (i >= start) break;
             if (s.record) |r| {
-                if (!std.meta.eql(r.eth, eth)) continue;
+                if (!compatibleForkId(id_filter, r, head, time)) continue;
 
                 out[count] = r;
                 count += 1;
@@ -401,6 +401,12 @@ const Sessions = struct {
         return out[0..count];
     }
 };
+
+fn compatibleForkId(id_filter: ?*const IdFilter, record: enr.Record, head: u64, time: u64) bool {
+    const filter = id_filter orelse return true;
+    const remote = record.eth orelse return false;
+    return filter.check(remote, head, time);
+}
 
 fn nodeId(pubkey: [64]u8) [32]u8 {
     var id: [32]u8 = undefined;
