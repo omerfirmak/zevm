@@ -66,10 +66,14 @@ pub const Id = struct {
     next: u64,
 };
 
-pub fn calculateId(initial_hash: [4]u8, schedule: *const Schedule, now: u64) Id {
-    var crc: std.hash.Crc32 = .{ .crc = std.mem.readInt(u32, &initial_hash, .big) ^ 0xffff_ffff };
-    var hash = initial_hash;
+pub fn calculateId(genesis_hash: [32]u8, schedule: *const Schedule, now: u64) Id {
+    var crc: std.hash.Crc32 = .init();
+    crc.update(&genesis_hash);
+
+    var hash: [4]u8 = undefined;
+    std.mem.writeInt(u32, &hash, crc.final(), .big);
     var last: ?u64 = null;
+
     for (0..schedule.inner.len) |i| {
         const time = schedule.inner[i] orelse continue;
         if (time > now) return .{ .hash = hash, .next = time };
@@ -84,7 +88,7 @@ pub fn calculateId(initial_hash: [4]u8, schedule: *const Schedule, now: u64) Id 
 }
 
 test "calculate from genesis" {
-    const genesis = [4]u8{ 0xfc, 0x64, 0xec, 0x04 };
+    const genesis = [32]u8{ 0xd4, 0xe5, 0x67, 0x40, 0xf8, 0x76, 0xae, 0xf8, 0xc0, 0x10, 0xb8, 0x6a, 0x40, 0xd5, 0xf5, 0x67, 0x45, 0xa1, 0x18, 0xd0, 0x90, 0x6a, 0x34, 0xe6, 0x9a, 0xec, 0x8c, 0x0d, 0xb1, 0xcb, 0x8f, 0xa3 };
     const schedule = &mainnet_schedule;
     // Unsynced
     try std.testing.expectEqual(Id{ .hash = [4]u8{ 0xfc, 0x64, 0xec, 0x04 }, .next = 1150000 }, calculateId(genesis, schedule, 0));
