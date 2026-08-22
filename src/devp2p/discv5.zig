@@ -1,7 +1,8 @@
 const std = @import("std");
 const rlp = @import("rlp");
-const Enode = @import("enode.zig").Enode;
 const enr = @import("enr.zig");
+const cache = @import("cache");
+const Enode = @import("enode.zig").Enode;
 const IdFilter = @import("../forks.zig").IdFilter;
 const Secp256k1 = std.crypto.ecc.Secp256k1;
 const Ecdsa = std.crypto.sign.ecdsa.EcdsaSecp256k1Sha256;
@@ -32,6 +33,25 @@ const max_initiated = 4096;
 pub const Server = struct {
     const Self = @This();
     const Handshake = struct { pubkey: [64]u8, record: ?enr.Record };
+    const Session = struct { read_key: [16]u8, write_key: [16]u8, record: ?enr.Record };
+    const SessionId = struct {
+        node_id: [32]u8,
+        addr: std.Io.net.IpAddress,
+
+        pub fn encode(self: *const SessionId) [50]u8 {
+            var buf: [50]u8 = @splat(0);
+
+            @memcpy(buf[0..32], &self.node_id);
+            std.mem.writeInt(u16, buf[32..34], self.addr.getPort(), .big);
+            switch (self.addr) {
+                inline else => |addr| {
+                    @memcpy(buf[34 .. 34 + addr.bytes.len], &addr.bytes);
+                },
+            }
+
+            return buf;
+        }
+    };
 
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -48,7 +68,7 @@ pub const Server = struct {
     nonce: u96 = 0,
 
     initiated: std.AutoHashMapUnmanaged([12]u8, Handshake) = .empty,
-    sessions: Sessions = .{},
+    sessions: cache.Cache(Session),
 
     pub fn init(allocator: std.mem.Allocator, io: std.Io, identity: Ecdsa.KeyPair, port: u16) !Self {
         var s = Server{
@@ -59,6 +79,7 @@ pub const Server = struct {
             .socket = try std.Io.net.IpAddress.bind(&.{
                 .ip4 = std.Io.net.Ip4Address.unspecified(port),
             }, io, .{ .mode = .dgram }),
+            .sessions = try .init(io, allocator, .{ .max_size = max_sessions }),
         };
         s.record_len = (try enr.encode(&s.record_buf, identity.secret_key.toBytes(), 1, null, null, null)).len;
         return s;
@@ -66,7 +87,7 @@ pub const Server = struct {
 
     pub fn deinit(self: *Self) void {
         self.initiated.deinit(self.allocator);
-        self.sessions.deinit(self.allocator);
+        self.sessions.deinit();
     }
 
     pub fn run(self: *Self, bootnodes: []const Enode) !void {
@@ -131,7 +152,7 @@ pub const Server = struct {
             },
             .WhoAreYou => {
                 if (authdata_size != 24) return error.InvalidAuthDataSize;
-                return try self.handleWhoAreYou(header.nonce, buf[0 .. 39 + authdata_size]);
+                return try self.handleWhoAreYou(header.nonce, buf[0 .. 39 + authdata_size], from);
             },
             .Handshake => {
                 if (authdata_size < 34) return error.InvalidAuthDataSize;
@@ -149,7 +170,10 @@ pub const Server = struct {
     }
 
     fn handleMessage(self: *Self, src_id: *[32]u8, nonce: [12]u8, ad: []const u8, ct: []u8, from: std.Io.net.IpAddress) !?[]u8 {
-        const session = self.sessions.get(self.io, src_id.*) orelse return error.NoSession;
+        const session_id: SessionId = .{ .node_id = src_id.*, .addr = from };
+        const session_entry = self.sessions.get(&session_id.encode()) orelse return error.NoSession;
+        defer session_entry.release();
+        const session = session_entry.value;
         if (ct.len <= Aes128Gcm.tag_length) return error.MessageTooShort;
 
         const pt = ct[0 .. ct.len - Aes128Gcm.tag_length];
@@ -220,7 +244,6 @@ pub const Server = struct {
             const record = enr.decode(rec.value) catch continue;
             const pubkey, const addr = record.pubkeyAndUdp() catch continue;
             const node_id = nodeId(pubkey);
-            if (self.sessions.setRecord(self.io, node_id, record)) continue;
             if (addr) |ip|
                 self.initiateSession(node_id, pubkey, ip, record) catch |e| {
                     if (e == std.Io.Cancelable.Canceled) return e;
@@ -231,7 +254,7 @@ pub const Server = struct {
         return null;
     }
 
-    fn handleWhoAreYou(self: *Self, request_nonce: [12]u8, challenge_data: []const u8) ![]u8 {
+    fn handleWhoAreYou(self: *Self, request_nonce: [12]u8, challenge_data: []const u8, from: std.Io.net.IpAddress) ![]u8 {
         const handshake = self.initiated.get(request_nonce) orelse return error.UnknownChallenge;
         defer _ = self.initiated.remove(request_nonce);
         const peer_id = nodeId(handshake.pubkey);
@@ -246,7 +269,9 @@ pub const Server = struct {
 
         const keys = try deriveKeys(eph.secret_key.toBytes(), dest_pubkey, self.id, peer_id, challenge_data);
         const id_sig = try idSign(self.allocator, self.keypair.secret_key.toBytes(), challenge_data, eph_pubkey, peer_id);
-        try self.sessions.put(self.allocator, self.io, peer_id, .{ .write_key = keys.initiator, .read_key = keys.recipient, .record = handshake.record });
+
+        const session_id: SessionId = .{ .node_id = peer_id, .addr = from };
+        try self.sessions.put(&session_id.encode(), .{ .write_key = keys.initiator, .read_key = keys.recipient, .record = handshake.record }, .{});
 
         var ad: [512]u8 = undefined;
         @memcpy(ad[0..32], &self.id);
@@ -334,71 +359,6 @@ pub const Server = struct {
         const enc = Aes128.initEnc(dest_id[0..16].*);
         std.crypto.core.modes.ctr(@TypeOf(enc), enc, self.tx_buf[16..off], self.tx_buf[16..off], self.tx_buf[0..16].*, .big);
         return self.tx_buf[0 .. off + body.items.len + Aes128Gcm.tag_length];
-    }
-};
-
-const Sessions = struct {
-    const Self = @This();
-    const Session = struct { read_key: [16]u8, write_key: [16]u8, record: ?enr.Record };
-
-    lock: std.Io.Mutex = .init,
-    map: std.AutoHashMapUnmanaged([32]u8, Session) = .empty,
-
-    fn get(self: *Self, io: std.Io, node_id: [32]u8) ?Session {
-        self.lock.lockUncancelable(io);
-        defer self.lock.unlock(io);
-        return self.map.get(node_id);
-    }
-
-    fn put(self: *Self, allocator: std.mem.Allocator, io: std.Io, node_id: [32]u8, session: Session) !void {
-        self.lock.lockUncancelable(io);
-        defer self.lock.unlock(io);
-        if (self.map.size < max_sessions or self.map.contains(node_id))
-            try self.map.put(allocator, node_id, session);
-    }
-
-    fn setRecord(self: *Self, io: std.Io, node_id: [32]u8, record: enr.Record) bool {
-        self.lock.lockUncancelable(io);
-        defer self.lock.unlock(io);
-        if (self.map.getEntry(node_id)) |session| {
-            session.value_ptr.record = record;
-            return true;
-        }
-        return false;
-    }
-
-    pub fn fillRecords(self: *Self, io: std.Io, out: []enr.Record, id_filter: ?*const IdFilter, head: u64, time: u64) []enr.Record {
-        self.lock.lockUncancelable(io);
-        defer self.lock.unlock(io);
-        if (self.map.size == 0 or out.len == 0) return out[0..0];
-
-        const start: u64 = @as(u64, @intCast(std.Io.Clock.now(.real, io).toSeconds())) % self.map.size;
-        var count: usize = 0;
-
-        var i: u64 = 0;
-        var it = self.map.valueIterator();
-        while (it.next()) |s| : (i += 1) {
-            if (i < start) continue;
-            if (s.record) |r| {
-                if (!compatibleForkId(id_filter, r, head, time)) continue;
-                out[count] = r;
-                count += 1;
-                if (count == out.len) return out[0..count];
-            }
-        }
-        i = 0;
-        var it2 = self.map.valueIterator();
-        while (it2.next()) |s| : (i += 1) {
-            if (i >= start) break;
-            if (s.record) |r| {
-                if (!compatibleForkId(id_filter, r, head, time)) continue;
-
-                out[count] = r;
-                count += 1;
-                if (count == out.len) return out[0..count];
-            }
-        }
-        return out[0..count];
     }
 };
 
