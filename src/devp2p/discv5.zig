@@ -5,6 +5,7 @@ const cache = @import("cache");
 const List = @import("../free_list.zig").List;
 const FreeList = @import("../free_list.zig").FreeList;
 const Enode = @import("enode.zig").Enode;
+const Dialer = @import("dialer.zig").Dialer;
 const IdFilter = @import("../forks.zig").IdFilter;
 const Secp256k1 = std.crypto.ecc.Secp256k1;
 const Ecdsa = std.crypto.sign.ecdsa.EcdsaSecp256k1Sha256;
@@ -73,7 +74,9 @@ pub const Server = struct {
     sessions: cache.Cache(Session),
     table: Table,
 
-    pub fn init(allocator: std.mem.Allocator, io: std.Io, identity: Ecdsa.KeyPair, port: u16, bootnodes: []const enr.Record) !Self {
+    dialer: *const Dialer,
+
+    pub fn init(allocator: std.mem.Allocator, io: std.Io, identity: Ecdsa.KeyPair, port: u16, bootnodes: []const enr.Record, dialer: *const Dialer) !Self {
         const self_id = nodeId(identity.public_key.toUncompressedSec1()[1..65].*);
         var s = Server{
             .allocator = allocator,
@@ -85,6 +88,7 @@ pub const Server = struct {
             }, io, .{ .mode = .dgram }),
             .sessions = try .init(io, allocator, .{ .max_size = max_sessions }),
             .table = try .init(allocator, self_id),
+            .dialer = dialer,
         };
         s.record_len = (try enr.encode(&s.record_buf, identity.secret_key.toBytes(), 1, null, null, null)).len;
         const now = std.Io.Clock.now(.real, io);
@@ -286,6 +290,7 @@ pub const Server = struct {
                 std.Io.Clock.now(.real, self.io),
             ),
         }, .{});
+        self.dialer.dial(self.io, handshake.record);
 
         var ad: [512]u8 = undefined;
         @memcpy(ad[0..32], &self.id);
@@ -480,12 +485,6 @@ const Table = struct {
         return std.math.log2_int(u256, a_int ^ b_int);
     }
 };
-
-fn compatibleForkId(id_filter: ?*const IdFilter, record: enr.Record, head: u64, time: u64) bool {
-    const filter = id_filter orelse return true;
-    const remote = record.eth orelse return false;
-    return filter.check(remote, head, time);
-}
 
 fn nodeId(pubkey: [64]u8) [32]u8 {
     var id: [32]u8 = undefined;
