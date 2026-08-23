@@ -20,6 +20,11 @@ pub fn List(comptime T: type) type {
             self.inner.append(&node.node);
         }
 
+        pub fn prepend(self: *List(T), elem: *T) void {
+            const node: *Node = @alignCast(@fieldParentPtr("elem", elem));
+            self.inner.prepend(&node.node);
+        }
+
         pub fn empty(self: *List(T)) bool {
             return self.inner.first == null;
         }
