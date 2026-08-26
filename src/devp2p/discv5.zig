@@ -115,10 +115,18 @@ pub const Server = struct {
     }
 
     pub fn run(self: *Self) !void {
-        try self.startWalking();
+        var next_walk: std.Io.Clock.Timestamp = .fromNow(self.io, .{ .raw = .zero, .clock = .real });
         while (true) {
-            //todo: walk the network periodically and refresh sessions
-            const msg = self.socket.receive(self.io, &self.rx_buf) catch |e| {
+            if (next_walk.durationFromNow(self.io).raw.toNanoseconds() <= 0) {
+                if (self.startWalking()) {
+                    next_walk = .fromNow(self.io, .{ .raw = .fromSeconds(300), .clock = .real });
+                } else |e| {
+                    if (e == std.Io.Cancelable.Canceled) break;
+                    next_walk = .fromNow(self.io, .{ .raw = .fromSeconds(1), .clock = .real });
+                }
+            }
+
+            const msg = self.socket.receiveTimeout(self.io, &self.rx_buf, .{ .deadline = next_walk }) catch |e| {
                 if (e == std.Io.Cancelable.Canceled) break;
                 continue;
             };
