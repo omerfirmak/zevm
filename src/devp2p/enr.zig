@@ -17,11 +17,14 @@ pub const max_text_len = text_prefix.len + base64.Encoder.calcSize(max_record_le
 pub const Record = struct {
     seq: u64,
     pubkey: [33]u8,
-    node_id: [32]u8,
+    sig: [64]u8,
     ip4: ?[4]u8 = null,
     udp: ?u16 = null,
     tcp: ?u16 = null,
     eth: ?ForkId = null,
+
+    // calculated and cached
+    node_id: ?[32]u8 = null,
 
     pub fn uncompressedPubkey(self: *const Record) ![64]u8 {
         const unc = (try Secp256k1.fromSec1(&self.pubkey)).toUncompressedSec1();
@@ -36,6 +39,25 @@ pub const Record = struct {
             }
         }
         return .{ try self.uncompressedPubkey(), addr };
+    }
+
+    pub fn verify(self: *Record, sig_hash: [32]u8) !void {
+        const pk = try Ecdsa.PublicKey.fromSec1(&self.pubkey);
+        try Ecdsa.Signature.fromBytes(self.sig).verifyPrehashed(sig_hash, pk);
+
+        const unc = pk.toUncompressedSec1();
+        var node_id: [32]u8 = undefined;
+        Keccak256.hash(unc[1..65], &node_id, .{});
+        self.node_id = node_id;
+    }
+
+    pub fn udpAddr(self: *const Record) ?std.Io.net.IpAddress {
+        if (self.ip4) |ip| {
+            if (self.udp) |port| {
+                return std.Io.net.IpAddress{ .ip4 = .{ .bytes = ip, .port = port } };
+            }
+        }
+        return null;
     }
 
     pub fn tcpAddr(self: *const Record) ?std.Io.net.IpAddress {
@@ -57,10 +79,17 @@ pub fn decodeText(text: []const u8) !Record {
     if (len > buf.len) return error.RecordTooLarge;
     try base64.Decoder.decode(buf[0..len], body);
 
-    return decode(buf[0..len]);
+    return decodeAndVerify(buf[0..len]);
 }
 
-pub fn decode(bytes: []const u8) !Record {
+pub fn decodeAndVerify(bytes: []const u8) !Record {
+    var res = try decode(bytes);
+    try res.record.verify(res.sig_hash);
+
+    return res.record;
+}
+
+pub fn decode(bytes: []const u8) !struct { record: Record, sig_hash: [32]u8 } {
     var scratch: [2048]u8 = undefined;
     var fba = std.heap.FixedBufferAllocator.init(&scratch);
     const alloc = fba.allocator();
@@ -75,8 +104,8 @@ pub fn decode(bytes: []const u8) !Record {
 
     var rec: Record = .{
         .seq = std.mem.readVarInt(u64, items[1], .big),
+        .sig = sig[0..64].*,
         .pubkey = undefined,
-        .node_id = undefined,
     };
 
     var have_pubkey = false;
@@ -112,12 +141,7 @@ pub fn decode(bytes: []const u8) !Record {
     var hash: [32]u8 = undefined;
     Keccak256.hash(content.items, &hash, .{});
 
-    const pk = try Ecdsa.PublicKey.fromSec1(&rec.pubkey);
-    try Ecdsa.Signature.fromBytes(sig[0..64].*).verifyPrehashed(hash, pk);
-
-    const unc = (try Secp256k1.fromSec1(&rec.pubkey)).toUncompressedSec1();
-    Keccak256.hash(unc[1..65], &rec.node_id, .{});
-    return rec;
+    return .{ .record = rec, .sig_hash = hash };
 }
 
 fn rlpItem(alloc: std.mem.Allocator, comptime T: type, val: T) ![]const u8 {
@@ -204,13 +228,13 @@ test "decode" {
     const bytes = h("f884b8407098ad865b00a582051940cb9cf36836572411a47278783077011599ed5cd16b76f2635f4e234738f30813a89eb9137e3e3df5266e3a1f11df72ecf1145ccb9c0182696482763482697084" ++
         "7f00000189736563703235366b31a103ca634cae0d49acb401d8a4c6b6fe8c55b70d115bf400769cc1400f3258cd313883756470" ++
         "82765f");
-    const rec = try decode(&bytes);
+    const rec = try decodeAndVerify(&bytes);
 
     try std.testing.expectEqual(@as(u64, 1), rec.seq);
     try std.testing.expectEqual([4]u8{ 0x7f, 0, 0, 1 }, rec.ip4.?);
     try std.testing.expectEqual(@as(u16, 30303), rec.udp.?);
     try std.testing.expectEqualSlices(u8, &h("03ca634cae0d49acb401d8a4c6b6fe8c55b70d115bf400769cc1400f3258cd3138"), &rec.pubkey);
-    try std.testing.expectEqualSlices(u8, &h("a448f24c6d18e575453db13171562b71999873db5b286df957af199ec94617f7"), &rec.node_id);
+    try std.testing.expectEqualSlices(u8, &h("a448f24c6d18e575453db13171562b71999873db5b286df957af199ec94617f7"), &rec.node_id.?);
 }
 
 test "reject a tampered record" {
@@ -218,7 +242,7 @@ test "reject a tampered record" {
         "7f00000189736563703235366b31a103ca634cae0d49acb401d8a4c6b6fe8c55b70d115bf400769cc1400f3258cd313883756470" ++
         "82765f");
     bytes[bytes.len - 1] ^= 0xff;
-    try std.testing.expectError(error.SignatureVerificationFailed, decode(&bytes));
+    try std.testing.expectError(error.SignatureVerificationFailed, decodeAndVerify(&bytes));
 }
 
 test "decode text" {
@@ -228,7 +252,7 @@ test "decode text" {
     try std.testing.expectEqual(@as(u64, 1), rec.seq);
     try std.testing.expectEqual([4]u8{ 127, 0, 0, 1 }, rec.ip4.?);
     try std.testing.expectEqual(@as(u16, 30303), rec.udp.?);
-    try std.testing.expectEqualSlices(u8, &h("a448f24c6d18e575453db13171562b71999873db5b286df957af199ec94617f7"), &rec.node_id);
+    try std.testing.expectEqualSlices(u8, &h("a448f24c6d18e575453db13171562b71999873db5b286df957af199ec94617f7"), &rec.node_id.?);
 }
 
 test "encode text round trip" {
@@ -239,7 +263,7 @@ test "encode text round trip" {
 
     const rec = try decodeText(text);
     try std.testing.expectEqual(@as(u16, 30303), rec.tcp.?);
-    try std.testing.expectEqualSlices(u8, &h("a448f24c6d18e575453db13171562b71999873db5b286df957af199ec94617f7"), &rec.node_id);
+    try std.testing.expectEqualSlices(u8, &h("a448f24c6d18e575453db13171562b71999873db5b286df957af199ec94617f7"), &rec.node_id.?);
 }
 
 test "encode round trip" {
@@ -251,9 +275,9 @@ test "encode round trip" {
         "7f00000189736563703235366b31a103ca634cae0d49acb401d8a4c6b6fe8c55b70d115bf400769cc1400f3258cd31388375647082765f");
     try std.testing.expectEqualSlices(u8, &canonical_content, enc[68..]);
 
-    const rec = try decode(enc);
+    const rec = try decodeAndVerify(enc);
     try std.testing.expectEqual(@as(u64, 1), rec.seq);
     try std.testing.expectEqual([4]u8{ 127, 0, 0, 1 }, rec.ip4.?);
     try std.testing.expectEqual(@as(u16, 30303), rec.udp.?);
-    try std.testing.expectEqualSlices(u8, &h("a448f24c6d18e575453db13171562b71999873db5b286df957af199ec94617f7"), &rec.node_id);
+    try std.testing.expectEqualSlices(u8, &h("a448f24c6d18e575453db13171562b71999873db5b286df957af199ec94617f7"), &rec.node_id.?);
 }
