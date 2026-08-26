@@ -32,6 +32,9 @@ const StaticHeader = struct {
 
 const max_sessions = 8192;
 const max_pending = 8192;
+const seen_bits = 1 << 21;
+const seen_bytes = seen_bits / 8;
+const seen_probes = 8;
 
 pub const Server = struct {
     const Self = @This();
@@ -72,6 +75,8 @@ pub const Server = struct {
     request_id: u64 = 0,
 
     pending: []Pending,
+    seen: []u8,
+    seen_salt: [32]u8 = undefined,
     sessions: cache.Cache(Session),
     table: Table,
 
@@ -88,6 +93,7 @@ pub const Server = struct {
                 .ip4 = std.Io.net.Ip4Address.unspecified(port),
             }, io, .{ .mode = .dgram }),
             .pending = try allocator.alloc(Pending, max_pending),
+            .seen = try allocator.alloc(u8, seen_bytes),
             .sessions = try .init(io, allocator, .{ .max_size = max_sessions }),
             .table = try .init(allocator, self_id),
             .dialer = dialer,
@@ -104,6 +110,7 @@ pub const Server = struct {
 
     pub fn deinit(self: *Self) void {
         self.allocator.free(self.pending);
+        self.allocator.free(self.seen);
         self.sessions.deinit();
     }
 
@@ -138,6 +145,31 @@ pub const Server = struct {
     fn nextRequestId(self: *Self) [8]u8 {
         self.request_id += 1;
         return @bitCast(self.request_id);
+    }
+
+    fn probe(self: *Self, pubkey: [33]u8, set: bool) bool {
+        var salted: [32]u8 = pubkey[1..33].*;
+        for (&salted, &self.seen_salt) |*byte, salt| byte.* ^= salt;
+
+        var all = true;
+        for (0..seen_probes) |index| {
+            const bit = std.mem.readInt(u32, salted[index * 4 ..][0..4], .little) & (seen_bits - 1);
+            const slot = &self.seen[bit >> 3];
+            const flag = @as(u8, 1) << @truncate(bit & 7);
+            if (slot.* & flag == 0) {
+                all = false;
+                if (set) slot.* |= flag;
+            }
+        }
+        return all;
+    }
+
+    fn seenBefore(self: *Self, pubkey: [33]u8) bool {
+        return self.probe(pubkey, false);
+    }
+
+    fn visit(self: *Self, pubkey: [33]u8) bool {
+        return self.probe(pubkey, true);
     }
 
     fn pendingSlot(self: *Self, nonce: [12]u8) *Pending {
@@ -274,8 +306,13 @@ pub const Server = struct {
         var nodes: Nodes = undefined;
         _ = try rlp.deserialize(Nodes, fba.allocator(), body, &nodes);
         for (nodes.records) |rec| {
-            const record = enr.decode(rec.value) catch continue;
-            self.findNodes(record) catch |e| {
+            var res = enr.decode(rec.value) catch continue;
+            if (self.seenBefore(res.record.pubkey)) continue;
+
+            res.record.verify(res.sig_hash) catch continue;
+            _ = self.visit(res.record.pubkey);
+
+            self.findNodes(res.record) catch |e| {
                 if (e == std.Io.Cancelable.Canceled) return e;
                 continue;
             };
@@ -286,16 +323,14 @@ pub const Server = struct {
 
     fn handleWhoAreYou(self: *Self, request_nonce: [12]u8, challenge_data: []const u8, from: std.Io.net.IpAddress) ![]u8 {
         const handshake = self.takePending(request_nonce) orelse return error.UnknownChallenge;
-        const peer_id = handshake.record.node_id;
-        const dest_pubkey = handshake.record.pubkey;
 
         const eph = Ecdsa.KeyPair.generate(self.io);
         const eph_pubkey = eph.public_key.toCompressedSec1();
 
-        const keys = try deriveKeys(eph.secret_key.toBytes(), dest_pubkey, self.id, peer_id, challenge_data);
-        const id_sig = try idSign(self.allocator, self.keypair.secret_key.toBytes(), challenge_data, eph_pubkey, peer_id);
+        const keys = try deriveKeys(eph.secret_key.toBytes(), handshake.record.pubkey, self.id, handshake.record.node_id.?, challenge_data);
+        const id_sig = try idSign(self.allocator, self.keypair.secret_key.toBytes(), challenge_data, eph_pubkey, handshake.record.node_id.?);
 
-        const session_id: SessionId = .{ .node_id = peer_id, .addr = from };
+        const session_id: SessionId = .{ .node_id = handshake.record.node_id.?, .addr = from };
         try self.sessions.put(&session_id.encode(), .{
             .write_key = keys.initiator,
             .read_key = keys.recipient,
@@ -315,7 +350,7 @@ pub const Server = struct {
         @memcpy(ad[131..][0..self.record_len], self.record_buf[0..self.record_len]);
         const authdata = ad[0 .. 131 + self.record_len];
 
-        return self.encodePacket(peer_id, .Handshake, self.nextNonce(), authdata, FindNode{
+        return self.encodePacket(handshake.record.node_id.?, .Handshake, self.nextNonce(), authdata, FindNode{
             .request_id = &self.nextRequestId(),
             .distances = &.{ 256, 255, 254, 253 },
         }, keys.initiator);
@@ -332,23 +367,21 @@ pub const Server = struct {
     }
 
     fn findNodes(self: *Self, record: enr.Record) !void {
-        const pubkey, const udp = record.pubkeyAndUdp() catch return;
-        const addr = udp orelse return;
-        const node_id = nodeId(pubkey);
+        const addr = record.udpAddr() orelse return;
 
-        const session_id: SessionId = .{ .node_id = node_id, .addr = addr };
+        const session_id: SessionId = .{ .node_id = record.node_id.?, .addr = addr };
         const nonce = self.nextNonce();
         self.trackPending(nonce, record);
 
         if (self.sessions.get(&session_id.encode())) |session_entry| {
             defer session_entry.release();
 
-            _ = try self.socket.send(self.io, &addr, try self.encodePacket(node_id, .Message, nonce, &self.id, FindNode{
+            _ = try self.socket.send(self.io, &addr, try self.encodePacket(record.node_id.?, .Message, nonce, &self.id, FindNode{
                 .request_id = &self.nextRequestId(),
                 .distances = &.{ 256, 255, 254, 253 },
             }, session_entry.value.write_key));
         } else {
-            _ = try self.socket.send(self.io, &addr, try self.encodePacket(node_id, .Message, nonce, &self.id, Ping{
+            _ = try self.socket.send(self.io, &addr, try self.encodePacket(record.node_id.?, .Message, nonce, &self.id, Ping{
                 .request_id = &self.nextRequestId(),
                 .enr_seq = 1,
             }, undefined));
@@ -402,6 +435,8 @@ pub const Server = struct {
 
     pub fn startWalking(self: *Self) !void {
         try self.table.clearStalePeers(std.Io.Clock.now(.real, self.io));
+        @memset(self.seen, 0);
+        self.io.random(&self.seen_salt);
 
         var random_bucket: u8 = undefined;
         std.Io.random(self.io, (&random_bucket)[0..1]);
@@ -416,7 +451,8 @@ pub const Server = struct {
                 while (current_node) |node| {
                     const next_node = node.next;
                     const entry: *List(Table.Entry).Node = @alignCast(@fieldParentPtr("node", node));
-                    self.findNodes(entry.elem.record) catch continue;
+                    if (!self.visit(entry.elem.record.pubkey))
+                        self.findNodes(entry.elem.record) catch {};
                     current_node = next_node;
                 }
             }
@@ -451,7 +487,7 @@ const Table = struct {
     }
 
     pub fn addOrUpdate(self: *Table, record: enr.Record, now: std.Io.Timestamp) ?*Table.Entry {
-        const dist = logDistance(self.self_id, record.node_id);
+        const dist = logDistance(self.self_id, record.node_id.?);
         const bucket = &self.buckets[dist];
 
         var current_node = bucket.records.inner.first;
@@ -459,7 +495,7 @@ const Table = struct {
             const next_node = node.next;
             const entry: *List(Table.Entry).Node = @alignCast(@fieldParentPtr("node", node));
 
-            if (std.meta.eql(entry.elem.record.node_id, record.node_id) and entry.elem.record.seq < record.seq) {
+            if (std.meta.eql(entry.elem.record.pubkey, record.pubkey) and entry.elem.record.seq < record.seq) {
                 entry.elem.record = record;
                 return &entry.elem;
             }
