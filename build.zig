@@ -465,4 +465,20 @@ pub fn build(b: *std.Build) void {
         run_zkevm_tests.step.dependOn(&zisk_install.step);
         run_zkevm_tests.setEnvironmentVariable("ZISKEMU_GUEST", "1");
     }
+
+    const main_exe = b.addExecutable(.{
+        .name = "zevm",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+        .use_llvm = true,
+    });
+    linkDeps(main_exe.root_module, deps, .native);
+    main_exe.root_module.addImport("snappy", snappy_dep.module("snappy"));
+    main_exe.root_module.addImport("cache", cache_dep.module("cache"));
+    const main_step = b.step("zevm", "");
+    const main_install = b.addInstallArtifact(main_exe, .{});
+    main_step.dependOn(&main_install.step);
 }
