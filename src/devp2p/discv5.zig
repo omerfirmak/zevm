@@ -36,6 +36,8 @@ const seen_bits = 1 << 21;
 const seen_bytes = seen_bits / 8;
 const seen_probes = 8;
 
+const log = std.log.scoped(.discv5);
+
 pub const Server = struct {
     const Self = @This();
     const Pending = struct { nonce: [12]u8, record: enr.Record, valid: bool };
@@ -115,9 +117,12 @@ pub const Server = struct {
     }
 
     pub fn run(self: *Self) !void {
+        log.info("starting to listen on {}", .{self.socket.address});
+
         var next_walk: std.Io.Clock.Timestamp = .fromNow(self.io, .{ .raw = .zero, .clock = .real });
         while (true) {
             if (next_walk.durationFromNow(self.io).raw.toNanoseconds() <= 0) {
+                log.debug("starting to walk DHT", .{});
                 if (self.startWalking()) {
                     next_walk = .fromNow(self.io, .{ .raw = .fromSeconds(300), .clock = .real });
                 } else |e| {
@@ -128,17 +133,20 @@ pub const Server = struct {
 
             const msg = self.socket.receiveTimeout(self.io, &self.rx_buf, .{ .deadline = next_walk }) catch |e| {
                 if (e == std.Io.Cancelable.Canceled) break;
+                log.debug("receiveTimeout errored with {}", .{e});
                 continue;
             };
             if (msg.flags.trunc or msg.flags.ctrunc or msg.flags.errqueue) continue;
 
             const res = self.handlePacket(msg.data, msg.from) catch |e| {
                 if (e == std.Io.Cancelable.Canceled) break;
+                log.debug("handlePacket errored with {} for {x} from {}", .{ e, msg.data, msg.from });
                 continue;
             };
             if (res) |packet| {
                 self.socket.send(self.io, &msg.from, packet) catch |e| {
                     if (e == std.Io.Cancelable.Canceled) break;
+                    log.debug("send errored with {} for {x} to {}", .{ e, packet, msg.from });
                     continue;
                 };
             }
@@ -347,6 +355,7 @@ pub const Server = struct {
                 std.Io.Clock.now(.real, self.io),
             ),
         }, .{});
+        log.debug("discovered new peer {}", .{handshake.record});
         self.dialer.dial(self.io, handshake.record);
 
         var ad: [512]u8 = undefined;

@@ -17,6 +17,8 @@ const max_frame_size = 1 << 24;
 const max_handshake_size = 2048;
 const ecies_overhead = 65 + 16 + 32; // ephemeral pubkey + IV + HMAC-SHA256 tag
 
+const log = std.log.scoped(.rlpx);
+
 const DisconnectReason = enum(u8) {
     requested = 0x00,
     tcp_error = 0x01,
@@ -792,13 +794,17 @@ const Peer = struct {
                             defer allocator.free(hello.caps);
                             if (hello.version < p2p_version) return error.IncompatibleVersion;
                             const caps = try self.server.sharedCaps(allocator, hello.caps);
+                            log.debug("received hello from {} id {s}", .{ self.server.peerId(self), hello.client_id });
                             self.status = .{ .active = .{ .session = session.*, .caps = caps } };
                             for (caps) |c| {
                                 const handler = &self.server.proto_handlers[c.registered_cap_index];
                                 handler.onConnected(handler.ctx, self.server.peerId(self), c.starting_offset);
                             }
                         },
-                        .disconnect => return error.Disconnected,
+                        .disconnect => |e| {
+                            log.debug("received disconnect from {} reason {}", .{ self.server.peerId(self), e });
+                            return error.Disconnected;
+                        },
                         else => return error.UnexpectedBeforeHello,
                     }
                 },
@@ -813,7 +819,10 @@ const Peer = struct {
 
                     if (f.id < 0x10) {
                         switch (try Message.decode(allocator, f.id, payload)) {
-                            .disconnect => return error.Disconnected,
+                            .disconnect => |e| {
+                                log.debug("received disconnect from {} reason {}", .{ self.server.peerId(self), e });
+                                return error.Disconnected;
+                            },
                             .ping => try self.sendMsg(allocator, &state.session.secrets, @intFromEnum(MessageId.pong), struct {}{}),
                             .pong => {},
                             else => {},
