@@ -9,6 +9,8 @@ const FreeList = @import("../free_list.zig").FreeList;
 const List = @import("../free_list.zig").List;
 const max_inflight_requests = 100;
 
+const log = std.log.scoped(.downloader);
+
 fn Request(comptime msg: type) type {
     return struct {
         id: u64,
@@ -205,6 +207,7 @@ pub const Downloader = struct {
     }
 
     fn requestHeaders(self: *Self, origin: eth.HashOrNumber, amount: u64) !void {
+        log.debug("requesting headers origin {} amount {}", .{ origin, amount });
         const id = self.eth_provider.nextRequestId();
         try self.sendEthRequest(id, .{ .get_block_headers = .{
             .id = id,
@@ -249,6 +252,8 @@ pub const Downloader = struct {
                 };
             }
         } else followup_request = headers_request.query;
+
+        log.debug("validated header range start {} end {}", .{ headers[0].number, headers[0].number + headers.len - 1 });
 
         self.free_eth_requests.list().push(matched_request);
         if (followup_request) |followup| {
@@ -381,6 +386,10 @@ pub const Downloader = struct {
         }
 
         const head = try self.bc.head();
+        log.debug("persisting headers start {} end {}", .{
+            head.number + 1,
+            self.state.active.requested_header_head,
+        });
         for (head.number + 1..self.state.active.requested_header_head + 1) |number| {
             const header = (try self.readDownladedHeader(number)).?;
             try self.bc.appendHeader(&header);
