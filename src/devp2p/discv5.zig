@@ -355,7 +355,6 @@ pub const Server = struct {
                 std.Io.Clock.now(.real, self.io),
             ),
         }, .{});
-        log.debug("discovered new peer {}", .{handshake.record});
         self.dialer.dial(self.io, handshake.record);
 
         var ad: [512]u8 = undefined;

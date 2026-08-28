@@ -480,6 +480,8 @@ pub const Server = struct {
         const remote_addr = record.tcpAddr();
         if (remote_addr == null) return error.NoTcpEndpoint;
 
+        log.debug("dialing peer {any}", .{record.tcpAddr()});
+
         const slot = try self.allocateSlot();
         errdefer slot.status.store(.Empty, .release);
 
