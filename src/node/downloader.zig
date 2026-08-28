@@ -245,10 +245,10 @@ pub const Downloader = struct {
                     .origin = .{ .hash = range.origin },
                     .amount = range.amount,
                 };
-            } else if (headers_request.query.amount > headers.len) {
+            } else if (headers_request.query.amount > headers.len and headers[0].number > 0) {
                 followup_request = .{
-                    .origin = .{ .hash = headers[headers.len - 1].parent_hash },
-                    .amount = headers_request.query.amount - hashes.len,
+                    .origin = .{ .hash = headers[0].parent_hash },
+                    .amount = headers_request.query.amount - headers.len,
                 };
             }
         } else followup_request = headers_request.query;
