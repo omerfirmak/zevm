@@ -251,9 +251,8 @@ pub const Downloader = struct {
                     .amount = headers_request.query.amount - headers.len,
                 };
             }
+            log.debug("validated header range start {} end {} invalidated {any}", .{ headers[0].number, headers[0].number + headers.len - 1, invalidated_range });
         } else followup_request = headers_request.query;
-
-        log.debug("validated header range start {} end {}", .{ headers[0].number, headers[0].number + headers.len - 1 });
 
         self.free_eth_requests.list().push(matched_request);
         if (followup_request) |followup| {
