@@ -90,20 +90,20 @@ pub const Downloader = struct {
         while (true) {
             switch (select.await() catch |e| return e) {
                 .eth => |res| {
+                    defer select.async(.eth, eth.Provider.next, .{ self.eth_provider, self.io, self.allocator, self.allocator });
                     const received_message = res catch continue;
                     defer self.allocator.free(received_message.read.payload);
                     try self.handleEth(received_message.msg, received_message.read.peer);
-                    select.async(.eth, eth.Provider.next, .{ self.eth_provider, self.io, self.allocator, self.allocator });
                 },
                 .snap => |res| {
+                    defer select.async(.snap, snap.Provider.next, .{ self.snap_provider, self.io, self.allocator, self.allocator });
                     const received_message = res catch continue;
                     defer self.allocator.free(received_message.read.payload);
                     try self.handleSnap(received_message.msg, received_message.read.peer);
-                    select.async(.snap, snap.Provider.next, .{ self.snap_provider, self.io, self.allocator, self.allocator });
                 },
                 .tick => {
+                    defer select.async(.tick, std.Io.sleep, .{ self.io, .fromSeconds(1), .real });
                     try self.handleTick();
-                    select.async(.tick, std.Io.sleep, .{ self.io, .fromSeconds(1), .real });
                 },
             }
         }
