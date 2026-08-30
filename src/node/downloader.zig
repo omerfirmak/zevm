@@ -207,7 +207,6 @@ pub const Downloader = struct {
     }
 
     fn requestHeaders(self: *Self, origin: eth.HashOrNumber, amount: u64) !void {
-        log.debug("requesting headers origin {} amount {}", .{ origin, amount });
         const id = self.eth_provider.nextRequestId();
         try self.sendEthRequest(id, .{ .get_block_headers = .{
             .id = id,
@@ -218,6 +217,7 @@ pub const Downloader = struct {
                 .reverse = true,
             },
         } });
+        log.debug("requesting headers origin {} amount {}", .{ origin, amount });
     }
 
     fn handleHeaders(self: *Self, matched_request: *Request(eth.Message), response: eth.BlockHeaders) !void {
