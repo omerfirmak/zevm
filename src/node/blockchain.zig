@@ -98,3 +98,38 @@ pub const glamsterdam_devnet8_config: Config = .{
     },
     .fork_schedule = forks.glamsterdam_devnet8_schedule,
 };
+
+pub const mainnet_config: Config = .{
+    .chain_id = 1,
+    .genesis_header = .{
+        .parent_hash = .{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+        .ommers_hash = .{ 29, 204, 77, 232, 222, 199, 93, 122, 171, 133, 181, 103, 182, 204, 212, 26, 211, 18, 69, 27, 148, 138, 116, 19, 240, 161, 66, 253, 64, 212, 147, 71 },
+        .beneficiary = .{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+        .state_root = .{ 215, 248, 151, 79, 181, 172, 120, 217, 172, 9, 155, 154, 213, 1, 139, 237, 194, 206, 10, 114, 218, 209, 130, 122, 23, 9, 218, 48, 88, 15, 5, 68 },
+        .transactions_root = .{ 86, 232, 31, 23, 27, 204, 85, 166, 255, 131, 69, 230, 146, 192, 248, 110, 91, 72, 224, 27, 153, 108, 173, 192, 1, 98, 47, 181, 227, 99, 180, 33 },
+        .receipts_root = .{ 86, 232, 31, 23, 27, 204, 85, 166, 255, 131, 69, 230, 146, 192, 248, 110, 91, 72, 224, 27, 153, 108, 173, 192, 1, 98, 47, 181, 227, 99, 180, 33 },
+        .logs_bloom = .{0} ** 256,
+        .difficulty = 17179869184,
+        .number = 0,
+        .gas_limit = 5000,
+        .gas_used = 0,
+        .timestamp = 0,
+        .extra_data = .{ .buf = .{ 17, 187, 232, 219, 78, 52, 123, 78, 140, 147, 124, 28, 131, 112, 228, 181, 237, 51, 173, 179, 219, 105, 203, 219, 122, 56, 225, 229, 11, 27, 130, 250 }, .len = 32 },
+        .mix_hash = .{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+        .nonce = .{ 0, 0, 0, 0, 0, 0, 0, 0x42 },
+        .base_fee_per_gas = null,
+        .withdrawals_root = null,
+        .blob_gas_used = null,
+        .excess_blob_gas = null,
+        .parent_beacon_block_root = null,
+        .requests_hash = null,
+        .block_access_list_hash = null,
+        .slot_number = null,
+    },
+    .fork_schedule = forks.mainnet_schedule,
+};
+
+test "mainnet genesis hash" {
+    const expected: [32]u8 = .{ 0xd4, 0xe5, 0x67, 0x40, 0xf8, 0x76, 0xae, 0xf8, 0xc0, 0x10, 0xb8, 0x6a, 0x40, 0xd5, 0xf5, 0x67, 0x45, 0xa1, 0x18, 0xd0, 0x90, 0x6a, 0x34, 0xe6, 0x9a, 0xec, 0x8c, 0x0d, 0xb1, 0xcb, 0x8f, 0xa3 };
+    try std.testing.expectEqual(expected, mainnet_config.genesis_header.hash());
+}
