@@ -128,17 +128,19 @@ pub fn processBlock(
     if (!std.mem.eql(u8, &p_block.block.header.logs_bloom, &computeLogsBloom(&vm.logs))) return Errors.MismatchedLogsBloom;
 
     const withdrawals_root = try computeRoot(types.Withdrawal, gpa, p_block.block.withdrawals);
-    if (std.mem.eql(u8, &p_block.block.header.withdrawals_root, &std.mem.zeroes([32]u8))) {
+    const existing_withdrawals_root = p_block.block.header.withdrawals_root orelse std.mem.zeroes([32]u8);
+    if (std.mem.eql(u8, &existing_withdrawals_root, &std.mem.zeroes([32]u8))) {
         p_block.block.header.withdrawals_root = withdrawals_root;
-    } else if (!std.mem.eql(u8, &withdrawals_root, &p_block.block.header.withdrawals_root)) {
+    } else if (!std.mem.eql(u8, &withdrawals_root, &existing_withdrawals_root)) {
         return Errors.MismatchedWithdrawalsRoot;
     }
     try applyWithdrawals(&p_block.block, state);
 
     const requests_hash = try computeRequestsHash(gpa, &vm, spec, state, &vm.logs);
-    if (std.mem.eql(u8, &p_block.block.header.requests_hash, &std.mem.zeroes([32]u8))) {
+    const existing_requests_hash = p_block.block.header.requests_hash orelse std.mem.zeroes([32]u8);
+    if (std.mem.eql(u8, &existing_requests_hash, &std.mem.zeroes([32]u8))) {
         p_block.block.header.requests_hash = requests_hash;
-    } else if (!std.mem.eql(u8, &requests_hash, &p_block.block.header.requests_hash))
+    } else if (!std.mem.eql(u8, &requests_hash, &existing_requests_hash))
         return Errors.MismatchedRequestsHash;
 
     if (evm_spec.isEnabled(.Amsterdam))
@@ -340,7 +342,7 @@ pub fn validateBlock(comptime spec: Spec, p_block: *const PreprocessedBlock, par
     if (block.header.timestamp <= parent.timestamp) return Errors.InvalidTimestamp;
     if (block.header.extra_data.len > 32) return Errors.ExtraDataTooLong;
     if (block.header.gas_used > block.header.gas_limit) return Errors.GasLimitExceeded;
-    if (block.header.blob_gas_used % GAS_PER_BLOB != 0) return Errors.InvalidBlobGasUsed;
+    if (block.header.blob_gas_used.? % GAS_PER_BLOB != 0) return Errors.InvalidBlobGasUsed;
     var expected_blob_gas_used: u64 = 0;
     for (block.transactions) |tx| {
         const blobs = switch (tx) {
@@ -349,7 +351,7 @@ pub fn validateBlock(comptime spec: Spec, p_block: *const PreprocessedBlock, par
         };
         expected_blob_gas_used += blobs * GAS_PER_BLOB;
     }
-    if (block.header.blob_gas_used != expected_blob_gas_used) return Errors.MismatchedBlobGasUsed;
+    if (block.header.blob_gas_used.? != expected_blob_gas_used) return Errors.MismatchedBlobGasUsed;
     if (block.header.difficulty != 0) return Errors.InvalidDifficulty;
     if (!std.mem.eql(u8, &block.header.nonce, &[_]u8{0} ** 8)) return Errors.InvalidNonce;
     if (block.uncles.len != 0) return Errors.InvalidUncles;
@@ -360,19 +362,19 @@ pub fn validateBlock(comptime spec: Spec, p_block: *const PreprocessedBlock, par
     if (block.header.gas_limit < spec.min_gas_limit) return Errors.GasLimitLessThanMinimum;
 
     const parent_gas_target = parent.gas_limit / spec.base_fee_elasticity_multiplier;
-    var expected_base_fee_per_gas = parent.base_fee_per_gas;
+    var expected_base_fee_per_gas = parent.base_fee_per_gas.?;
     if (parent.gas_used > parent_gas_target) {
         const delta = parent.gas_used - parent_gas_target;
-        const base_fee_per_gas_delta = @max(@as(u128, parent.base_fee_per_gas) * delta / parent_gas_target / spec.base_fee_max_change_denominator, 1);
+        const base_fee_per_gas_delta = @max(@as(u128, parent.base_fee_per_gas.?) * delta / parent_gas_target / spec.base_fee_max_change_denominator, 1);
         expected_base_fee_per_gas += @intCast(base_fee_per_gas_delta);
     } else if (parent.gas_used < parent_gas_target) {
         const delta = parent_gas_target - parent.gas_used;
-        const base_fee_per_gas_delta = @as(u128, parent.base_fee_per_gas) * delta / parent_gas_target / spec.base_fee_max_change_denominator;
+        const base_fee_per_gas_delta = @as(u128, parent.base_fee_per_gas.?) * delta / parent_gas_target / spec.base_fee_max_change_denominator;
         expected_base_fee_per_gas -= @intCast(base_fee_per_gas_delta);
     }
-    if (expected_base_fee_per_gas != block.header.base_fee_per_gas) return Errors.InvalidBaseFee;
+    if (expected_base_fee_per_gas != block.header.base_fee_per_gas.?) return Errors.InvalidBaseFee;
 
-    if (p_block.block.header.excess_blob_gas != calcExcessBlobGas(spec, parent)) return Errors.MismatchedExcessBlobGas;
+    if (p_block.block.header.excess_blob_gas.? != calcExcessBlobGas(spec, parent)) return Errors.MismatchedExcessBlobGas;
 }
 
 pub fn contextFromBlock(
@@ -387,9 +389,9 @@ pub fn contextFromBlock(
         .coinbase = std.mem.readInt(u160, &h.beneficiary, .big),
         .time = h.timestamp,
         .random = std.mem.readInt(u256, &h.mix_hash, .big),
-        .basefee = h.base_fee_per_gas,
+        .basefee = h.base_fee_per_gas.?,
         .gas_limit = h.gas_limit,
-        .blob_base_fee = blobBaseFee(h.excess_blob_gas, spec.blob_base_fee_update_fraction),
+        .blob_base_fee = blobBaseFee(h.excess_blob_gas.?, spec.blob_base_fee_update_fraction),
         .max_blobs_per_block = spec.max_blobs_per_block,
         .ancestors = ancestors,
         .slotnum = block.header.slot_number orelse 0,
@@ -550,7 +552,7 @@ fn applyEip4788(header: *const types.BlockHeader, state: *State) !void {
     const acct = try state.accounts.read(BEACON_ROOTS_ADDRESS);
     if (std.mem.eql(u8, &acct.code_hash, &types.empty_code_hash)) return;
     const timestamp: u256 = header.timestamp;
-    const root: u256 = std.mem.readInt(u256, &header.parent_beacon_block_root, .big);
+    const root: u256 = std.mem.readInt(u256, &header.parent_beacon_block_root.?, .big);
     const idx = timestamp % HISTORICAL_ROOTS_MODULUS;
     _ = try state.contract_state.write(.{ .address = BEACON_ROOTS_ADDRESS, .slot = idx }, timestamp);
     _ = try state.contract_state.write(.{ .address = BEACON_ROOTS_ADDRESS, .slot = idx + HISTORICAL_ROOTS_MODULUS }, root);
@@ -565,16 +567,16 @@ fn applyEip2935(header: *const types.BlockHeader, state: *State) !void {
 }
 
 fn calcExcessBlobGas(comptime spec: Spec, parent: *const types.BlockHeader) u64 {
-    const excess_blob_gas = parent.excess_blob_gas + parent.blob_gas_used;
+    const excess_blob_gas = parent.excess_blob_gas.? + parent.blob_gas_used.?;
     const target_gas = spec.target_blobs_per_block * GAS_PER_BLOB;
 
     if (excess_blob_gas < target_gas) return 0;
 
-    const reserve_price = @as(u128, spec.blobs_base_cost) * parent.base_fee_per_gas;
-    const blob_price = blobBaseFee(parent.excess_blob_gas, spec.blob_base_fee_update_fraction) * GAS_PER_BLOB;
+    const reserve_price = @as(u128, spec.blobs_base_cost) * parent.base_fee_per_gas.?;
+    const blob_price = blobBaseFee(parent.excess_blob_gas.?, spec.blob_base_fee_update_fraction) * GAS_PER_BLOB;
     if (reserve_price > blob_price) {
-        const scaled_excess = parent.blob_gas_used * (spec.max_blobs_per_block - spec.target_blobs_per_block) / spec.max_blobs_per_block;
-        return parent.excess_blob_gas + scaled_excess;
+        const scaled_excess = parent.blob_gas_used.? * (spec.max_blobs_per_block - spec.target_blobs_per_block) / spec.max_blobs_per_block;
+        return parent.excess_blob_gas.? + scaled_excess;
     }
 
     return excess_blob_gas - target_gas;

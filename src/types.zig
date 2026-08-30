@@ -85,23 +85,52 @@ pub const BlockHeader = struct {
     extra_data: ExtraData,
     mix_hash: [32]u8,
     nonce: [8]u8,
-    base_fee_per_gas: u64,
-    withdrawals_root: [32]u8,
-    blob_gas_used: u64,
-    excess_blob_gas: u64,
-    parent_beacon_block_root: [32]u8,
-    requests_hash: [32]u8,
+    base_fee_per_gas: ?u64,
+    withdrawals_root: ?[32]u8,
+    blob_gas_used: ?u64,
+    excess_blob_gas: ?u64,
+    parent_beacon_block_root: ?[32]u8,
+    requests_hash: ?[32]u8,
     block_access_list_hash: ?[32]u8,
     slot_number: ?u64,
 
     pub fn encodeToRLP(self: BlockHeader, allocator: std.mem.Allocator, list: *std.array_list.Managed(u8)) !void {
-        if (self.block_access_list_hash == null) {
-            const pre_amsterdam_header = stripLast(BlockHeader, 2, self);
-            try rlp.serialize(@TypeOf(pre_amsterdam_header), allocator, pre_amsterdam_header, list);
-        } else {
-            const header = stripLast(BlockHeader, 0, self);
-            try rlp.serialize(@TypeOf(header), allocator, header, list);
+        switch (trailingNullCount(BlockHeader, self)) {
+            inline 0...8 => |n| {
+                const header = stripLast(BlockHeader, n, self);
+                try rlp.serialize(@TypeOf(header), allocator, header, list);
+            },
+            else => unreachable,
         }
+    }
+
+    pub fn decodeFromRLP(self: *BlockHeader, allocator: std.mem.Allocator, serialized: []const u8) !usize {
+        var items: []rlp.RawValue = undefined;
+        const consumed = try rlp.deserialize([]rlp.RawValue, allocator, serialized, &items);
+        defer allocator.free(items);
+
+        var i: usize = 0;
+        inline for (@typeInfo(BlockHeader).@"struct".fields) |field| {
+            switch (@typeInfo(field.type)) {
+                .optional => |opt| {
+                    if (i < items.len) {
+                        var value: opt.child = undefined;
+                        _ = try rlp.deserialize(opt.child, allocator, items[i].value, &value);
+                        @field(self.*, field.name) = value;
+                        i += 1;
+                    } else {
+                        @field(self.*, field.name) = null;
+                    }
+                },
+                else => {
+                    if (i >= items.len) return error.RlpPayloadTooShort;
+                    _ = try rlp.deserialize(field.type, allocator, items[i].value, &@field(self.*, field.name));
+                    i += 1;
+                },
+            }
+        }
+
+        return consumed;
     }
 
     pub fn hash(self: BlockHeader) [32]u8 {
@@ -143,12 +172,12 @@ test "header decode encode" {
     try std.testing.expectEqualSlices(u8, header.extra_data.buf[0..header.extra_data.len], &[1]u8{0});
     try std.testing.expectEqualStrings(&std.fmt.bytesToHex(header.mix_hash, .lower), "0000000000000000000000000000000000000000000000000000000000000000");
     try std.testing.expectEqual(std.mem.readInt(u64, &header.nonce, .big), 0);
-    try std.testing.expectEqual(header.base_fee_per_gas, 0x7);
-    try std.testing.expectEqualStrings(&std.fmt.bytesToHex(header.withdrawals_root, .lower), "56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421");
-    try std.testing.expectEqual(header.blob_gas_used, 0);
-    try std.testing.expectEqual(header.excess_blob_gas, 0);
-    try std.testing.expectEqualStrings(&std.fmt.bytesToHex(header.parent_beacon_block_root, .lower), "0000000000000000000000000000000000000000000000000000000000000000");
-    try std.testing.expectEqualStrings(&std.fmt.bytesToHex(header.requests_hash, .lower), "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+    try std.testing.expectEqual(header.base_fee_per_gas.?, 0x7);
+    try std.testing.expectEqualStrings(&std.fmt.bytesToHex(header.withdrawals_root.?, .lower), "56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421");
+    try std.testing.expectEqual(header.blob_gas_used.?, 0);
+    try std.testing.expectEqual(header.excess_blob_gas.?, 0);
+    try std.testing.expectEqualStrings(&std.fmt.bytesToHex(header.parent_beacon_block_root.?, .lower), "0000000000000000000000000000000000000000000000000000000000000000");
+    try std.testing.expectEqualStrings(&std.fmt.bytesToHex(header.requests_hash.?, .lower), "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
 
     var encoded = std.array_list.Managed(u8).init(allocator);
     defer encoded.deinit();
@@ -380,6 +409,20 @@ fn stripLast(comptime T: type, comptime n: usize, src: T) StripLast(T, n) {
     return out;
 }
 
+fn trailingNullCount(comptime T: type, self: T) usize {
+    const fields = @typeInfo(T).@"struct".fields;
+    var n: usize = 0;
+    comptime var i: usize = fields.len;
+    inline while (i > 0) {
+        i -= 1;
+        const field = fields[i];
+        if (@typeInfo(field.type) != .optional) break;
+        if (@field(self, field.name) != null) break;
+        n += 1;
+    }
+    return n;
+}
+
 test "legacy tx decode" {
     const allocator = std.testing.allocator;
     const hex = "f860800a830186a0941257767465d91292f29c15df1e25e063daed8b59808026a0a7eaaef383a6b7fc7192d2adbdaf0331b4d82f352f89956ce8be97e9fe5d0590a01a5ae493968f37d3462cdca0d30f0e3bb4799025e48682bcb1eefe152c847d52";
@@ -604,10 +647,10 @@ test "block with blob tx decode" {
     try std.testing.expectEqual(0x07270e00, block.header.gas_limit);
     try std.testing.expectEqual(0xa861, block.header.gas_used);
     try std.testing.expectEqual(0x03e8, block.header.timestamp);
-    try std.testing.expectEqual(0x020000, block.header.blob_gas_used);
-    try std.testing.expectEqual(0x080000, block.header.excess_blob_gas);
-    try std.testing.expectEqual(0x07, block.header.base_fee_per_gas);
-    try std.testing.expectEqualStrings(&std.fmt.bytesToHex(block.header.requests_hash, .lower), "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+    try std.testing.expectEqual(0x020000, block.header.blob_gas_used.?);
+    try std.testing.expectEqual(0x080000, block.header.excess_blob_gas.?);
+    try std.testing.expectEqual(0x07, block.header.base_fee_per_gas.?);
+    try std.testing.expectEqualStrings(&std.fmt.bytesToHex(block.header.requests_hash.?, .lower), "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
 
     try std.testing.expectEqual(1, block.transactions.len);
     const b = block.transactions[0].blob;
