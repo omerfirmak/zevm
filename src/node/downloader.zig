@@ -188,7 +188,7 @@ pub const Downloader = struct {
                 .{ .{ .number = status.requested_header_tail }, status.requested_header_tail };
             const batch_size = @as(u64, @min(1023, origin_num - target.cutoff_number)) + 1;
             requestHeaders(self, origin, batch_size) catch {
-                break;
+                return;
             };
             status.requested_header_tail = (origin_num + 1) - batch_size;
             if (status.requested_header_head < origin_num)
