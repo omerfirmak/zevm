@@ -154,9 +154,11 @@ pub const Downloader = struct {
                 try self.updateTarget(update.latest_block, update.latest_block_hash);
             },
             .block_headers => |headers| {
+                defer self.allocator.free(headers.data);
                 if (matchRequest(eth.Message, &self.inflight_eth_requests, peer, headers.request_id, .get_block_headers)) |req|
                     try self.handleHeaders(req, headers);
             },
+            .transactions => |data| self.allocator.free(data),
             else => {},
         }
     }
