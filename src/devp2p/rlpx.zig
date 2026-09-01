@@ -360,7 +360,7 @@ pub const Server = struct {
                 peer.handle(self.io, self.allocator, size) catch |e| {
                     if (e != error.NotEnoughData) return e;
                 };
-            }
+            } else return error.EOF;
         } else |e| {
             if (e != std.Io.Operation.FileReadStreaming.Error.WouldBlock) return e;
         }
@@ -386,7 +386,9 @@ pub const Server = struct {
         if (completed.result.file_write_streaming) |size| {
             written = size;
         } else |e| {
-            if (e != std.Io.Operation.FileWriteStreaming.Error.WouldBlock) {
+            if (e != std.Io.Operation.FileWriteStreaming.Error.WouldBlock or
+                peer_slot.status.load(.acquire) == .Exiting)
+            {
                 peer.armed_iov = null;
                 if (!self.markPeerExiting(peer_index)) self.clearSlot(peer_slot);
                 return e;
