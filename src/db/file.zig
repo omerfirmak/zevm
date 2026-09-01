@@ -170,7 +170,10 @@ pub const Storage = struct {
 
     pub fn put(self: *Self, io: std.Io, allocator: std.mem.Allocator, table: Table, number: u64, data: []const u8) !void {
         if (data.len == 0) return error.EmptyData;
+        return self.putMany(io, allocator, table, number, &[_][]const u8{data});
+    }
 
+    pub fn putMany(self: *Self, io: std.Io, allocator: std.mem.Allocator, table: Table, number: u64, data_list: []const []const u8) !void {
         self.lock.lockUncancelable(io);
         defer self.lock.unlock(io);
 
@@ -178,31 +181,55 @@ pub const Storage = struct {
         if (prev_range) |range| {
             if (range.head + 1 != number) return error.OutOfOrderPut;
         } else {
-            self.ranges[@intFromEnum(table)] = .{ .tail = number, .head = number };
+            self.ranges[@intFromEnum(table)] = .{ .tail = number, .head = number + data_list.len - 1 };
         }
-        self.ranges[@intFromEnum(table)].?.head = number;
+        self.ranges[@intFromEnum(table)].?.head = number + data_list.len - 1;
         errdefer self.ranges[@intFromEnum(table)] = prev_range;
-
-        const max_size = snappy.maxCompressedLength(data.len);
-        const compressed_buf = try allocator.alloc(u8, max_size);
-        defer allocator.free(compressed_buf);
-        const compressed_len = try snappy.compress(data, compressed_buf);
-
-        const index = self.advanceIndex(table, compressed_len);
-        errdefer self.next_indexes[@intFromEnum(table)] = index;
 
         const index_file = try self.openIndexFile(io, table);
         defer index_file.release();
-
         const index_file_length = try index_file.value.file.length(io);
         errdefer index_file.value.file.setLength(io, index_file_length) catch unreachable;
-        try index_file.value.file.writePositionalAll(io, &index.encode(), index_file_length);
 
-        const data_file = try self.openDataFile(io, table, index.file_no);
-        defer data_file.release();
+        const start_index = self.next_indexes[@intFromEnum(table)];
+        errdefer self.next_indexes[@intFromEnum(table)] = start_index;
+        const index_buffer = try allocator.alloc(u8, 64 * 1024);
+        defer allocator.free(index_buffer);
 
-        const data_file_length = try data_file.value.file.length(io);
-        try data_file.value.file.writePositionalAll(io, compressed_buf[0..compressed_len], data_file_length);
+        var index_writer = index_file.value.file.writer(io, index_buffer);
+        index_writer.pos = index_file_length;
+
+        var data_file: ?*cache.Entry(PooledFile) = null;
+        defer if (data_file) |entry| entry.release();
+
+        const data_buffer = try allocator.alloc(u8, 1024 * 1024);
+        defer allocator.free(data_buffer);
+        var data_writer: ?std.Io.File.Writer = null;
+
+        var prev_index: ?IndexEntry = null;
+        for (data_list) |data| {
+            const max_size = snappy.maxCompressedLength(data.len);
+            const compressed_buf = try allocator.alloc(u8, max_size);
+            defer allocator.free(compressed_buf);
+            const compressed_len = try snappy.compress(data, compressed_buf);
+
+            const index = self.advanceIndex(table, compressed_len);
+            if (prev_index == null or index.file_no != prev_index.?.file_no) {
+                if (data_writer) |*w| try w.flush();
+                if (data_file) |entry| entry.release();
+
+                data_file = try self.openDataFile(io, table, index.file_no);
+                data_writer = data_file.?.value.file.writer(io, data_buffer);
+                data_writer.?.pos = index.offset;
+            }
+            prev_index = index;
+
+            try index_writer.interface.writeAll(&index.encode());
+            try data_writer.?.interface.writeAll(compressed_buf[0..compressed_len]);
+        }
+
+        try data_writer.?.flush();
+        try index_writer.flush();
     }
 
     pub fn advanceIndex(self: *Self, table: Table, size: usize) IndexEntry {
@@ -396,5 +423,35 @@ test "data file rollover" {
         const read = try storage.get(std.testing.io, std.testing.allocator, .bals, number);
         defer std.testing.allocator.free(read.?);
         try std.testing.expectEqualSlices(u8, &record, read.?);
+    }
+}
+
+test "putMany writes multiple entries" {
+    var tmpdir = std.testing.tmpDir(.{});
+    try tmpdir.dir.createDir(std.testing.io, "datadir", .default_dir);
+    defer tmpdir.cleanup();
+
+    var path: [1024]u8 = undefined;
+    const size = try tmpdir.dir.realPathFile(std.testing.io, "datadir", &path);
+
+    var storage = try Storage.init(std.testing.io, std.testing.allocator, path[0..size]);
+    defer storage.deinit(std.testing.io, std.testing.allocator) catch unreachable;
+
+    const entries = [_][]const u8{
+        &[_]u8{ 1, 2, 3 },
+        &[_]u8{ 4, 5, 6, 7, 8 },
+        &[_]u8{9},
+        &[_]u8{ 10, 11, 12, 13 },
+    };
+
+    try storage.putMany(std.testing.io, std.testing.allocator, .bals, 10, &entries);
+
+    const range = storage.ranges[@intFromEnum(Storage.Table.bals)].?;
+    try std.testing.expect(range.tail == 10 and range.head == 13);
+
+    for (entries, 0..) |entry, i| {
+        const read = try storage.get(std.testing.io, std.testing.allocator, .bals, 10 + i);
+        defer std.testing.allocator.free(read.?);
+        try std.testing.expectEqualSlices(u8, entry, read.?);
     }
 }
