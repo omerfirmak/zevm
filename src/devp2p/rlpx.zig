@@ -367,7 +367,7 @@ pub const Server = struct {
                 peer.handle(self.io, self.allocator, size) catch |e| {
                     if (e != error.NotEnoughData) return e;
                 };
-            }
+            } else return error.EOF;
         } else |e| {
             if (e != std.Io.Operation.FileReadStreaming.Error.WouldBlock) return e;
         }
@@ -393,7 +393,7 @@ pub const Server = struct {
         if (completed.result.file_write_streaming) |size| {
             written = size;
         } else |e| {
-            if (e != std.Io.Operation.FileWriteStreaming.Error.WouldBlock) {
+            if (e != std.Io.Operation.FileWriteStreaming.Error.WouldBlock or peer_slot.status.load(.acquire) == .Exiting) {
                 self.retireWrite(write_slot);
                 self.dropPeer(write_slot.peer);
                 return e;
@@ -443,7 +443,7 @@ pub const Server = struct {
     fn markPeerExiting(self: *Self, index: usize) void {
         const slot = &self.slots[index];
         if (slot.status.cmpxchgStrong(.Active, .Exiting, .acq_rel, .acquire) == null)
-            slot.peer.stream.shutdown(self.io, .recv) catch {};
+            slot.peer.stream.shutdown(self.io, .both) catch {};
     }
 
     fn dropPeer(self: *Self, index: usize) void {
