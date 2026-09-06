@@ -333,7 +333,7 @@ pub const Server = struct {
                     self.clearSlot(slot);
             } else {
                 if (slot.peer.status == .dialed) {
-                    self.sendHandshake(&slot.peer, index) catch {
+                    slot.peer.sendHandshake(index) catch {
                         self.dropPeer(index);
                         continue;
                     };
@@ -496,115 +496,6 @@ pub const Server = struct {
         slot.status.store(.Ready, .release); // todo: notify main worker
     }
 
-    fn sendHandshake(self: *Self, peer: *Peer, index: usize) !void {
-        const record = peer.record.?;
-        var init_nonce: [32]u8 = undefined;
-        self.io.random(&init_nonce);
-
-        const remote_pubkey = try record.uncompressedPubkey();
-        var secret = try sharedSecret(self.keypair.secret_key.toBytes(), remote_pubkey);
-        secret = xor32(secret, init_nonce);
-
-        const eph = Ecdsa.KeyPair.generate(self.io);
-        const sig = try self.secp.sign(secret, eph.secret_key.toBytes());
-
-        const auth = AuthMessage{
-            .nonce = init_nonce,
-            .pubkey = self.keypair.public_key.toUncompressedSec1()[1..65].*,
-            .sig = sig,
-        };
-
-        var rlp_buf: std.array_list.Managed(u8) = .init(self.allocator);
-        defer rlp_buf.deinit();
-        try rlp_buf.ensureTotalCapacity(2048);
-        try rlp.serialize(AuthMessage, self.allocator, auth, &rlp_buf);
-
-        var padSize: u8 = undefined;
-        self.io.random((&padSize)[0..1]);
-
-        try rlp_buf.appendNTimes(0, padSize % 100 + 100);
-
-        const total_len = rlp_buf.items.len + ecies_overhead + 2;
-        const encrypted_buf = try self.allocator.alloc(u8, total_len);
-        std.mem.writeInt(u16, encrypted_buf[0..2], @intCast(total_len - 2), .big);
-
-        _ = try eciesEncrypt(self.io, encrypted_buf[2..], remote_pubkey, rlp_buf.items, encrypted_buf[0..2]);
-        const handshake: Peer.HandshakeState = .{
-            .msg = encrypted_buf,
-            .init_nonce = init_nonce,
-            .eph_key = eph,
-        };
-        const msg = try self.allocator.dupe(u8, handshake.msg);
-        errdefer self.allocator.free(msg);
-        try self.scheduleWrite(index, msg);
-        peer.remote_pubkey = remote_pubkey;
-        peer.status = .{ .auth_sent = handshake };
-    }
-
-    fn recvHandshake(self: *Self, peer: *Peer, index: usize, prefix: [2]u8, blob: []const u8) !Peer.Session {
-        var plain_buf: [max_handshake_size]u8 = undefined;
-        const plain = try eciesDecrypt(self.keypair.secret_key.toBytes(), &plain_buf, blob, &prefix);
-
-        var auth: AuthMessage = undefined;
-        _ = try rlp.deserialize(AuthMessage, undefined, plain, &auth);
-        if (auth.version < 4) return error.IncompatibleVersion;
-        if (std.mem.eql(u8, &auth.pubkey, &self.hello.node_id)) return error.SelfIdentity;
-
-        const token = try sharedSecret(self.keypair.secret_key.toBytes(), auth.pubkey);
-        const remote_eph = try self.secp.recoverPubkey(xor32(token, auth.nonce), auth.sig);
-
-        var ack_nonce: [32]u8 = undefined;
-        self.io.random(&ack_nonce);
-        const eph = Ecdsa.KeyPair.generate(self.io);
-
-        const ack_msg = AuthRespMessage{
-            .eph_pub = eph.public_key.toUncompressedSec1()[1..65].*,
-            .nonce = ack_nonce,
-            .version = 4,
-        };
-
-        var rlp_buf: std.array_list.Managed(u8) = .init(self.allocator);
-        defer rlp_buf.deinit();
-        try rlp_buf.ensureTotalCapacity(max_handshake_size);
-        try rlp.serialize(AuthRespMessage, self.allocator, ack_msg, &rlp_buf);
-
-        var padSize: u8 = undefined;
-        self.io.random((&padSize)[0..1]);
-
-        try rlp_buf.appendNTimes(0, padSize % 100 + 100);
-
-        const total_len = rlp_buf.items.len + ecies_overhead + 2;
-        const ack = try self.allocator.alloc(u8, total_len);
-        defer self.allocator.free(ack);
-        std.mem.writeInt(u16, ack[0..2], @intCast(total_len - 2), .big);
-
-        _ = try eciesEncrypt(self.io, ack[2..], auth.pubkey, rlp_buf.items, ack[0..2]);
-
-        const ecdhe = try sharedSecret(eph.secret_key.toBytes(), remote_eph[1..65].*);
-        var session: Peer.Session = .{ .secrets = deriveSecrets(
-            ecdhe,
-            auth.nonce,
-            ack_nonce,
-            &.{ack},
-            &.{ &prefix, blob },
-            .recipient,
-        ) };
-
-        const encoded, const len = try encodeMsg(self.allocator, @intFromEnum(MessageId.hello), self.hello, false);
-        defer self.allocator.free(encoded);
-        const hello_frame = try encryptFrame(self.allocator, &session.secrets, encoded[0..len]);
-        defer self.allocator.free(hello_frame);
-
-        const out = try self.allocator.alloc(u8, ack.len + hello_frame.len);
-        errdefer self.allocator.free(out);
-        @memcpy(out[0..ack.len], ack);
-        @memcpy(out[ack.len..], hello_frame);
-
-        try self.scheduleWrite(index, out);
-        peer.remote_pubkey = auth.pubkey;
-        return session;
-    }
-
     pub fn queueMsg(self: *Self, peer_id: PeerId, id: u64, msg: anytype) !void {
         const encoded, const len = try encodeMsg(self.allocator, id, msg, true);
         const wrote = try self.write_queue.put(self.io, &[_]QueuedWrite{.{
@@ -751,7 +642,7 @@ const Peer = struct {
                     std.mem.writeInt(u16, &s2, len, .big);
 
                     const index = self.server.peerId(self).peer_index;
-                    self.status = .{ .hello = try self.server.recvHandshake(self, index, s2, blob) };
+                    self.status = .{ .hello = try self.recvHandshake(index, s2, blob) };
                 },
                 .dialed => return error.WrongHandshakeOrder,
                 .auth_sent => |state| {
@@ -871,6 +762,118 @@ const Peer = struct {
         var id: u64 = undefined;
         const off = try rlp.deserialize(u64, undefined, message, &id);
         return .{ .id = id, .payload = message[off..] };
+    }
+
+    fn sendHandshake(self: *Peer, index: usize) !void {
+        const record = self.record.?;
+        const server = self.server;
+        var init_nonce: [32]u8 = undefined;
+        server.io.random(&init_nonce);
+
+        const remote_pubkey = try record.uncompressedPubkey();
+        var secret = try sharedSecret(server.keypair.secret_key.toBytes(), remote_pubkey);
+        secret = xor32(secret, init_nonce);
+
+        const eph = Ecdsa.KeyPair.generate(server.io);
+        const sig = try server.secp.sign(secret, eph.secret_key.toBytes());
+
+        const auth = AuthMessage{
+            .nonce = init_nonce,
+            .pubkey = server.keypair.public_key.toUncompressedSec1()[1..65].*,
+            .sig = sig,
+        };
+
+        var rlp_buf: std.array_list.Managed(u8) = .init(server.allocator);
+        defer rlp_buf.deinit();
+        try rlp_buf.ensureTotalCapacity(2048);
+        try rlp.serialize(AuthMessage, server.allocator, auth, &rlp_buf);
+
+        var padSize: u8 = undefined;
+        server.io.random((&padSize)[0..1]);
+
+        try rlp_buf.appendNTimes(0, padSize % 100 + 100);
+
+        const total_len = rlp_buf.items.len + ecies_overhead + 2;
+        const encrypted_buf = try server.allocator.alloc(u8, total_len);
+        std.mem.writeInt(u16, encrypted_buf[0..2], @intCast(total_len - 2), .big);
+
+        _ = try eciesEncrypt(server.io, encrypted_buf[2..], remote_pubkey, rlp_buf.items, encrypted_buf[0..2]);
+        const handshake: Peer.HandshakeState = .{
+            .msg = encrypted_buf,
+            .init_nonce = init_nonce,
+            .eph_key = eph,
+        };
+        const msg = try server.allocator.dupe(u8, handshake.msg);
+        errdefer server.allocator.free(msg);
+        try server.scheduleWrite(index, msg);
+        self.remote_pubkey = remote_pubkey;
+        self.status = .{ .auth_sent = handshake };
+    }
+
+    fn recvHandshake(self: *Peer, index: usize, prefix: [2]u8, blob: []const u8) !Peer.Session {
+        const server = self.server;
+
+        var plain_buf: [max_handshake_size]u8 = undefined;
+        const plain = try eciesDecrypt(server.keypair.secret_key.toBytes(), &plain_buf, blob, &prefix);
+
+        var auth: AuthMessage = undefined;
+        _ = try rlp.deserialize(AuthMessage, undefined, plain, &auth);
+        if (auth.version < 4) return error.IncompatibleVersion;
+        if (std.mem.eql(u8, &auth.pubkey, &server.hello.node_id)) return error.SelfIdentity;
+
+        const token = try sharedSecret(server.keypair.secret_key.toBytes(), auth.pubkey);
+        const remote_eph = try server.secp.recoverPubkey(xor32(token, auth.nonce), auth.sig);
+
+        var ack_nonce: [32]u8 = undefined;
+        server.io.random(&ack_nonce);
+        const eph = Ecdsa.KeyPair.generate(server.io);
+
+        const ack_msg = AuthRespMessage{
+            .eph_pub = eph.public_key.toUncompressedSec1()[1..65].*,
+            .nonce = ack_nonce,
+            .version = 4,
+        };
+
+        var rlp_buf: std.array_list.Managed(u8) = .init(server.allocator);
+        defer rlp_buf.deinit();
+        try rlp_buf.ensureTotalCapacity(max_handshake_size);
+        try rlp.serialize(AuthRespMessage, server.allocator, ack_msg, &rlp_buf);
+
+        var padSize: u8 = undefined;
+        server.io.random((&padSize)[0..1]);
+
+        try rlp_buf.appendNTimes(0, padSize % 100 + 100);
+
+        const total_len = rlp_buf.items.len + ecies_overhead + 2;
+        const ack = try server.allocator.alloc(u8, total_len);
+        defer server.allocator.free(ack);
+        std.mem.writeInt(u16, ack[0..2], @intCast(total_len - 2), .big);
+
+        _ = try eciesEncrypt(server.io, ack[2..], auth.pubkey, rlp_buf.items, ack[0..2]);
+
+        const ecdhe = try sharedSecret(eph.secret_key.toBytes(), remote_eph[1..65].*);
+        var session: Peer.Session = .{ .secrets = deriveSecrets(
+            ecdhe,
+            auth.nonce,
+            ack_nonce,
+            &.{ack},
+            &.{ &prefix, blob },
+            .recipient,
+        ) };
+
+        const encoded, const len = try encodeMsg(server.allocator, @intFromEnum(MessageId.hello), server.hello, false);
+        defer server.allocator.free(encoded);
+        const hello_frame = try encryptFrame(server.allocator, &session.secrets, encoded[0..len]);
+        defer server.allocator.free(hello_frame);
+
+        const out = try server.allocator.alloc(u8, ack.len + hello_frame.len);
+        errdefer server.allocator.free(out);
+        @memcpy(out[0..ack.len], ack);
+        @memcpy(out[ack.len..], hello_frame);
+
+        try server.scheduleWrite(index, out);
+        self.remote_pubkey = auth.pubkey;
+        return session;
     }
 
     fn sessionSecrets(self: *Peer) !*Secrets {
