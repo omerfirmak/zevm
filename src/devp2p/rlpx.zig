@@ -138,8 +138,8 @@ pub const Server = struct {
             Active,
             Exiting,
         }) = .init(.Empty),
-        epoch: usize,
-        peer: Peer,
+        epoch: usize = 0,
+        peer: Peer = undefined,
     };
     pub const PeerId = struct {
         peer_index: usize,
@@ -181,10 +181,7 @@ pub const Server = struct {
     pub fn init(allocator: std.mem.Allocator, io: std.Io, identity: Ecdsa.KeyPair, port: u16, proto_handlers: []RegisteredCapability) !Self {
         const addr: std.Io.net.IpAddress = .{ .ip4 = .unspecified(port) };
         const slots = try allocator.alloc(PeerSlot, max_peers);
-        for (slots) |*s| {
-            s.epoch = 0;
-            s.status.store(.Empty, .release);
-        }
+        for (slots) |*s| s.* = .{};
         std.mem.sort(RegisteredCapability, proto_handlers, {}, RegisteredCapability.lessThan);
         var caps = try allocator.alloc(Capability, proto_handlers.len);
         for (0..caps.len) |index| caps[index] = proto_handlers[index].cap;
