@@ -14,6 +14,10 @@ const Blockchain = @import("node/blockchain.zig").Blockchain;
 const Downloader = @import("node/downloader.zig").Downloader;
 const FileStorage = @import("db/file.zig").Storage;
 
+pub const std_options: std.Options = .{
+    .log_level = .debug,
+};
+
 pub fn main(init: std.process.Init) !void {
     const kp = std.crypto.sign.ecdsa.EcdsaSecp256k1Sha256.KeyPair.generate(init.io);
 
