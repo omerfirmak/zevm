@@ -122,7 +122,6 @@ pub const Server = struct {
         var next_walk: std.Io.Clock.Timestamp = .fromNow(self.io, .{ .raw = .zero, .clock = .real });
         while (true) {
             if (next_walk.durationFromNow(self.io).raw.toNanoseconds() <= 0) {
-                log.debug("starting to walk DHT", .{});
                 if (self.startWalking()) {
                     next_walk = .fromNow(self.io, .{ .raw = .fromSeconds(300), .clock = .real });
                 } else |e| {
@@ -450,6 +449,8 @@ pub const Server = struct {
     }
 
     pub fn startWalking(self: *Self) !void {
+        log.debug("starting to walk DHT", .{});
+
         try self.table.clearStalePeers(std.Io.Clock.now(.real, self.io));
         @memset(self.seen, 0);
         self.io.random(&self.seen_salt);
