@@ -31,7 +31,7 @@ pub fn main(init: std.process.Init) !void {
     var bc = try Blockchain.init(
         init.io,
         slabs.allocator(),
-        @import("node/blockchain.zig").glamsterdam_devnet8_config,
+        @import("node/blockchain.zig").mainnet_config,
         &fs,
     );
 
@@ -41,7 +41,7 @@ pub fn main(init: std.process.Init) !void {
     var ethproto = try eth.Provider.init(slabs.allocator());
     ethproto.hello = .{
         .status = .{
-            .protocol_version = 71,
+            .protocol_version = 69,
             .network_id = bc.chainId(),
             .genesis = bc.genesisHash(),
             .fork_id = id_filter.currentId(genesis_head_header.number, genesis_head_header.timestamp),
@@ -70,7 +70,7 @@ pub fn main(init: std.process.Init) !void {
         init.io,
         kp,
         33034,
-        try bootnodes.parse(init.arena.allocator(), &bootnodes.glamsterdam_devnet8),
+        try bootnodes.parse(init.arena.allocator(), &bootnodes.mainnet),
         &dialer,
     );
     var discv_thread = try init.io.concurrent(discv5.Server.run, .{&server});

@@ -148,15 +148,21 @@ pub const Downloader = struct {
     fn handleEth(self: *Self, msg: eth.Message, peer: rlpx.Server.PeerId) !void {
         switch (msg) {
             .status => |status| {
+                log.debug("received status from {} latest_block {}", .{ peer, status.latest_block });
                 try self.updateTarget(status.latest_block, status.latest_block_hash);
             },
             .block_range_update => |update| {
+                log.debug("received block_range_update from {} earliest {} latest {}", .{ peer, update.earliest_block, update.latest_block });
                 try self.updateTarget(update.latest_block, update.latest_block_hash);
             },
             .block_headers => |headers| {
                 defer self.allocator.free(headers.data);
-                if (matchRequest(eth.Message, &self.inflight_eth_requests, peer, headers.request_id, .get_block_headers)) |req|
+                log.debug("received block_headers from {} request_id {} count {}", .{ peer, headers.request_id, headers.data.len });
+                if (matchRequest(eth.Message, &self.inflight_eth_requests, peer, headers.request_id, .get_block_headers)) |req| {
                     try self.handleHeaders(req, headers);
+                } else {
+                    log.debug("  no matching inflight request for request_id {} from {}", .{ headers.request_id, peer });
+                }
             },
             .transactions => |data| self.allocator.free(data),
             else => {},
@@ -176,6 +182,7 @@ pub const Downloader = struct {
             .cutoff_number = head.number,
             .cutoff_hash = head.hash,
         };
+        log.debug("accepted new sync target number {} cutoff {}", .{ number, head.number });
     }
 
     fn advanceDownload(self: *Self) !void {
@@ -218,14 +225,18 @@ pub const Downloader = struct {
                 .skip = 0,
                 .reverse = true,
             },
-        } });
+        } }) catch |e| {
+            log.debug("failed to request headers origin {} amount {}: {}", .{ origin, amount, e });
+            return e;
+        };
         log.debug("requesting headers origin {} amount {}", .{ origin, amount });
     }
 
     fn handleHeaders(self: *Self, matched_request: *Request(eth.Message), response: eth.BlockHeaders) !void {
         const headers_request = matched_request.msg.get_block_headers;
 
-        const hashes, const headers = self.validateHeadersResponse(headers_request, response) catch {
+        const hashes, const headers = self.validateHeadersResponse(headers_request, response) catch |e| {
+            log.debug("header validation failed for origin {} amount {}: {}", .{ headers_request.query.origin, headers_request.query.amount, e });
             self.free_eth_requests.list().push(matched_request);
             try self.requestHeaders(headers_request.query.origin, headers_request.query.amount);
             return;
@@ -254,7 +265,10 @@ pub const Downloader = struct {
                 };
             }
             log.debug("validated header range start {} end {} invalidated {any}", .{ headers[0].number, headers[0].number + headers.len - 1, invalidated_range });
-        } else followup_request = headers_request.query;
+        } else {
+            log.debug("empty header response for origin {} amount {}, retrying", .{ headers_request.query.origin, headers_request.query.amount });
+            followup_request = headers_request.query;
+        }
 
         self.free_eth_requests.list().push(matched_request);
         if (followup_request) |followup| {

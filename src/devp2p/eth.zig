@@ -95,7 +95,7 @@ pub const Message = union(MessageId) {
 
 pub const Config: proto.Config = .{
     .name = "eth",
-    .version = 71,
+    .version = 69,
     .message_count = 0x14,
     .required = false,
     .Message = Message,

@@ -2,6 +2,8 @@ const std = @import("std");
 const rlpx = @import("rlpx.zig");
 const rlp = @import("rlp");
 
+const log = std.log.scoped(.proto);
+
 pub fn Request(comptime T: type) type {
     return struct {
         id: u64,
@@ -113,6 +115,13 @@ pub fn Provider(comptime cfg: Config) type {
 
             switch (msg) {
                 inline else => |typed_msg, msg_id| {
+                    log.debug("sending {s} msg {s} (wire id {d}) to {} content {any}", .{
+                        cfg.name,
+                        @tagName(msg_id),
+                        @intFromEnum(msg_id) + peer.offset,
+                        peer_id,
+                        typed_msg,
+                    });
                     try self.server.?.queueMsg(peer_id, @intFromEnum(msg_id) + peer.offset, typed_msg);
                 },
             }

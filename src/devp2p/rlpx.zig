@@ -333,7 +333,8 @@ pub const Server = struct {
                     self.clearSlot(slot);
             } else {
                 if (slot.peer.status == .dialed) {
-                    self.sendHandshake(&slot.peer, index) catch {
+                    self.sendHandshake(&slot.peer, index) catch |e| {
+                        log.debug("sendHandshake failed for {} with reason {}", .{ self.peerId(&slot.peer), e });
                         self.dropPeer(index);
                         continue;
                     };
@@ -797,9 +798,18 @@ const Peer = struct {
                             if (hello.version < p2p_version) return error.IncompatibleVersion;
                             const caps = try self.server.sharedCaps(allocator, hello.caps);
                             log.debug("received hello from {} id {s}", .{ self.server.peerId(self), hello.client_id });
+                            for (hello.caps) |c| {
+                                log.debug("  peer offers cap {s}/{d}", .{ c.name, c.version });
+                            }
                             self.status = .{ .active = .{ .session = session.*, .caps = caps } };
                             for (caps) |c| {
                                 const handler = &self.server.proto_handlers[c.registered_cap_index];
+                                log.debug("  negotiated cap {s}/{d} at offset {d} for {}", .{
+                                    handler.cap.name,
+                                    handler.cap.version,
+                                    c.starting_offset,
+                                    self.server.peerId(self),
+                                });
                                 handler.onConnected(handler.ctx, self.server.peerId(self), c.starting_offset);
                             }
                         },
