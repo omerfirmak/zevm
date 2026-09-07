@@ -8,6 +8,7 @@ const rlp = @import("rlp");
 const FreeList = @import("../free_list.zig").FreeList;
 const List = @import("../free_list.zig").List;
 const max_inflight_requests = 100;
+const header_persist_chunk = 1024;
 
 const log = std.log.scoped(.downloader);
 
@@ -210,7 +211,7 @@ pub const Downloader = struct {
 
     fn requestHeaders(self: *Self, origin: eth.HashOrNumber, amount: u64) !void {
         const id = self.eth_provider.nextRequestId();
-        try self.sendEthRequest(id, .{ .get_block_headers = .{
+        self.sendEthRequest(id, .{ .get_block_headers = .{
             .id = id,
             .query = .{
                 .origin = origin,
@@ -357,6 +358,25 @@ pub const Downloader = struct {
         return null;
     }
 
+    fn readDownladedHeaders(self: *Self, allocator: std.mem.Allocator, start: u64, count: u64) ![]types.BlockHeader {
+        const file = try self.bc.file_storage.openFile(self.io, "downloaded_headers.dat");
+        defer file.release();
+
+        const headers = try allocator.alloc(types.BlockHeader, count);
+        errdefer allocator.free(headers);
+
+        const offset = start * @sizeOf(types.BlockHeader);
+        const bytes: [*]u8 = @ptrCast(headers.ptr);
+        const size = count * @sizeOf(types.BlockHeader);
+
+        if (try file.value.file.readPositionalAll(self.io, bytes[0..size], offset) != size) return error.MissingDownloadedHeader;
+        for (headers) |*header| {
+            if (std.meta.eql(header.*, std.mem.zeroes(types.BlockHeader))) return error.MissingDownloadedHeader;
+        }
+
+        return headers;
+    }
+
     fn clearDownloadedHeader(self: *Self, number: u64) !void {
         const offset = number * @sizeOf(types.BlockHeader);
         var header: types.BlockHeader = std.mem.zeroes(types.BlockHeader);
@@ -391,9 +411,16 @@ pub const Downloader = struct {
             head.number + 1,
             self.state.active.requested_header_head,
         });
-        for (head.number + 1..self.state.active.requested_header_head + 1) |number| {
-            const header = (try self.readDownladedHeader(number)).?;
-            try self.bc.appendHeader(&header);
+
+        const first = head.number + 1;
+        const total = self.state.active.requested_header_head - head.number;
+        var persisted: u64 = 0;
+        while (persisted < total) {
+            const count = @min(header_persist_chunk, total - persisted);
+            const headers = try self.readDownladedHeaders(self.allocator, first + persisted, count);
+            defer self.allocator.free(headers);
+            try self.bc.appendHeaders(headers);
+            persisted += count;
         }
 
         try self.clearDownloadedHeaders();

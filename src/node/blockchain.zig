@@ -61,11 +61,27 @@ pub const Blockchain = struct {
     }
 
     pub fn appendHeader(self: *Self, header: *const types.BlockHeader) !void {
-        var list = std.array_list.Managed(u8).init(self.allocator);
-        defer list.deinit();
-        _ = try rlp.serialize(types.BlockHeader, self.allocator, header.*, &list);
+        try self.appendHeaders(&[_]types.BlockHeader{header.*});
+    }
 
-        try self.file_storage.put(self.io, self.allocator, .headers, header.number, list.items);
+    pub fn appendHeaders(self: *Self, headers: []const types.BlockHeader) !void {
+        const lists = try self.allocator.alloc(std.array_list.Managed(u8), headers.len);
+        defer self.allocator.free(lists);
+
+        var initialized: usize = 0;
+        defer for (lists[0..initialized]) |*list| list.deinit();
+
+        const data_list = try self.allocator.alloc([]const u8, headers.len);
+        defer self.allocator.free(data_list);
+
+        for (headers, 0..) |header, i| {
+            lists[i] = std.array_list.Managed(u8).init(self.allocator);
+            initialized = i + 1;
+            _ = try rlp.serialize(types.BlockHeader, self.allocator, header, &lists[i]);
+            data_list[i] = lists[i].items;
+        }
+
+        try self.file_storage.putMany(self.io, self.allocator, .headers, headers[0].number, data_list);
     }
 };
 
