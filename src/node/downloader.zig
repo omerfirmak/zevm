@@ -211,7 +211,7 @@ pub const Downloader = struct {
 
     fn requestHeaders(self: *Self, origin: eth.HashOrNumber, amount: u64) !void {
         const id = self.eth_provider.nextRequestId();
-        self.sendEthRequest(id, .{ .get_block_headers = .{
+        try self.sendEthRequest(id, .{ .get_block_headers = .{
             .id = id,
             .query = .{
                 .origin = origin,
