@@ -16,6 +16,7 @@ const FileStorage = @import("db/file.zig").Storage;
 
 pub const std_options: std.Options = .{
     .log_level = .debug,
+    .logFn = @import("log.zig").timestamped,
 };
 
 pub fn main(init: std.process.Init) !void {
