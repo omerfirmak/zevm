@@ -223,12 +223,34 @@ pub const Downloader = struct {
         log.debug("requesting headers origin {} amount {}", .{ origin, amount });
     }
 
+    fn reissueHeaderRequest(self: *Self, request: *Request(eth.Message), origin: eth.HashOrNumber, amount: u64) void {
+        const id = self.eth_provider.nextRequestId();
+        request.id = id;
+        request.msg = .{ .get_block_headers = .{
+            .id = id,
+            .query = .{
+                .origin = origin,
+                .amount = amount,
+                .skip = 0,
+                .reverse = true,
+            },
+        } };
+        if (self.eth_provider.sendToRandomPeer(request.msg)) |peer| {
+            request.peer = peer;
+            request.deadline = std.Io.Clock.now(.real, self.io).addDuration(.fromSeconds(3));
+        } else |e| {
+            log.debug("reissue for origin {} amount {} deferred: {t}", .{ origin, amount, e });
+            request.deadline = std.Io.Clock.now(.real, self.io);
+        }
+        self.inflight_eth_requests.push(request);
+    }
+
     fn handleHeaders(self: *Self, matched_request: *Request(eth.Message), response: eth.BlockHeaders) !void {
         const headers_request = matched_request.msg.get_block_headers;
 
-        const hashes, const headers = self.validateHeadersResponse(headers_request, response) catch {
-            self.free_eth_requests.list().push(matched_request);
-            try self.requestHeaders(headers_request.query.origin, headers_request.query.amount);
+        const hashes, const headers = self.validateHeadersResponse(headers_request, response) catch |e| {
+            log.debug("header validation failed for origin {} amount {}: {t}", .{ headers_request.query.origin, headers_request.query.amount, e });
+            self.reissueHeaderRequest(matched_request, headers_request.query.origin, headers_request.query.amount);
             return;
         };
         defer {
@@ -257,13 +279,10 @@ pub const Downloader = struct {
             log.debug("validated header range start {} end {} invalidated {any}", .{ headers[0].number, headers[0].number + headers.len - 1, invalidated_range });
         } else followup_request = headers_request.query;
 
-        self.free_eth_requests.list().push(matched_request);
         if (followup_request) |followup| {
-            try self.requestHeaders(
-                followup.origin,
-                followup.amount,
-            );
+            self.reissueHeaderRequest(matched_request, followup.origin, followup.amount);
         } else {
+            self.free_eth_requests.list().push(matched_request);
             try self.advanceDownload();
         }
 
