@@ -863,6 +863,8 @@ pub fn Ops(comptime cfg: Config) type {
                         if (created_addr == 0) {
                             @branchHint(.unlikely);
                             available_gas, frame.state_gas_spillover = frame.evm.creditStateGasRefund(available_gas, frame.state_gas_spillover, create_state_gas);
+                        } else {
+                            available_gas, frame.state_gas_spillover = frame.evm.repayStateGasSpill(available_gas, frame.state_gas_spillover);
                         }
                         args[0] = created_addr;
                     } else args[0] = 0;
@@ -969,6 +971,9 @@ pub fn Ops(comptime cfg: Config) type {
                         args[0] = if (err != null) 0 else 1;
                         available_gas += leftover_gas;
                         frame.state_gas_spillover += call_spillover;
+                        if (err == null) {
+                            available_gas, frame.state_gas_spillover = frame.evm.repayStateGasSpill(available_gas, frame.state_gas_spillover);
+                        }
                     } else {
                         @branchHint(.cold);
                         args[0] = 0;
