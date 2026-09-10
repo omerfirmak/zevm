@@ -304,6 +304,12 @@ pub const EVM = struct {
         return .{ gas_left + to_gas_left, total_spillover - to_gas_left };
     }
 
+    pub fn repayStateGasSpill(self: *Self, gas_left: u64, total_spillover: u64) struct { u64, u64 } {
+        const repayment = @min(self.state_gas_reservoir, total_spillover);
+        self.state_gas_reservoir -= repayment;
+        return .{ gas_left + repayment, total_spillover - repayment };
+    }
+
     pub fn snapshot(self: *Self) Snapshot {
         return .{
             .accounts = self.warm_accounts.snapshot(),
