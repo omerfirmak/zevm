@@ -13,6 +13,9 @@ const forks = @import("forks.zig");
 const Blockchain = @import("node/blockchain.zig").Blockchain;
 const Downloader = @import("node/downloader.zig").Downloader;
 const FileStorage = @import("db/file.zig").Storage;
+const EthApi = @import("rpc/eth.zig").Eth;
+const RpcServer = @import("rpc/jsonrpc.zig").Server;
+const RpcHttpServer = @import("rpc/http.zig").HttpServer;
 
 pub const std_options: std.Options = .{
     .log_level = .debug,
@@ -76,6 +79,19 @@ pub fn main(init: std.process.Init) !void {
     );
     var discv_thread = try init.io.concurrent(discv5.Server.run, .{&server});
     defer discv_thread.cancel(init.io) catch {};
+
+    var eth_api: EthApi = .init(&bc);
+    var jsonrpc_server: RpcServer = .{};
+    try eth_api.register(init.arena.allocator(), &jsonrpc_server);
+
+    var jsonrpc_http: RpcHttpServer = try .init(
+        init.io,
+        slabs.allocator(),
+        &jsonrpc_server,
+        8545,
+    );
+    var rpc_thread = try init.io.concurrent(RpcHttpServer.run, .{&jsonrpc_http});
+    defer rpc_thread.cancel(init.io) catch {};
 
     var downloader = try Downloader.init(
         init.io,
