@@ -16,4 +16,5 @@ comptime {
     _ = @import("node/blockchain.zig");
     _ = @import("node/downloader.zig");
     _ = @import("rpc/jsonrpc.zig");
+    _ = @import("rpc/http.zig");
 }
