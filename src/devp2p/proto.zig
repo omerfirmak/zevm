@@ -129,7 +129,7 @@ pub fn Provider(comptime cfg: Config) type {
             }
         }
 
-        pub fn sendToRandomPeer(self: *Self, msg: cfg.Message) !rlpx.Server.PeerId {
+        pub fn pickRandomPeer(self: *Self, filter: anytype) !rlpx.Server.PeerId {
             const start_index = self.next_random_peer.load(.acquire);
             for ([2][2]usize{
                 [2]usize{ start_index, self.peers.len },
@@ -143,13 +143,18 @@ pub fn Provider(comptime cfg: Config) type {
                         .peer_index = index,
                         .peer_epoch = peer.epoch,
                     };
-                    self.send(peer_id, msg) catch continue;
+                    if (@TypeOf(filter) != void and !filter.validPeer(peer_id)) continue;
                     self.next_random_peer.store((index + 1) % self.peers.len, .release);
                     return peer_id;
                 }
             }
+            return error.NoCandidatePeer;
+        }
 
-            return error.FailedSending;
+        pub fn sendToRandomPeer(self: *Self, msg: cfg.Message, filter: anytype) !rlpx.Server.PeerId {
+            const peer_id = try self.pickRandomPeer(filter);
+            try self.send(peer_id, msg);
+            return peer_id;
         }
 
         pub fn peerCount(self: *Self) usize {

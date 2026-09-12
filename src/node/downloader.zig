@@ -23,10 +23,16 @@ fn Request(comptime msg: type) type {
 
 pub const Downloader = struct {
     const Self = @This();
+    const PeerRange = struct {
+        id: rlpx.Server.PeerId,
+        range: eth.BlockRangeUpdate,
+    };
 
     io: std.Io,
     allocator: std.mem.Allocator,
     bc: *Blockchain,
+
+    peer_ranges: []?PeerRange,
 
     eth_provider: *eth.Provider,
     free_eth_requests: FreeList(Request(eth.Message)),
@@ -58,6 +64,9 @@ pub const Downloader = struct {
         eth_provider: *eth.Provider,
         snap_provider: *snap.Provider,
     ) !Self {
+        const peer_ranges = try allocator.alloc(?PeerRange, eth_provider.peers.len);
+        @memset(peer_ranges, null);
+
         return .{
             .io = io,
             .allocator = allocator,
@@ -70,6 +79,7 @@ pub const Downloader = struct {
             .inflight_snap_requests = .{},
             .sync_target = null,
             .state = .idle,
+            .peer_ranges = peer_ranges,
         };
     }
 
@@ -114,12 +124,10 @@ pub const Downloader = struct {
         if (self.sync_target != null) {
             switch (self.state) {
                 .idle => {
-                    self.state = .{
-                        .active = .{
-                            .requested_header_head = 0,
-                            .requested_header_tail = std.math.maxInt(u64),
-                        },
-                    };
+                    self.state = .{ .active = .{
+                        .requested_header_head = 0,
+                        .requested_header_tail = std.math.maxInt(u64),
+                    } };
                 },
                 .active => try self.advanceDownload(),
             }
@@ -127,9 +135,7 @@ pub const Downloader = struct {
         try self.checkEthRequestTimeouts();
     }
 
-    fn checkEthRequestTimeouts(
-        self: *Self,
-    ) !void {
+    fn checkEthRequestTimeouts(self: *Self) !void {
         var current_node = self.inflight_eth_requests.inner.first;
 
         const now = std.Io.Clock.now(.real, self.io).toMilliseconds();
@@ -138,8 +144,10 @@ pub const Downloader = struct {
             const request: *List(Request(eth.Message)).Node = @alignCast(@fieldParentPtr("node", node));
 
             if (request.elem.deadline.toMilliseconds() < now) {
-                request.elem.peer = self.eth_provider.sendToRandomPeer(request.elem.msg) catch continue;
-                request.elem.deadline = std.Io.Clock.now(.real, self.io).addDuration(.fromSeconds(3));
+                if (self.sendEthMessage(request.elem.msg)) |peer_id| {
+                    request.elem.peer = peer_id;
+                    request.elem.deadline = std.Io.Clock.now(.real, self.io).addDuration(.fromSeconds(3));
+                } else |_| {}
             }
 
             current_node = next_node;
@@ -150,9 +158,15 @@ pub const Downloader = struct {
         switch (msg) {
             .status => |status| {
                 try self.updateTarget(status.latest_block, status.latest_block_hash);
+                self.peer_ranges[peer.peer_index] = .{ .id = peer, .range = .{
+                    .earliest_block = status.earliest_block,
+                    .latest_block = status.latest_block,
+                    .latest_block_hash = status.latest_block_hash,
+                } };
             },
             .block_range_update => |update| {
                 try self.updateTarget(update.latest_block, update.latest_block_hash);
+                self.peer_ranges[peer.peer_index] = .{ .id = peer, .range = update };
             },
             .block_headers => |headers| {
                 defer self.allocator.free(headers.data);
@@ -177,6 +191,23 @@ pub const Downloader = struct {
             .cutoff_number = head.number,
             .cutoff_hash = head.hash,
         };
+    }
+
+    fn pickEthPeer(self: *Self, msg: eth.Message) !rlpx.Server.PeerId {
+        switch (msg) {
+            .get_block_headers => |header_req| switch (header_req.query.origin) {
+                .number => |number| return self.eth_provider.pickRandomPeer(HeightFilter.init(number, self)),
+                else => {},
+            },
+            else => {},
+        }
+        return self.eth_provider.pickRandomPeer({});
+    }
+
+    fn sendEthMessage(self: *Self, msg: eth.Message) !rlpx.Server.PeerId {
+        const peer = try self.pickEthPeer(msg);
+        try self.eth_provider.send(peer, msg);
+        return peer;
     }
 
     fn advanceDownload(self: *Self) !void {
@@ -209,33 +240,40 @@ pub const Downloader = struct {
         }
     }
 
+    fn headerQuery(id: u64, origin: eth.HashOrNumber, amount: u64) eth.Message {
+        return .{ .get_block_headers = .{ .id = id, .query = .{
+            .origin = origin,
+            .amount = amount,
+            .skip = 0,
+            .reverse = true,
+        } } };
+    }
+
     fn requestHeaders(self: *Self, origin: eth.HashOrNumber, amount: u64) !void {
         const id = self.eth_provider.nextRequestId();
-        try self.sendEthRequest(id, .{ .get_block_headers = .{
+
+        const req = self.free_eth_requests.list().pop() orelse return error.ReachedConcurrentRequestsLimit;
+        errdefer self.free_eth_requests.list().push(req);
+
+        const msg = headerQuery(id, origin, amount);
+        const peer = try self.sendEthMessage(msg);
+
+        req.* = .{
             .id = id,
-            .query = .{
-                .origin = origin,
-                .amount = amount,
-                .skip = 0,
-                .reverse = true,
-            },
-        } });
+            .peer = peer,
+            .msg = msg,
+            .deadline = std.Io.Clock.now(.real, self.io).addDuration(.fromSeconds(3)),
+        };
+        self.inflight_eth_requests.push(req);
+
         log.debug("requesting headers origin {} amount {}", .{ origin, amount });
     }
 
     fn reissueHeaderRequest(self: *Self, request: *Request(eth.Message), origin: eth.HashOrNumber, amount: u64) void {
         const id = self.eth_provider.nextRequestId();
         request.id = id;
-        request.msg = .{ .get_block_headers = .{
-            .id = id,
-            .query = .{
-                .origin = origin,
-                .amount = amount,
-                .skip = 0,
-                .reverse = true,
-            },
-        } };
-        if (self.eth_provider.sendToRandomPeer(request.msg)) |peer| {
+        request.msg = headerQuery(id, origin, amount);
+        if (self.sendEthMessage(request.msg)) |peer| {
             request.peer = peer;
             request.deadline = std.Io.Clock.now(.real, self.io).addDuration(.fromSeconds(3));
         } else |e| {
@@ -449,19 +487,6 @@ pub const Downloader = struct {
 
     fn handleSnap(_: *Self, _: snap.Message, _: rlpx.Server.PeerId) !void {}
 
-    fn sendEthRequest(self: *Self, id: u64, msg: eth.Message) !void {
-        const req = self.free_eth_requests.list().pop() orelse return error.ReachedConcurrentRequestsLimit;
-        errdefer self.free_eth_requests.list().push(req);
-        const peer = try self.eth_provider.sendToRandomPeer(msg);
-        req.* = .{
-            .id = id,
-            .peer = peer,
-            .msg = msg,
-            .deadline = std.Io.Clock.now(.real, self.io).addDuration(.fromSeconds(3)),
-        };
-        self.inflight_eth_requests.push(req);
-    }
-
     fn matchRequest(
         comptime Message: type,
         list: *List(Request(Message)),
@@ -485,5 +510,21 @@ pub const Downloader = struct {
             current_node = next_node;
         }
         return null;
+    }
+};
+
+const HeightFilter = struct {
+    min_height: u64,
+    downloader: *Downloader,
+
+    fn init(min_height: u64, downloader: *Downloader) HeightFilter {
+        return .{ .downloader = downloader, .min_height = min_height };
+    }
+
+    pub fn validPeer(self: *const HeightFilter, peer_id: rlpx.Server.PeerId) bool {
+        if (self.downloader.peer_ranges[peer_id.peer_index]) |peer_range| {
+            return peer_range.id.peer_epoch == peer_id.peer_epoch and self.min_height <= peer_range.range.latest_block;
+        }
+        return false;
     }
 };
