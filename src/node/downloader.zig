@@ -51,9 +51,11 @@ pub const Downloader = struct {
     },
     state: union(enum) {
         idle,
-        active: struct {
+        initial: struct {
             requested_header_head: u64,
             requested_header_tail: u64,
+
+            pivot: ?types.BlockHeader,
         },
     },
 
@@ -121,16 +123,9 @@ pub const Downloader = struct {
     }
 
     fn handleTick(self: *Self) !void {
-        if (self.sync_target != null) {
-            switch (self.state) {
-                .idle => {
-                    self.state = .{ .active = .{
-                        .requested_header_head = 0,
-                        .requested_header_tail = std.math.maxInt(u64),
-                    } };
-                },
-                .active => try self.advanceDownload(),
-            }
+        switch (self.state) {
+            .initial => try self.advanceDownload(),
+            else => {},
         }
         try self.checkEthRequestTimeouts();
     }
@@ -185,6 +180,13 @@ pub const Downloader = struct {
             if (cur_target.number >= number) return;
         }
 
+        if (head.number == 0 and self.state == .idle) {
+            self.state = .{ .initial = .{
+                .requested_header_head = 0,
+                .requested_header_tail = std.math.maxInt(u64),
+                .pivot = null,
+            } };
+        }
         self.sync_target = .{
             .hash = hash,
             .number = number,
@@ -214,7 +216,7 @@ pub const Downloader = struct {
         if (self.sync_target == null) return;
         const target = self.sync_target.?;
 
-        var status = &self.state.active;
+        var status = &self.state.initial;
         while (status.requested_header_tail > target.cutoff_number) {
             const origin: eth.HashOrNumber, const origin_num = if (status.requested_header_tail == std.math.maxInt(u64))
                 .{ .{ .hash = target.hash }, target.number }
@@ -451,8 +453,8 @@ pub const Downloader = struct {
     }
 
     fn checkHeaderDownloadComplete(self: *Self) !void {
-        if (self.state.active.requested_header_head != self.sync_target.?.number or
-            self.state.active.requested_header_tail != self.sync_target.?.cutoff_number)
+        if (self.state.initial.requested_header_head < self.sync_target.?.number or
+            self.state.initial.requested_header_tail > self.sync_target.?.cutoff_number)
             return;
 
         var current_node = self.inflight_eth_requests.inner.first;
@@ -466,11 +468,11 @@ pub const Downloader = struct {
         const head = try self.bc.head();
         log.debug("persisting headers start {} end {}", .{
             head.number + 1,
-            self.state.active.requested_header_head,
+            self.sync_target.?.number,
         });
 
         const first = head.number + 1;
-        const total = self.state.active.requested_header_head - head.number;
+        const total = self.sync_target.?.number - head.number;
         var persisted: u64 = 0;
         while (persisted < total) {
             const count = @min(header_persist_chunk, total - persisted);
@@ -481,7 +483,6 @@ pub const Downloader = struct {
         }
 
         try self.clearDownloadedHeaders();
-        self.state = .idle;
         self.sync_target = null;
     }
 
