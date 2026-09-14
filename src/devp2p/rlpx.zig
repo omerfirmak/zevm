@@ -461,15 +461,13 @@ pub const Server = struct {
     }
 
     pub fn dial(self: *Self, record: enr.Record) !void {
-        const remote_addr = record.tcpAddr();
-        if (remote_addr == null) return error.NoTcpEndpoint;
-
+        const remote_addr = record.tcpAddr().?;
         log.debug("dialing peer {any}", .{record.tcpAddr()});
 
         const slot = try self.allocateSlot();
         errdefer slot.status.store(.Empty, .release);
 
-        const stream = try remote_addr.?.connect(self.io, .{
+        const stream = try remote_addr.connect(self.io, .{
             .mode = .stream,
         }); //todo: add timeout when implemented by Io.Threaded
         errdefer stream.close(self.io);
