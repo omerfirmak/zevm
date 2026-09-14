@@ -65,6 +65,10 @@ pub const glamsterdam_devnet8_schedule = Schedule.init(.{
     .Amsterdam = 1_787_212_224,
 });
 
+pub const glamsterdam_devnet11_schedule = Schedule.init(.{
+    .Amsterdam = 1_789_380_000,
+});
+
 pub const Id = struct {
     hash: [4]u8,
     next: u64,
