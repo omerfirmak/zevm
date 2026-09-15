@@ -5,6 +5,9 @@ const eth = @import("../devp2p/eth.zig");
 const snap = @import("../devp2p/snap.zig");
 const types = @import("../types.zig");
 const rlp = @import("rlp");
+const trie = @import("../trie/trie.zig");
+
+const verifyRangeProof = @import("../trie/range_proof.zig").verifyRangeProof;
 const FreeList = @import("../free_list.zig").FreeList;
 const List = @import("../free_list.zig").List;
 const max_inflight_requests = 100;
@@ -34,10 +37,12 @@ pub const Downloader = struct {
 
     peer_ranges: []?PeerRange,
 
+    eth_arena: std.heap.ArenaAllocator,
     eth_provider: *eth.Provider,
     free_eth_requests: FreeList(Request(eth.Message)),
     inflight_eth_requests: List(Request(eth.Message)),
 
+    snap_arena: std.heap.ArenaAllocator,
     snap_provider: *snap.Provider,
     free_snap_requests: FreeList(Request(snap.Message)),
     inflight_snap_requests: List(Request(snap.Message)),
@@ -55,7 +60,18 @@ pub const Downloader = struct {
             requested_header_head: u64,
             requested_header_tail: u64,
 
-            pivot: ?types.BlockHeader,
+            pivot: union(enum) {
+                height: u64,
+                header: types.BlockHeader,
+
+                fn block_height(self: @This()) u64 {
+                    return switch (self) {
+                        .height => |h| h,
+                        .header => |h| h.number,
+                    };
+                }
+            },
+            snap_sync_running: bool,
         },
     },
 
@@ -73,9 +89,11 @@ pub const Downloader = struct {
             .io = io,
             .allocator = allocator,
             .bc = bc,
+            .eth_arena = .init(allocator),
             .eth_provider = eth_provider,
             .free_eth_requests = try .init(allocator, max_inflight_requests),
             .inflight_eth_requests = .{},
+            .snap_arena = .init(allocator),
             .snap_provider = snap_provider,
             .free_snap_requests = try .init(allocator, max_inflight_requests),
             .inflight_snap_requests = .{},
@@ -96,20 +114,26 @@ pub const Downloader = struct {
         var buf: [3]msg = undefined;
         var select: std.Io.Select(msg) = .init(self.io, &buf);
 
-        select.async(.eth, eth.Provider.next, .{ self.eth_provider, self.io, self.allocator, self.allocator });
-        select.async(.snap, snap.Provider.next, .{ self.snap_provider, self.io, self.allocator, self.allocator });
+        select.async(.eth, eth.Provider.next, .{ self.eth_provider, self.io, self.eth_arena.allocator(), self.allocator });
+        select.async(.snap, snap.Provider.next, .{ self.snap_provider, self.io, self.snap_arena.allocator(), self.allocator });
         select.async(.tick, std.Io.sleep, .{ self.io, .fromSeconds(1), .real });
 
         while (true) {
             switch (select.await() catch |e| return e) {
                 .eth => |res| {
-                    defer select.async(.eth, eth.Provider.next, .{ self.eth_provider, self.io, self.allocator, self.allocator });
+                    defer {
+                        _ = self.eth_arena.reset(.retain_capacity);
+                        select.async(.eth, eth.Provider.next, .{ self.eth_provider, self.io, self.eth_arena.allocator(), self.allocator });
+                    }
                     const received_message = res catch continue;
                     defer self.allocator.free(received_message.read.payload);
                     try self.handleEth(received_message.msg, received_message.read.peer);
                 },
                 .snap => |res| {
-                    defer select.async(.snap, snap.Provider.next, .{ self.snap_provider, self.io, self.allocator, self.allocator });
+                    defer {
+                        _ = self.snap_arena.reset(.retain_capacity);
+                        select.async(.snap, snap.Provider.next, .{ self.snap_provider, self.io, self.snap_arena.allocator(), self.allocator });
+                    }
                     const received_message = res catch continue;
                     defer self.allocator.free(received_message.read.payload);
                     try self.handleSnap(received_message.msg, received_message.read.peer);
@@ -124,10 +148,14 @@ pub const Downloader = struct {
 
     fn handleTick(self: *Self) !void {
         switch (self.state) {
-            .initial => try self.advanceDownload(),
+            .initial => {
+                try self.advanceDownload();
+                try self.updatePivot();
+            },
             else => {},
         }
         try self.checkEthRequestTimeouts();
+        try self.checkSnapRequestTimeouts();
     }
 
     fn checkEthRequestTimeouts(self: *Self) !void {
@@ -140,6 +168,25 @@ pub const Downloader = struct {
 
             if (request.elem.deadline.toMilliseconds() < now) {
                 if (self.sendEthMessage(request.elem.msg)) |peer_id| {
+                    request.elem.peer = peer_id;
+                    request.elem.deadline = std.Io.Clock.now(.real, self.io).addDuration(.fromSeconds(3));
+                } else |_| {}
+            }
+
+            current_node = next_node;
+        }
+    }
+
+    fn checkSnapRequestTimeouts(self: *Self) !void {
+        var current_node = self.inflight_snap_requests.inner.first;
+
+        const now = std.Io.Clock.now(.real, self.io).toMilliseconds();
+        while (current_node) |node| {
+            const next_node = node.next;
+            const request: *List(Request(snap.Message)).Node = @alignCast(@fieldParentPtr("node", node));
+
+            if (request.elem.deadline.toMilliseconds() < now) {
+                if (self.sendSnapMessage(request.elem.msg)) |peer_id| {
                     request.elem.peer = peer_id;
                     request.elem.deadline = std.Io.Clock.now(.real, self.io).addDuration(.fromSeconds(3));
                 } else |_| {}
@@ -164,11 +211,9 @@ pub const Downloader = struct {
                 self.peer_ranges[peer.peer_index] = .{ .id = peer, .range = update };
             },
             .block_headers => |headers| {
-                defer self.allocator.free(headers.data);
                 if (matchRequest(eth.Message, &self.inflight_eth_requests, peer, headers.request_id, .get_block_headers)) |req|
                     try self.handleHeaders(req, headers);
             },
-            .transactions => |data| self.allocator.free(data),
             else => {},
         }
     }
@@ -184,7 +229,8 @@ pub const Downloader = struct {
             self.state = .{ .initial = .{
                 .requested_header_head = 0,
                 .requested_header_tail = std.math.maxInt(u64),
-                .pivot = null,
+                .pivot = .{ .height = 0 },
+                .snap_sync_running = false,
             } };
         }
         self.sync_target = .{
@@ -193,6 +239,8 @@ pub const Downloader = struct {
             .cutoff_number = head.number,
             .cutoff_hash = head.hash,
         };
+
+        try self.updatePivot();
     }
 
     fn pickEthPeer(self: *Self, msg: eth.Message) !rlpx.Server.PeerId {
@@ -293,10 +341,6 @@ pub const Downloader = struct {
             self.reissueHeaderRequest(matched_request, headers_request.query.origin, headers_request.query.amount);
             return;
         };
-        defer {
-            self.allocator.free(hashes);
-            self.allocator.free(headers);
-        }
 
         var followup_request: ?@TypeOf(headers_request.query) = null;
         if (headers.len > 0) {
@@ -336,13 +380,12 @@ pub const Downloader = struct {
     ) !struct { [][32]u8, []types.BlockHeader } {
         if (response.data.len == 0) return .{ &[_][32]u8{}, &[_]types.BlockHeader{} };
 
-        var headers: []types.BlockHeader = try self.allocator.alloc(types.BlockHeader, response.data.len);
-        errdefer self.allocator.free(headers);
-        var hashes: [][32]u8 = try self.allocator.alloc([32]u8, response.data.len);
-        errdefer self.allocator.free(hashes);
+        const allocator = self.eth_arena.allocator();
+        var headers: []types.BlockHeader = try allocator.alloc(types.BlockHeader, response.data.len);
+        var hashes: [][32]u8 = try allocator.alloc([32]u8, response.data.len);
         for (response.data, 0..) |header_rlp, index| {
             const canon_index = if (request.query.reverse) response.data.len - index - 1 else index;
-            _ = try rlp.deserialize(types.BlockHeader, self.allocator, header_rlp.value, &headers[canon_index]);
+            _ = try rlp.deserialize(types.BlockHeader, allocator, header_rlp.value, &headers[canon_index]);
             std.crypto.hash.sha3.Keccak256.hash(header_rlp.value, &hashes[canon_index], .{});
         }
 
@@ -486,7 +529,145 @@ pub const Downloader = struct {
         self.sync_target = null;
     }
 
-    fn handleSnap(_: *Self, _: snap.Message, _: rlpx.Server.PeerId) !void {}
+    fn updatePivot(self: *Self) !void {
+        if (self.sync_target == null) return;
+
+        const pivot = self.state.initial.pivot;
+        const sync_target_height = self.sync_target.?.number;
+        const expected_pivot_height = if (sync_target_height > 32) sync_target_height - 32 else 0;
+
+        if (pivot == .header) {
+            if (pivot.header.number != expected_pivot_height) {
+                self.state.initial.pivot = .{ .height = expected_pivot_height };
+            }
+        }
+
+        if (pivot == .height) {
+            if (pivot.height != expected_pivot_height)
+                self.state.initial.pivot.height = expected_pivot_height;
+            if (try self.readDownladedHeader(expected_pivot_height) orelse
+                try self.bc.readHeader(expected_pivot_height)) |header|
+            {
+                log.debug("new pivot {}", .{header});
+                self.state.initial.pivot = .{ .header = header };
+                if (!self.state.initial.snap_sync_running) {
+                    self.requestAccountRange(
+                        self.free_snap_requests.list().pop() orelse unreachable,
+                        header.state_root,
+                        @splat(0),
+                        @splat(0xff),
+                    );
+                    self.state.initial.snap_sync_running = true;
+                }
+            }
+        }
+    }
+
+    fn sendSnapMessage(self: *Self, msg: snap.Message) !rlpx.Server.PeerId {
+        const peer = try self.snap_provider.pickRandomPeer(HeightFilter.init(self.state.initial.pivot.block_height(), self));
+        try self.snap_provider.send(peer, msg);
+        return peer;
+    }
+
+    fn requestAccountRange(self: *Self, req: *Request(snap.Message), state_root: [32]u8, origin: [32]u8, limit: [32]u8) void {
+        log.debug("requesting account range origin: {x} limit: {x}", .{ origin, limit });
+        const id = self.snap_provider.nextRequestId();
+        const msg: snap.Message = .{ .get_account_range = .{
+            .id = id,
+            .root = state_root,
+            .origin = origin,
+            .limit = limit,
+        } };
+
+        req.* = .{
+            .id = id,
+            .peer = self.sendSnapMessage(msg) catch invalid_peer,
+            .msg = msg,
+            .deadline = std.Io.Clock.now(.real, self.io).addDuration(.fromSeconds(3)),
+        };
+        self.inflight_snap_requests.push(req);
+    }
+
+    fn handleSnap(self: *Self, msg: snap.Message, peer: rlpx.Server.PeerId) !void {
+        switch (msg) {
+            .account_range => |account_range| {
+                if (matchRequest(snap.Message, &self.inflight_snap_requests, peer, account_range.id, .get_account_range)) |request| {
+                    try self.onAccounts(request, &account_range);
+                }
+            },
+            else => {},
+        }
+    }
+
+    fn onAccounts(self: *Self, request: *Request(snap.Message), response: *const snap.AccountRange) !void {
+        const allocator = self.snap_arena.allocator();
+
+        const get_accounts_range = request.msg.get_account_range;
+        var hashes: [][32]u8 = try allocator.alloc([32]u8, response.accounts.len);
+        var accounts: [][]const u8 = try allocator.alloc([]const u8, response.accounts.len);
+        for (response.accounts, 0..) |elem, index| {
+            hashes[index] = elem.hash;
+            var list = std.array_list.Managed(u8).init(allocator);
+            try rlp.serialize(types.Account, allocator, slimToFullAccount(elem.account), &list);
+            accounts[index] = try list.toOwnedSlice();
+        }
+
+        var proof: trie.NodesHashMap = .empty;
+        if (response.proof.len > 0) {
+            try proof.ensureTotalCapacity(allocator, @intCast(response.proof.len));
+
+            for (response.proof) |node| {
+                var h: [32]u8 align(8) = undefined;
+                std.crypto.hash.sha3.Keccak256.hash(node, &h, .{});
+                try proof.put(allocator, h, node);
+            }
+        }
+
+        var remaining: ?struct { [32]u8, [32]u8 } = null;
+        if (verifyRangeProof(
+            allocator,
+            get_accounts_range.root,
+            get_accounts_range.origin,
+            hashes,
+            accounts,
+            if (response.proof.len > 0) &proof else null,
+        )) |has_more| {
+            const last = if (hashes.len > 0) hashes[hashes.len - 1] else get_accounts_range.limit;
+            log.debug("verified account range {x}-{x}", .{ get_accounts_range.origin, last });
+            if (has_more and std.mem.order(u8, &last, &get_accounts_range.limit) == .lt)
+                remaining = .{ last, get_accounts_range.limit };
+        } else |_| {
+            remaining = .{ get_accounts_range.origin, get_accounts_range.limit };
+        }
+
+        if (remaining) |range| {
+            const origin = range.@"0";
+            const limit = range.@"1";
+            log.debug("remaining account range {x}-{x}", .{ origin, limit });
+
+            const origin_numeric = std.mem.readInt(u256, &origin, .big);
+            const limit_numeric = std.mem.readInt(u256, &limit, .big);
+            const min_range = (std.math.maxInt(u256) / (1 << 16));
+
+            const new_state_root = switch (self.state.initial.pivot) {
+                .header => |h| h.state_root,
+                else => get_accounts_range.root,
+            };
+
+            if (limit_numeric - origin_numeric < min_range) {
+                self.requestAccountRange(request, new_state_root, origin, limit);
+            } else if (self.free_snap_requests.list().pop()) |new_req| {
+                var split_point: [32]u8 = undefined;
+                std.mem.writeInt(u256, &split_point, origin_numeric / 2 + limit_numeric / 2, .big);
+                self.requestAccountRange(new_req, new_state_root, origin, split_point);
+                self.requestAccountRange(request, new_state_root, split_point, limit);
+            } else {
+                self.requestAccountRange(request, new_state_root, origin, limit);
+            }
+        } else {
+            self.free_snap_requests.list().push(request);
+        }
+    }
 
     fn matchRequest(
         comptime Message: type,
@@ -514,6 +695,11 @@ pub const Downloader = struct {
     }
 };
 
+const invalid_peer: rlpx.Server.PeerId = .{
+    .peer_index = std.math.maxInt(usize),
+    .peer_epoch = std.math.maxInt(usize),
+};
+
 const HeightFilter = struct {
     min_height: u64,
     downloader: *Downloader,
@@ -529,3 +715,18 @@ const HeightFilter = struct {
         return false;
     }
 };
+
+fn slimToFullAccount(slim: snap.SlimAccount) types.Account {
+    return .{
+        .balance = slim.balance,
+        .nonce = slim.nonce,
+        .code_hash = if (slim.code_hash.len == 32)
+            slim.code_hash[0..32].*
+        else
+            types.empty_code_hash,
+        .storage_hash = if (slim.root.len == 32)
+            slim.root[0..32].*
+        else
+            types.empty_root_hash,
+    };
+}

@@ -5,7 +5,7 @@ const proto = @import("proto.zig");
 
 pub const MessageId = enum(u8) {
     get_account_range = 0,
-    account_rage = 1,
+    account_range = 1,
     get_storage_ranges = 2,
     storage_ranges = 3,
     get_byte_codes = 4,
@@ -24,15 +24,22 @@ pub const GetAccountRange = struct {
     bytes: u64 = 10_000_000,
 };
 
+pub const SlimAccount = struct {
+    nonce: u64,
+    balance: u256,
+    root: []u8,
+    code_hash: []u8,
+};
+
 pub const AccountRange = struct {
     id: u64,
-    accounts: []rlp.RawValue,
+    accounts: []struct { hash: [32]u8, account: SlimAccount },
     proof: [][]u8,
 };
 
 pub const Message = union(MessageId) {
     get_account_range: GetAccountRange,
-    account_rage: AccountRange,
+    account_range: AccountRange,
     get_storage_ranges: rlp.RawValue,
     storage_ranges: rlp.RawValue,
     get_byte_codes: rlp.RawValue,
