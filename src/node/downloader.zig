@@ -419,6 +419,14 @@ pub const Downloader = struct {
             }
         }
 
+        const offset = headers[0].number * @sizeOf(types.BlockHeader);
+        const bytes: [*]u8 = @ptrCast(headers.ptr);
+        const size = @sizeOf(types.BlockHeader) * headers.len;
+
+        const file = try self.bc.file_storage.openFile(self.io, "downloaded_headers.dat");
+        defer file.release();
+        try file.value.file.writePositionalAll(self.io, bytes[0..size], offset);
+
         if (headers[0].number > 0) {
             if (try self.readDownladedHeader(headers[0].number - 1)) |parent_header| {
                 if (!std.meta.eql(headers[0].parent_hash, parent_header.hash())) {
@@ -434,13 +442,6 @@ pub const Downloader = struct {
             }
         }
 
-        const offset = headers[0].number * @sizeOf(types.BlockHeader);
-        const bytes: [*]u8 = @ptrCast(headers.ptr);
-        const size = @sizeOf(types.BlockHeader) * headers.len;
-
-        const file = try self.bc.file_storage.openFile(self.io, "downloaded_headers.dat");
-        defer file.release();
-        try file.value.file.writePositionalAll(self.io, bytes[0..size], offset);
         return null;
     }
 
