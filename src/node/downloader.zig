@@ -531,23 +531,19 @@ pub const Downloader = struct {
     }
 
     fn updatePivot(self: *Self) !void {
-        if (self.sync_target == null) return;
+        if (self.sync_target == null or self.state != .initial) return;
 
-        const pivot = self.state.initial.pivot;
         const sync_target_height = self.sync_target.?.number;
-        const expected_pivot_height = if (sync_target_height > 32) sync_target_height - 32 else 0;
+        const new_pivot_height = if (sync_target_height > 32) sync_target_height - 32 else 0;
 
-        if (pivot == .header) {
-            if (pivot.header.number != expected_pivot_height) {
-                self.state.initial.pivot = .{ .height = expected_pivot_height };
-            }
+        if (new_pivot_height - self.state.initial.pivot.block_height() >= 64) {
+            self.state.initial.pivot = .{ .height = new_pivot_height };
         }
 
-        if (pivot == .height) {
-            if (pivot.height != expected_pivot_height)
-                self.state.initial.pivot.height = expected_pivot_height;
-            if (try self.readDownladedHeader(expected_pivot_height) orelse
-                try self.bc.readHeader(expected_pivot_height)) |header|
+        if (self.state.initial.pivot == .height) {
+            const height = self.state.initial.pivot.height;
+            if (try self.readDownladedHeader(height) orelse
+                try self.bc.readHeader(height)) |header|
             {
                 log.debug("new pivot {}", .{header});
                 self.state.initial.pivot = .{ .header = header };
