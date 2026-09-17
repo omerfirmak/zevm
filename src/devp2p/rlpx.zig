@@ -460,6 +460,18 @@ pub const Server = struct {
         return error.TooManyPeers;
     }
 
+    pub fn candidatePeer(self: *Self, record: enr.Record) bool {
+        const new_pk = record.uncompressedPubkey() catch return false;
+        for (self.slots) |*slot| {
+            if (slot.status.load(.acquire) == .Active) {
+                if (slot.peer.remote_pubkey) |pk| {
+                    if (std.mem.eql(u8, &new_pk, &pk)) return false;
+                }
+            }
+        }
+        return true;
+    }
+
     pub fn dial(self: *Self, record: enr.Record) !void {
         const remote_addr = record.tcpAddr().?;
         log.debug("dialing peer {any}", .{record.tcpAddr()});

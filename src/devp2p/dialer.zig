@@ -20,7 +20,10 @@ pub const Dialer = struct {
     pub fn dial(self: *const Dialer, io: std.Io, record: enr.Record) void {
         const head = self.bc.headHeader() catch return;
         const remote = record.eth orelse return;
-        if (record.tcpAddr() != null and self.filter.check(remote, head.number, head.timestamp)) {
+        if (record.tcpAddr() != null and
+            self.filter.check(remote, head.number, head.timestamp) and
+            self.server.candidatePeer(record))
+        {
             _ = io.async(rlpx.Server.dial, .{ self.server, record });
         }
     }
