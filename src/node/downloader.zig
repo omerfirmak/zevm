@@ -71,7 +71,7 @@ pub const Downloader = struct {
                     };
                 }
             },
-            snap_sync_running: bool,
+            starting_pivot: ?types.BlockHeader,
         },
     },
 
@@ -230,7 +230,7 @@ pub const Downloader = struct {
                 .requested_header_head = 0,
                 .requested_header_tail = std.math.maxInt(u64),
                 .pivot = .{ .height = 0 },
-                .snap_sync_running = false,
+                .starting_pivot = null,
             } };
         }
         self.sync_target = .{
@@ -551,14 +551,14 @@ pub const Downloader = struct {
             {
                 log.debug("new pivot {}", .{header});
                 self.state.initial.pivot = .{ .header = header };
-                if (!self.state.initial.snap_sync_running) {
+                if (self.state.initial.starting_pivot == null) {
                     self.requestAccountRange(
                         self.free_snap_requests.list().pop() orelse unreachable,
                         header.state_root,
                         @splat(0),
                         @splat(0xff),
                     );
-                    self.state.initial.snap_sync_running = true;
+                    self.state.initial.starting_pivot = header;
                 }
             }
         }
