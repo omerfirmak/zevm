@@ -604,8 +604,12 @@ pub const Downloader = struct {
         var accounts: [][]const u8 = try allocator.alloc([]const u8, response.accounts.len);
         for (response.accounts, 0..) |elem, index| {
             hashes[index] = elem.hash;
+
+            var slim_account: snap.SlimAccount = undefined;
+            _ = try rlp.deserialize(snap.SlimAccount, allocator, elem.account.value, &slim_account);
+
             var list = std.array_list.Managed(u8).init(allocator);
-            try rlp.serialize(types.Account, allocator, slimToFullAccount(elem.account), &list);
+            try rlp.serialize(types.Account, allocator, slimToFullAccount(slim_account), &list);
             accounts[index] = try list.toOwnedSlice();
         }
 

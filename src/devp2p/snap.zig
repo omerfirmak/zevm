@@ -33,7 +33,7 @@ pub const SlimAccount = struct {
 
 pub const AccountRange = struct {
     id: u64,
-    accounts: []struct { hash: [32]u8, account: SlimAccount },
+    accounts: []struct { hash: [32]u8, account: rlp.RawValue },
     proof: [][]u8,
 };
 
