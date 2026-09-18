@@ -12,7 +12,7 @@ pub const Eth = struct {
         return .{ .kv_store = kv_store };
     }
 
-    pub fn readAccount(self: *Eth, allocator: std.mem.Allocator, txn: kv.Transaction, hash: [32]u8) !?types.Account {
+    pub fn readAccount(self: *Self, allocator: std.mem.Allocator, txn: kv.Transaction, hash: [32]u8) !?types.Account {
         const table = self.kv_store.table(txn, .accounts);
 
         const bytes = try table.get(&hash) orelse return null;
@@ -34,7 +34,7 @@ pub const Eth = struct {
         };
     }
 
-    pub fn writeAccount(self: *Eth, allocator: std.mem.Allocator, txn: kv.Transaction, hash: [32]u8, account: types.Account) !void {
+    pub fn writeAccount(self: *Self, allocator: std.mem.Allocator, txn: kv.Transaction, hash: [32]u8, account: types.Account) !void {
         const table = self.kv_store.table(txn, .accounts);
 
         var list = std.array_list.Managed(u8).init(allocator);
