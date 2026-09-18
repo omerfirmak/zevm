@@ -27,8 +27,8 @@ pub const GetAccountRange = struct {
 pub const SlimAccount = struct {
     nonce: u64,
     balance: u256,
-    root: []u8,
-    code_hash: []u8,
+    root: []const u8,
+    code_hash: []const u8,
 };
 
 pub const AccountRange = struct {

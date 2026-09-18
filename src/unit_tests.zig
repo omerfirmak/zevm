@@ -13,6 +13,7 @@ comptime {
     _ = @import("devp2p/discv5.zig");
     _ = @import("devp2p/rlpx.zig");
     _ = @import("db/file.zig");
+    _ = @import("db/eth.zig");
     _ = @import("node/blockchain.zig");
     _ = @import("node/downloader.zig");
     _ = @import("rpc/jsonrpc.zig");

@@ -76,6 +76,10 @@
             .url = "git+https://github.com/karlseguin/cache.zig.git#51b9d77bec8d9f3717349e9a007ff689959f3479",
             .hash = "cache-0.0.0-winRwJu4AAD4Kf1LLubro_8Pf66vN8U4ARd0U4imAOI5",
         },
+        .lmdbx = .{
+            .url = "git+https://github.com/omerfirmak/lmdbx-zig?ref=pin-moving-deps#45b8a52ff83df72368b77270ea6f1e867453bbf6",
+            .hash = "lmdbx-0.4.0-WlIvzjQYBAAb_O-BneJhMNVJyplu6TVyg3C7GJh7YeIe",
+        },
     },
     .paths = .{
         "build.zig",
