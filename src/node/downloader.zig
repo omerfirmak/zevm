@@ -8,6 +8,7 @@ const rlp = @import("rlp");
 const trie = @import("../trie/trie.zig");
 
 const verifyRangeProof = @import("../trie/range_proof.zig").verifyRangeProof;
+const EthDb = @import("../db/eth.zig").Eth;
 const FreeList = @import("../free_list.zig").FreeList;
 const List = @import("../free_list.zig").List;
 const max_inflight_requests = 100;
@@ -34,6 +35,7 @@ pub const Downloader = struct {
     io: std.Io,
     allocator: std.mem.Allocator,
     bc: *Blockchain,
+    eth_db: *EthDb,
 
     peer_ranges: []?PeerRange,
 
@@ -79,6 +81,7 @@ pub const Downloader = struct {
         io: std.Io,
         allocator: std.mem.Allocator,
         bc: *Blockchain,
+        eth_db: *EthDb,
         eth_provider: *eth.Provider,
         snap_provider: *snap.Provider,
     ) !Self {
@@ -89,6 +92,7 @@ pub const Downloader = struct {
             .io = io,
             .allocator = allocator,
             .bc = bc,
+            .eth_db = eth_db,
             .eth_arena = .init(allocator),
             .eth_provider = eth_provider,
             .free_eth_requests = try .init(allocator, max_inflight_requests),
@@ -637,6 +641,7 @@ pub const Downloader = struct {
             log.debug("verified account range {x}-{x}", .{ get_accounts_range.origin, last });
             if (has_more and std.mem.order(u8, &last, &get_accounts_range.limit) == .lt)
                 remaining = .{ last, get_accounts_range.limit };
+            try self.persistAccounts(hashes, response);
         } else |_| {
             remaining = .{ get_accounts_range.origin, get_accounts_range.limit };
         }
@@ -668,6 +673,20 @@ pub const Downloader = struct {
         } else {
             self.free_snap_requests.list().push(request);
         }
+    }
+
+    fn persistAccounts(self: *Self, hashes: [][32]u8, response: *const snap.AccountRange) !void {
+        const txn = try self.eth_db.kv_store.transaction_rw();
+        errdefer _ = txn.abort() catch |e| {
+            log.err("failed to abort txn {}", .{e});
+        };
+
+        const table = self.eth_db.kv_store.table(txn, .accounts);
+        for (hashes, 0..) |hash, index| {
+            try table.set(&hash, response.accounts[index].account.value, .Upsert);
+        }
+
+        try txn.commit();
     }
 
     fn matchRequest(

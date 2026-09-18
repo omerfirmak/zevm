@@ -4,8 +4,10 @@ const rlpx = @import("devp2p/rlpx.zig");
 const proto = @import("devp2p/proto.zig");
 const eth = @import("devp2p/eth.zig");
 const snap = @import("devp2p/snap.zig");
+const kv = @import("db/kv.zig");
 const enr = @import("devp2p/enr.zig");
 const bootnodes = @import("devp2p/bootnodes.zig");
+const EthDb = @import("db/eth.zig").Eth;
 const Dialer = @import("devp2p/dialer.zig").Dialer;
 const SlabAllocator = @import("devp2p/allocator.zig").SlabAllocator;
 const Record = @import("devp2p/enr.zig").Record;
@@ -27,11 +29,11 @@ pub fn main(init: std.process.Init) !void {
 
     var slabs = SlabAllocator.init(init.arena.allocator());
 
-    const datadir = try std.Io.Dir.cwd().createDirPathOpen(init.io, "datadir", .{});
-    var path: [2048]u8 = undefined;
-    const path_len = try datadir.realPath(init.io, &path);
+    const static_datadir = try std.Io.Dir.cwd().createDirPathOpen(init.io, "datadir/static", .{});
+    var static_datadir_path: [2048]u8 = undefined;
+    const static_datadir_path_len = try static_datadir.realPath(init.io, &static_datadir_path);
 
-    var fs = try FileStorage.init(init.io, slabs.allocator(), path[0..path_len]);
+    var fs = try FileStorage.init(init.io, slabs.allocator(), static_datadir_path[0..static_datadir_path_len]);
     var bc = try Blockchain.init(
         init.io,
         slabs.allocator(),
@@ -93,10 +95,18 @@ pub fn main(init: std.process.Init) !void {
     var rpc_thread = try init.io.concurrent(RpcHttpServer.run, .{&jsonrpc_http});
     defer rpc_thread.cancel(init.io) catch {};
 
+    const mdbx_datadir = try std.Io.Dir.cwd().createDirPathOpen(init.io, "datadir/mdbx", .{});
+    var mdbx_datadir_path: [2048]u8 = undefined;
+    const mdbx_datadir_path_len = try mdbx_datadir.realPath(init.io, &mdbx_datadir_path);
+
+    var store = try kv.Store.init(slabs.allocator(), mdbx_datadir_path[0..mdbx_datadir_path_len]);
+    var eth_db = EthDb.init(&store);
+
     var downloader = try Downloader.init(
         init.io,
         slabs.allocator(),
         &bc,
+        &eth_db,
         &ethproto,
         &snapproto,
     );
