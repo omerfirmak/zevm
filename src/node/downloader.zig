@@ -61,17 +61,7 @@ pub const Downloader = struct {
             requested_header_head: u64,
             requested_header_tail: u64,
 
-            pivot: union(enum) {
-                height: u64,
-                header: types.BlockHeader,
-
-                fn block_height(self: @This()) u64 {
-                    return switch (self) {
-                        .height => |h| h,
-                        .header => |h| h.number,
-                    };
-                }
-            },
+            pivot: ?types.BlockHeader,
             previous_pivot: ?types.BlockHeader,
         },
     },
@@ -232,7 +222,7 @@ pub const Downloader = struct {
             self.state = .{ .initial = .{
                 .requested_header_head = 0,
                 .requested_header_tail = std.math.maxInt(u64),
-                .pivot = .{ .height = 0 },
+                .pivot = null,
                 .previous_pivot = null,
             } };
         }
@@ -538,34 +528,26 @@ pub const Downloader = struct {
 
         const sync_target_height = self.sync_target.?.number;
         const new_pivot_height = if (sync_target_height > 32) sync_target_height - 32 else 0;
+        const new_pivot = try self.readDownladedHeader(new_pivot_height) orelse
+            (try self.bc.readHeader(new_pivot_height) orelse return);
 
-        if (new_pivot_height - self.state.initial.pivot.block_height() >= 64) {
-            if (self.state.initial.pivot == .header)
-                self.state.initial.previous_pivot = self.state.initial.pivot.header;
-            self.state.initial.pivot = .{ .height = new_pivot_height };
-        }
-
-        if (self.state.initial.pivot == .height) {
-            const height = self.state.initial.pivot.height;
-            if (try self.readDownladedHeader(height) orelse
-                try self.bc.readHeader(height)) |header|
-            {
-                log.debug("new pivot {} prev {any}", .{ header, self.state.initial.previous_pivot });
-                self.state.initial.pivot = .{ .header = header };
-                if (self.state.initial.previous_pivot == null) {
-                    self.requestAccountRange(
-                        self.free_snap_requests.pop() orelse unreachable,
-                        header.state_root,
-                        @splat(0),
-                        @splat(0xff),
-                    );
-                }
-            }
+        const cur_pivot = self.state.initial.pivot;
+        if (cur_pivot == null or new_pivot_height - cur_pivot.?.number >= 2) {
+            self.state.initial.previous_pivot = cur_pivot;
+            self.state.initial.pivot = new_pivot;
+            log.debug("new pivot {}, old {any}", .{ new_pivot, cur_pivot });
+            if (cur_pivot == null)
+                self.requestAccountRange(
+                    self.free_snap_requests.pop() orelse unreachable,
+                    new_pivot.state_root,
+                    @splat(0),
+                    @splat(0xff),
+                );
         }
     }
 
     fn sendSnapMessage(self: *Self, msg: snap.Message) !rlpx.Server.PeerId {
-        const peer = try self.snap_provider.pickRandomPeer(HeightFilter.init(self.state.initial.pivot.block_height(), self));
+        const peer = try self.snap_provider.pickRandomPeer(HeightFilter.init(self.state.initial.pivot.?.number, self));
         try self.snap_provider.send(peer, msg);
         return peer;
     }
@@ -655,10 +637,7 @@ pub const Downloader = struct {
             const limit_numeric = std.mem.readInt(u256, &limit, .big);
             const min_range = (std.math.maxInt(u256) / (1 << 16));
 
-            const new_state_root = switch (self.state.initial.pivot) {
-                .header => |h| h.state_root,
-                else => get_accounts_range.root,
-            };
+            const new_state_root = self.state.initial.pivot.?.state_root;
 
             if (limit_numeric - origin_numeric < min_range) {
                 self.requestAccountRange(request, new_state_root, origin, limit);
