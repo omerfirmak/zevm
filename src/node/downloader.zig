@@ -593,14 +593,14 @@ pub const Downloader = struct {
         switch (msg) {
             .account_range => |account_range| {
                 if (matchRequest(snap.Message, &self.inflight_snap_requests, peer, account_range.id, .get_account_range)) |request| {
-                    try self.onAccounts(request, &account_range);
+                    try self.handleAccounts(request, &account_range);
                 }
             },
             else => {},
         }
     }
 
-    fn onAccounts(self: *Self, request: *Request(snap.Message), response: *const snap.AccountRange) !void {
+    fn handleAccounts(self: *Self, request: *Request(snap.Message), response: *const snap.AccountRange) !void {
         const allocator = self.snap_arena.allocator();
 
         const get_accounts_range = request.msg.get_account_range;
