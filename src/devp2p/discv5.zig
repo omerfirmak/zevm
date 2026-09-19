@@ -3,7 +3,6 @@ const rlp = @import("rlp");
 const enr = @import("enr.zig");
 const cache = @import("cache");
 const List = @import("../free_list.zig").List;
-const FreeList = @import("../free_list.zig").FreeList;
 const Enode = @import("enode.zig").Enode;
 const Dialer = @import("dialer.zig").Dialer;
 const IdFilter = @import("../forks.zig").IdFilter;
@@ -484,7 +483,7 @@ const Table = struct {
     };
 
     const Bucket = struct {
-        frees: FreeList(Entry),
+        frees: List(Entry),
         records: List(Entry),
     };
 
@@ -519,7 +518,7 @@ const Table = struct {
             current_node = next_node;
         }
 
-        if (bucket.frees.list().pop()) |slot| {
+        if (bucket.frees.pop()) |slot| {
             slot.* = .{ .record = record, .last_seen = now };
             bucket.records.prepend(slot);
             return slot;
@@ -537,7 +536,7 @@ const Table = struct {
 
                 if (now.toSeconds() - entry.elem.last_seen.toSeconds() > 900) {
                     bucket.records.inner.remove(node);
-                    bucket.frees.list().push(&entry.elem);
+                    bucket.frees.push(&entry.elem);
                 }
                 current_node = next_node;
             }

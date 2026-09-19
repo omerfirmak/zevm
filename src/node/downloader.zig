@@ -9,7 +9,6 @@ const trie = @import("../trie/trie.zig");
 
 const verifyRangeProof = @import("../trie/range_proof.zig").verifyRangeProof;
 const EthDb = @import("../db/eth.zig").Eth;
-const FreeList = @import("../free_list.zig").FreeList;
 const List = @import("../free_list.zig").List;
 const max_inflight_requests = 100;
 const header_persist_chunk = 1024;
@@ -41,12 +40,12 @@ pub const Downloader = struct {
 
     eth_arena: std.heap.ArenaAllocator,
     eth_provider: *eth.Provider,
-    free_eth_requests: FreeList(Request(eth.Message)),
+    free_eth_requests: List(Request(eth.Message)),
     inflight_eth_requests: List(Request(eth.Message)),
 
     snap_arena: std.heap.ArenaAllocator,
     snap_provider: *snap.Provider,
-    free_snap_requests: FreeList(Request(snap.Message)),
+    free_snap_requests: List(Request(snap.Message)),
     inflight_snap_requests: List(Request(snap.Message)),
 
     sync_target: ?struct {
@@ -306,8 +305,8 @@ pub const Downloader = struct {
     fn requestHeaders(self: *Self, origin: eth.HashOrNumber, amount: u64) !void {
         const id = self.eth_provider.nextRequestId();
 
-        const req = self.free_eth_requests.list().pop() orelse return error.ReachedConcurrentRequestsLimit;
-        errdefer self.free_eth_requests.list().push(req);
+        const req = self.free_eth_requests.pop() orelse return error.ReachedConcurrentRequestsLimit;
+        errdefer self.free_eth_requests.push(req);
 
         const msg = headerQuery(id, origin, amount);
         const peer = try self.sendEthMessage(msg);
@@ -370,7 +369,7 @@ pub const Downloader = struct {
         if (followup_request) |followup| {
             self.reissueHeaderRequest(matched_request, followup.origin, followup.amount);
         } else {
-            self.free_eth_requests.list().push(matched_request);
+            self.free_eth_requests.push(matched_request);
             try self.advanceDownload();
         }
 
@@ -555,7 +554,7 @@ pub const Downloader = struct {
                 self.state.initial.pivot = .{ .header = header };
                 if (self.state.initial.previous_pivot == null) {
                     self.requestAccountRange(
-                        self.free_snap_requests.list().pop() orelse unreachable,
+                        self.free_snap_requests.pop() orelse unreachable,
                         header.state_root,
                         @splat(0),
                         @splat(0xff),
@@ -663,7 +662,7 @@ pub const Downloader = struct {
 
             if (limit_numeric - origin_numeric < min_range) {
                 self.requestAccountRange(request, new_state_root, origin, limit);
-            } else if (self.free_snap_requests.list().pop()) |new_req| {
+            } else if (self.free_snap_requests.pop()) |new_req| {
                 var split_point: [32]u8 = undefined;
                 std.mem.writeInt(u256, &split_point, origin_numeric / 2 + limit_numeric / 2, .big);
                 self.requestAccountRange(new_req, new_state_root, origin, split_point);
@@ -672,7 +671,7 @@ pub const Downloader = struct {
                 self.requestAccountRange(request, new_state_root, origin, limit);
             }
         } else {
-            self.free_snap_requests.list().push(request);
+            self.free_snap_requests.push(request);
         }
     }
 

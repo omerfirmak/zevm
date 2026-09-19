@@ -4,7 +4,6 @@ const secp256k1 = @import("zig-eth-secp256k1");
 const rlp = @import("rlp");
 const snappy = @import("snappy").raw;
 const List = @import("../free_list.zig").List;
-const FreeList = @import("../free_list.zig").FreeList;
 const Ecdsa = std.crypto.sign.ecdsa.EcdsaSecp256k1Sha256;
 const Sha256 = std.crypto.hash.sha2.Sha256;
 const HmacSha256 = std.crypto.auth.hmac.sha2.HmacSha256;
@@ -569,7 +568,7 @@ const Peer = struct {
     rbuf_tail: usize = 0,
     read_iov: [1][]u8 = undefined,
 
-    free_writes: FreeList(Server.QueuedWrite),
+    free_writes: List(Server.QueuedWrite),
     write_queue: List(Server.QueuedWrite) = .{},
     armed_iov: ?[][]const u8 = null,
     write_iov: [max_inflight_writes_per_peer][]const u8 = undefined,
@@ -929,7 +928,7 @@ const Peer = struct {
 
     fn queueWrite(self: *Peer, bytes: []const u8) void {
         const peer_id = self.server.peerId(self);
-        const write = self.free_writes.list().pop() orelse unreachable;
+        const write = self.free_writes.pop() orelse unreachable;
         write.* = .{
             .payload = bytes,
             .payload_len = bytes.len,
@@ -958,7 +957,7 @@ const Peer = struct {
     fn retireWrite(self: *Peer) void {
         const write = self.write_queue.pop() orelse return;
         self.server.allocator.free(write.payload);
-        self.free_writes.list().push(write);
+        self.free_writes.push(write);
     }
 };
 
