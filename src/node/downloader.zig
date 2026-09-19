@@ -73,7 +73,7 @@ pub const Downloader = struct {
                     };
                 }
             },
-            starting_pivot: ?types.BlockHeader,
+            previous_pivot: ?types.BlockHeader,
         },
     },
 
@@ -234,7 +234,7 @@ pub const Downloader = struct {
                 .requested_header_head = 0,
                 .requested_header_tail = std.math.maxInt(u64),
                 .pivot = .{ .height = 0 },
-                .starting_pivot = null,
+                .previous_pivot = null,
             } };
         }
         self.sync_target = .{
@@ -541,6 +541,8 @@ pub const Downloader = struct {
         const new_pivot_height = if (sync_target_height > 32) sync_target_height - 32 else 0;
 
         if (new_pivot_height - self.state.initial.pivot.block_height() >= 64) {
+            if (self.state.initial.pivot == .header)
+                self.state.initial.previous_pivot = self.state.initial.pivot.header;
             self.state.initial.pivot = .{ .height = new_pivot_height };
         }
 
@@ -549,16 +551,15 @@ pub const Downloader = struct {
             if (try self.readDownladedHeader(height) orelse
                 try self.bc.readHeader(height)) |header|
             {
-                log.debug("new pivot {}", .{header});
+                log.debug("new pivot {} prev {any}", .{ header, self.state.initial.previous_pivot });
                 self.state.initial.pivot = .{ .header = header };
-                if (self.state.initial.starting_pivot == null) {
+                if (self.state.initial.previous_pivot == null) {
                     self.requestAccountRange(
                         self.free_snap_requests.list().pop() orelse unreachable,
                         header.state_root,
                         @splat(0),
                         @splat(0xff),
                     );
-                    self.state.initial.starting_pivot = header;
                 }
             }
         }
