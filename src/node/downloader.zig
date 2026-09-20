@@ -426,7 +426,7 @@ pub const Downloader = struct {
                     var invalidated_count: usize = 1;
                     while (try self.readDownladedHeader(headers[0].number - 1 - invalidated_count)) |invalidated_header| {
                         invalidated_count += 1;
-                        if (invalidated_header.number == 0) break;
+                        if (invalidated_header.number == 0 or invalidated_count == header_persist_chunk) break;
                     }
                     try self.clearDownloadedHeader(headers[0].number - 1);
                     try self.clearDownloadedHeader(headers[0].number - invalidated_count);
