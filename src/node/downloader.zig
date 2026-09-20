@@ -258,6 +258,16 @@ pub const Downloader = struct {
         const target = self.sync_target.?;
 
         var status = &self.state.initial;
+        if (status.requested_header_tail != std.math.maxInt(u64) and status.requested_header_head < target.number) {
+            // target moved, fill the gap from new head to old head
+            requestHeaders(
+                self,
+                .{ .hash = target.hash },
+                target.number - status.requested_header_head,
+            ) catch return;
+            status.requested_header_head = target.number;
+        }
+
         while (status.requested_header_tail > target.cutoff_number) {
             const origin: eth.HashOrNumber, const origin_num = if (status.requested_header_tail == std.math.maxInt(u64))
                 .{ .{ .hash = target.hash }, target.number }
@@ -270,16 +280,6 @@ pub const Downloader = struct {
             status.requested_header_tail = (origin_num + 1) - batch_size;
             if (status.requested_header_head < origin_num)
                 status.requested_header_head = origin_num;
-        }
-
-        if (status.requested_header_head < target.number) {
-            // target moved, fill the gap from new head to old head
-            requestHeaders(
-                self,
-                .{ .hash = target.hash },
-                target.number - status.requested_header_head,
-            ) catch return;
-            status.requested_header_head = target.number;
         }
     }
 
