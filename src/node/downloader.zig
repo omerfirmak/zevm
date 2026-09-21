@@ -532,7 +532,7 @@ pub const Downloader = struct {
             (try self.bc.readHeader(new_pivot_height) orelse return);
 
         const cur_pivot = self.state.initial.pivot;
-        if (cur_pivot == null or new_pivot_height - cur_pivot.?.number >= 2) {
+        if (cur_pivot == null or new_pivot_height - cur_pivot.?.number >= 64) {
             self.state.initial.previous_pivot = cur_pivot;
             self.state.initial.pivot = new_pivot;
             log.debug("new pivot {}, old {any}", .{ new_pivot, cur_pivot });
