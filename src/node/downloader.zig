@@ -586,6 +586,12 @@ pub const Downloader = struct {
         const allocator = self.snap_arena.allocator();
 
         const get_accounts_range = request.msg.get_account_range;
+        const pivot_state_root = self.state.initial.pivot.?.state_root;
+        if (!std.mem.eql(u8, &pivot_state_root, &get_accounts_range.root)) {
+            self.requestAccountRange(request, pivot_state_root, get_accounts_range.origin, get_accounts_range.limit);
+            return;
+        }
+
         var hashes: [][32]u8 = try allocator.alloc([32]u8, response.accounts.len);
         var accounts: [][]const u8 = try allocator.alloc([]const u8, response.accounts.len);
         for (response.accounts, 0..) |elem, index| {
@@ -637,17 +643,15 @@ pub const Downloader = struct {
             const limit_numeric = std.mem.readInt(u256, &limit, .big);
             const min_range = (std.math.maxInt(u256) / (1 << 16));
 
-            const new_state_root = self.state.initial.pivot.?.state_root;
-
             if (limit_numeric - origin_numeric < min_range) {
-                self.requestAccountRange(request, new_state_root, origin, limit);
+                self.requestAccountRange(request, pivot_state_root, origin, limit);
             } else if (self.free_snap_requests.pop()) |new_req| {
                 var split_point: [32]u8 = undefined;
                 std.mem.writeInt(u256, &split_point, origin_numeric / 2 + limit_numeric / 2, .big);
-                self.requestAccountRange(new_req, new_state_root, origin, split_point);
-                self.requestAccountRange(request, new_state_root, split_point, limit);
+                self.requestAccountRange(new_req, pivot_state_root, origin, split_point);
+                self.requestAccountRange(request, pivot_state_root, split_point, limit);
             } else {
-                self.requestAccountRange(request, new_state_root, origin, limit);
+                self.requestAccountRange(request, pivot_state_root, origin, limit);
             }
         } else {
             self.free_snap_requests.push(request);
