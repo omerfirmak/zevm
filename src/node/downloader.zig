@@ -41,12 +41,12 @@ pub const Downloader = struct {
     eth_arena: std.heap.ArenaAllocator,
     eth_provider: *eth.Provider,
     free_eth_requests: List(Request(eth.Message)),
-    inflight_eth_requests: List(Request(eth.Message)),
+    inflight_eth_requests: List(Request(eth.Message)) = .{},
 
     snap_arena: std.heap.ArenaAllocator,
     snap_provider: *snap.Provider,
     free_snap_requests: List(Request(snap.Message)),
-    inflight_snap_requests: List(Request(snap.Message)),
+    inflight_snap_requests: List(Request(snap.Message)) = .{},
 
     sync_target: ?struct {
         number: u64,
@@ -54,17 +54,13 @@ pub const Downloader = struct {
 
         cutoff_number: u64, // last header to fetch, inclusive
         cutoff_hash: [32]u8,
-    },
-    state: union(enum) {
-        idle,
-        header_and_state: struct {
-            requested_header_head: u64,
-            requested_header_tail: u64,
+    } = null,
+    header_and_state: ?struct {
+        requested_header_head: u64,
+        requested_header_tail: u64,
 
-            pivot: ?types.BlockHeader,
-            previous_pivot: ?types.BlockHeader,
-        },
-    },
+        pivot: types.BlockHeader,
+    } = null,
 
     pub fn init(
         io: std.Io,
@@ -85,13 +81,9 @@ pub const Downloader = struct {
             .eth_arena = .init(allocator),
             .eth_provider = eth_provider,
             .free_eth_requests = try .init(allocator, max_inflight_requests),
-            .inflight_eth_requests = .{},
             .snap_arena = .init(allocator),
             .snap_provider = snap_provider,
             .free_snap_requests = try .init(allocator, max_inflight_requests),
-            .inflight_snap_requests = .{},
-            .sync_target = null,
-            .state = .idle,
             .peer_ranges = peer_ranges,
         };
     }
@@ -140,12 +132,9 @@ pub const Downloader = struct {
     }
 
     fn handleTick(self: *Self) !void {
-        switch (self.state) {
-            .header_and_state => {
-                try self.advanceDownload();
-                try self.updatePivot();
-            },
-            else => {},
+        if (self.header_and_state != null) {
+            try self.advanceHeaderDownload();
+            try self.updatePivot();
         }
         try self.checkEthRequestTimeouts();
         try self.checkSnapRequestTimeouts();
@@ -218,13 +207,12 @@ pub const Downloader = struct {
             if (cur_target.number >= number) return;
         }
 
-        if (head.number == 0 and self.state == .idle) {
-            self.state = .{ .header_and_state = .{
+        if (head.number == 0 and self.header_and_state == null) {
+            self.header_and_state = .{
                 .requested_header_head = 0,
                 .requested_header_tail = std.math.maxInt(u64),
-                .pivot = null,
-                .previous_pivot = null,
-            } };
+                .pivot = try self.bc.readHeader(0) orelse unreachable,
+            };
         }
         self.sync_target = .{
             .hash = hash,
@@ -253,11 +241,11 @@ pub const Downloader = struct {
         return peer;
     }
 
-    fn advanceDownload(self: *Self) !void {
+    fn advanceHeaderDownload(self: *Self) !void {
         if (self.sync_target == null) return;
         const target = self.sync_target.?;
 
-        var status = &self.state.header_and_state;
+        var status = &self.header_and_state.?;
         if (status.requested_header_tail != std.math.maxInt(u64) and status.requested_header_head < target.number) {
             // target moved, fill the gap from new head to old head
             requestHeaders(
@@ -360,7 +348,7 @@ pub const Downloader = struct {
             self.reissueHeaderRequest(matched_request, followup.origin, followup.amount);
         } else {
             self.free_eth_requests.push(matched_request);
-            try self.advanceDownload();
+            try self.advanceHeaderDownload();
         }
 
         try self.checkHeaderDownloadComplete();
@@ -490,8 +478,8 @@ pub const Downloader = struct {
     }
 
     fn checkHeaderDownloadComplete(self: *Self) !void {
-        if (self.state.header_and_state.requested_header_head < self.sync_target.?.number or
-            self.state.header_and_state.requested_header_tail > self.sync_target.?.cutoff_number)
+        if (self.header_and_state.?.requested_header_head < self.sync_target.?.number or
+            self.header_and_state.?.requested_header_tail > self.sync_target.?.cutoff_number)
             return;
 
         var current_node = self.inflight_eth_requests.inner.first;
@@ -524,18 +512,19 @@ pub const Downloader = struct {
     }
 
     fn updatePivot(self: *Self) !void {
-        if (self.sync_target == null or self.state != .header_and_state) return;
+        if (self.sync_target == null or self.header_and_state == null) return;
 
         const sync_target_height = self.sync_target.?.number;
         const new_pivot_height = if (sync_target_height > 32) sync_target_height - 32 else 0;
         const new_pivot = try self.readDownladedHeader(new_pivot_height) orelse
             (try self.bc.readHeader(new_pivot_height) orelse return);
 
-        const cur_pivot = self.state.header_and_state.pivot;
-        if (cur_pivot == null or new_pivot_height - cur_pivot.?.number >= 64) {
-            self.state.header_and_state.pivot = new_pivot;
-            log.debug("new pivot {}, old {any}", .{ new_pivot, cur_pivot });
-            if (cur_pivot == null)
+        const cur_pivot = self.header_and_state.?.pivot;
+        if (cur_pivot.number == 0 or new_pivot_height - cur_pivot.number >= 2) {
+            log.debug("new pivot {}, old {}", .{ new_pivot, cur_pivot });
+            self.header_and_state.?.pivot = new_pivot;
+
+            if (cur_pivot.number == 0)
                 self.requestAccountRange(
                     self.free_snap_requests.pop() orelse unreachable,
                     new_pivot.state_root,
@@ -546,7 +535,7 @@ pub const Downloader = struct {
     }
 
     fn sendSnapMessage(self: *Self, msg: snap.Message) !rlpx.Server.PeerId {
-        const peer = try self.snap_provider.pickRandomPeer(HeightFilter.init(self.state.header_and_state.pivot.?.number, self));
+        const peer = try self.snap_provider.pickRandomPeer(HeightFilter.init(self.header_and_state.?.pivot.number, self));
         try self.snap_provider.send(peer, msg);
         return peer;
     }
@@ -585,7 +574,7 @@ pub const Downloader = struct {
         const allocator = self.snap_arena.allocator();
 
         const get_accounts_range = request.msg.get_account_range;
-        const pivot_state_root = self.state.header_and_state.pivot.?.state_root;
+        const pivot_state_root = self.header_and_state.?.pivot.state_root;
         if (!std.mem.eql(u8, &pivot_state_root, &get_accounts_range.root)) {
             self.requestAccountRange(request, pivot_state_root, get_accounts_range.origin, get_accounts_range.limit);
             return;
