@@ -515,14 +515,15 @@ pub const Downloader = struct {
     }
 
     fn updatePivot(self: *Self) !void {
-        if (self.sync_target == null or self.state == null) return;
+        if (self.state == null) return;
 
-        const sync_target_height = self.sync_target.?.number;
-        const new_pivot_height = if (sync_target_height > 32) sync_target_height - 32 else 0;
-        const new_pivot = try self.readHeader(new_pivot_height) orelse return;
+        const head_height = if (self.sync_target) |sync_target| sync_target.number else (try self.bc.head()).number;
+        const new_pivot_height = if (head_height > 32) head_height - 32 else 0;
 
         const cur_pivot = self.state.?.pivot;
         if (new_pivot_height - cur_pivot.number >= 2) {
+            const new_pivot = try self.readHeader(new_pivot_height) orelse return;
+
             if (cur_pivot.number != 0) {
                 const no_reorg = self.headerIsInTargetChain(cur_pivot) catch |e| {
                     if (e == error.Maybe) return;
@@ -699,13 +700,17 @@ pub const Downloader = struct {
     }
 
     fn headerIsInTargetChain(self: *Self, header: types.BlockHeader) !bool {
-        const target_head = try self.readHeader(self.sync_target.?.number) orelse return error.Maybe;
-        if (!std.mem.eql(u8, &self.sync_target.?.hash, &target_head.hash())) return error.Maybe;
+        const head = if (self.sync_target) |sync_target|
+            try self.readHeader(sync_target.number) orelse return error.Maybe
+        else
+            try self.bc.headHeader();
+        if (self.sync_target) |sync_target|
+            if (!std.mem.eql(u8, &sync_target.hash, &head.hash())) return error.Maybe;
 
         const stored_header = try self.readHeader(header.number) orelse return false;
         if (!std.mem.eql(u8, &stored_header.hash(), &header.hash())) return false;
 
-        for (header.number + 1..target_head.number) |block_number| {
+        for (header.number + 1..head.number) |block_number| {
             _ = try self.readHeader(block_number) orelse return error.Maybe;
         }
         return true;
