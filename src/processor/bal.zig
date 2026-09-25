@@ -27,15 +27,13 @@ pub const Prepared = struct {
         var self: Prepared = .{ .map = .empty, .slot_map = .empty, .valid = true, .original = bal };
 
         var total_keys: u64 = 0;
-        var total_slots: u32 = 0;
         for (bal.*) |*account| {
-            total_slots += @intCast(account.storage_changes.len);
             total_keys += account.storage_changes.len + account.storage_reads.len;
         }
         if (total_keys + bal.len > block_gas_limit / item_cost) return null;
 
         try self.map.ensureTotalCapacity(gpa, @intCast(bal.len));
-        try self.slot_map.ensureTotalCapacity(gpa, total_slots);
+        try self.slot_map.ensureTotalCapacity(gpa, @intCast(total_keys));
 
         var prev_addr: ?u160 = null;
         for (bal.*) |account| {
@@ -56,12 +54,16 @@ pub const Prepared = struct {
             for (account.storage_reads) |key| {
                 if (prev_read) |prev| if (key <= prev) return null;
                 prev_read = key;
+                // track reads too, so validateWrites can do dedup on net-zero writes using last_seen_index
+                const entry = self.slot_map.getOrPutAssumeCapacity(.{ .address = account.addr, .slot = key });
+                if (entry.found_existing) return null;
+                entry.value_ptr.* = .{ .slot_changes = .{ .key = key, .changes = &.{} } };
             }
         }
         return self;
     }
 
-    pub fn validateWrites(self: *Prepared, index: u32, state: *State, pre_state: *const storage.SlotKeyedMap(u256)) void {
+    pub fn validateWrites(self: *Prepared, index: u32, state: *State) void {
         if (!self.valid) return;
 
         var it = state.accounts.dirtiesIterator();
@@ -108,11 +110,11 @@ pub const Prepared = struct {
             const slot_entry, const old_value = dirty;
             const lookup = slot_entry.key_ptr.*;
             const new_value = slot_entry.value_ptr.*;
-            // syscalls don't populate pre_state, so we need to fallback to journaled old value here
-            const pre_tx = pre_state.get(lookup) orelse old_value.*;
+            const pre_tx = old_value.*;
 
+            // every written slot must appear in the BAL, either as a change or as a read
             var map_entry = self.slot_map.getEntry(lookup) orelse {
-                if (pre_tx != new_value) self.valid = false;
+                self.valid = false;
                 continue;
             };
             if (map_entry.value_ptr.last_seen_index > index) continue;
@@ -142,11 +144,9 @@ pub const Prepared = struct {
             if (exp.code_changes.len != 0) return false;
         }
 
-        var slots_num: u32 = 0;
         var slot_it = self.slot_map.valueIterator();
         while (slot_it.next()) |entry| {
             if (entry.slot_changes.changes.len != 0) return false;
-            slots_num += 1;
         }
 
         for (self.original.*) |*account| {
@@ -158,12 +158,11 @@ pub const Prepared = struct {
                 if (!state.contract_state.dirties.contains(.{ .address = account.addr, .slot = s })) {
                     return false;
                 }
-                slots_num += 1;
             }
         }
 
         if (self.original.len != state.accounts.dirties.size) return false;
-        if (slots_num != state.contract_state.dirties.size) return false;
+        if (self.slot_map.size != state.contract_state.dirties.size) return false;
         return true;
     }
 };

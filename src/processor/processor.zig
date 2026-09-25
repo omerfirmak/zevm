@@ -96,7 +96,7 @@ pub fn processBlock(
         vm.reset();
     }
     if (evm_spec.isEnabled(.Amsterdam))
-        prepared_bal.validateWrites(0, state, &vm.pre_state);
+        prepared_bal.validateWrites(0, state);
     state.clearTxState();
 
     var block_regular_used: u64, var block_state_used: u64 = .{ 0, 0 };
@@ -122,7 +122,7 @@ pub fn processBlock(
         num_logs_per_tx[index] = vm.num_logs;
 
         if (evm_spec.isEnabled(.Amsterdam))
-            prepared_bal.validateWrites(@as(u32, @intCast(index)) + 1, state, &vm.pre_state);
+            prepared_bal.validateWrites(@as(u32, @intCast(index)) + 1, state);
         state.clearTxState();
         vm.reset();
     }
@@ -151,7 +151,7 @@ pub fn processBlock(
         return Errors.MismatchedRequestsHash;
 
     if (evm_spec.isEnabled(.Amsterdam))
-        prepared_bal.validateWrites(@as(u32, @intCast(p_block.block.transactions.len)) + 1, state, &vm.pre_state);
+        prepared_bal.validateWrites(@as(u32, @intCast(p_block.block.transactions.len)) + 1, state);
     state.clearTxState();
 
     if (evm_spec.isEnabled(.Amsterdam) and !prepared_bal.postExecutionCheck(state))
