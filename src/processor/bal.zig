@@ -51,6 +51,12 @@ pub const Prepared = struct {
                 const lookup: types.StorageLookup = .{ .address = account.addr, .slot = sc.key };
                 self.slot_map.putAssumeCapacity(lookup, .{ .slot_changes = sc });
             }
+
+            var prev_read: ?u256 = null;
+            for (account.storage_reads) |key| {
+                if (prev_read) |prev| if (key <= prev) return null;
+                prev_read = key;
+            }
         }
         return self;
     }
