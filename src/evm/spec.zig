@@ -53,6 +53,9 @@ pub const Spec = struct {
     // EIP-7825: maximum transaction gas limit
     max_tx_gas: u64,
 
+    // Maximum tx.gas: equals max_tx_gas pre-Amsterdam; EIP-8037 raises it to cover the state gas reservoir
+    max_tx_total_gas: u64,
+
     // EIP-160: gas per byte of exponent in EXP
     exp_per_byte_gas: u64,
 
@@ -277,6 +280,7 @@ pub const Osaka = Spec{
     .selfdestruct_empty_target_gas = 25000,
     .total_cost_floor_per_token = 10,
     .max_tx_gas = 1 << 24,
+    .max_tx_total_gas = 1 << 24,
     .call_value_gas = 9000,
     .call_new_account_gas = 25000,
     .call_stipend = 2300,
@@ -488,6 +492,7 @@ pub const Amsterdam = override(Osaka, .{
     .total_cost_floor_per_token = 16,
     .max_code_size = 0x10000,
     .cpsb = 1530,
+    .max_tx_total_gas = std.math.maxInt(u32),
     .bal_item_cost = 2000,
     .call_new_account_gas = 0,
     .per_empty_account_cost = 0,
