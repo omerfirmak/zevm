@@ -265,6 +265,8 @@ fn stateCapacities(comptime spec: Spec, bal: zevm.types.BlockAccessLists, codes:
             code_bytes += tx.set_code.auth_list.len * delegation_code_len;
         }
     }
+    num_codes += gas_limit / spec.create_access;
+    code_bytes += gas_limit / spec.cpsb;
 
     caps.code_slots = @intCast(num_codes + 128);
     caps.bytecode_buf = code_bytes * (1 + fn_size) + num_codes * 512;
