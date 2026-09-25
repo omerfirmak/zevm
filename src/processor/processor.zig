@@ -46,7 +46,6 @@ pub const GAS_PER_BLOB = 131_072;
 pub const HISTORY_CONTRACT: u256 = 0x0000F90827F1C53a10cb7A02335B175320002935;
 pub const HISTORY_SERVE_WINDOW: u64 = 8191;
 pub const BEACON_ROOTS_ADDRESS: u256 = 0x000F3df6D732807Ef1319fB7B8bB8522d0Beac02;
-const HISTORICAL_ROOTS_MODULUS: u256 = 8191;
 const SYSTEM_ADDRESS: u160 = 0xfffffffffffffffffffffffffffffffffffffffe;
 const DEPOSIT_CONTRACT: u160 = 0x00000000219ab540356cBB839Cbe05303d7705Fa;
 const WITHDRAWAL_REQUEST_PREDEPLOY_ADDRESS: u160 = 0x00000961ef480eb55e80d19ad83579a64c007002;
@@ -86,8 +85,16 @@ pub fn processBlock(
 
     var vm = try evm.EVM.init(gpa, &context, evm_spec.evmCapacities());
 
-    try applyEip4788(&p_block.block.header, state);
-    try applyEip2935(&p_block.block.header, state);
+    var parent_beacon_block_root = p_block.block.header.parent_beacon_block_root.?;
+    var parent_hash = p_block.block.header.parent_hash;
+    for ([_]struct { u160, []u8 }{
+        .{ @intCast(BEACON_ROOTS_ADDRESS), &parent_beacon_block_root },
+        .{ @intCast(HISTORY_CONTRACT), &parent_hash },
+    }) |call| {
+        _ = try systemCall(&vm, spec, call[0], call[1], state);
+        while (vm.num_logs > 0) vm.popLog();
+        vm.reset();
+    }
     if (evm_spec.isEnabled(.Amsterdam))
         prepared_bal.validateWrites(0, state, &vm.pre_state);
     state.clearTxState();
@@ -255,18 +262,16 @@ fn serializeDepositLog(buf: []u8, data: []const u8) !bool {
     return true;
 }
 
-fn hashSystemCall(
-    allocator: std.mem.Allocator,
+fn systemCall(
     vm: *evm.EVM,
     comptime spec: Spec,
     target: u160,
-    type_byte: u8,
+    calldata: []u8,
     state: *State,
-) !?[32]u8 {
-    const calldata: []u8 = &.{};
+) !?evm.Errors {
     const evm_spec = comptime spec.evmSpec();
     vm.state_gas_reservoir = evm.STATE_BYTES_PER_STORAGE_SLOT * evm_spec.cpsb * SYSTEM_MAX_SSTORES_PER_CALL;
-    _, _, const call_err = vm.call(
+    _, _, const call_err = try vm.call(
         .{
             .fork = evm_spec,
         },
@@ -281,7 +286,19 @@ fn hashSystemCall(
         &.{},
         true,
         false,
-    ) catch return Errors.SyscallRevert;
+    );
+    return call_err;
+}
+
+fn hashSystemCall(
+    allocator: std.mem.Allocator,
+    vm: *evm.EVM,
+    comptime spec: Spec,
+    target: u160,
+    type_byte: u8,
+    state: *State,
+) !?[32]u8 {
+    const call_err = systemCall(vm, spec, target, &.{}, state) catch return Errors.SyscallRevert;
     if (call_err) |_| return Errors.SyscallRevert;
     const ret = vm.return_buffer[0..vm.return_data_size];
     if (ret.len == 0) {
@@ -546,24 +563,6 @@ fn bloomAdd(bloom: *[256]u8, item: []const u8) void {
         const bit: u11 = @truncate(std.mem.readInt(u16, hash[2 * i ..][0..2], .big));
         bloom[255 - bit / 8] |= @as(u8, 1) << @intCast(bit % 8);
     }
-}
-
-fn applyEip4788(header: *const types.BlockHeader, state: *State) !void {
-    const acct = try state.accounts.read(BEACON_ROOTS_ADDRESS);
-    if (std.mem.eql(u8, &acct.code_hash, &types.empty_code_hash)) return;
-    const timestamp: u256 = header.timestamp;
-    const root: u256 = std.mem.readInt(u256, &header.parent_beacon_block_root.?, .big);
-    const idx = timestamp % HISTORICAL_ROOTS_MODULUS;
-    _ = try state.contract_state.write(.{ .address = BEACON_ROOTS_ADDRESS, .slot = idx }, timestamp);
-    _ = try state.contract_state.write(.{ .address = BEACON_ROOTS_ADDRESS, .slot = idx + HISTORICAL_ROOTS_MODULUS }, root);
-}
-
-fn applyEip2935(header: *const types.BlockHeader, state: *State) !void {
-    const acct = try state.accounts.read(HISTORY_CONTRACT);
-    if (std.mem.eql(u8, &acct.code_hash, &types.empty_code_hash)) return;
-    const slot: u256 = (header.number - 1) % HISTORY_SERVE_WINDOW;
-    const value: u256 = std.mem.readInt(u256, &header.parent_hash, .big);
-    _ = try state.contract_state.write(.{ .address = HISTORY_CONTRACT, .slot = slot }, value);
 }
 
 fn calcExcessBlobGas(comptime spec: Spec, parent: *const types.BlockHeader) u64 {
