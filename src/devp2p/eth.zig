@@ -74,6 +74,10 @@ pub const GetBlockHeaders = proto.Request(struct {
 
 pub const BlockHeaders = proto.Response([]rlp.RawValue);
 
+pub const GetBlockAccessLists = proto.Request([][32]u8);
+
+pub const BlockAccessLists = proto.Response([]rlp.RawValue);
+
 pub const Message = union(MessageId) {
     status: Status,
     new_block_hashes: rlp.RawValue,
@@ -89,8 +93,8 @@ pub const Message = union(MessageId) {
     get_receipts: rlp.RawValue,
     receipts: rlp.RawValue,
     block_range_update: BlockRangeUpdate,
-    get_block_access_list: rlp.RawValue,
-    block_access_list: rlp.RawValue,
+    get_block_access_list: GetBlockAccessLists,
+    block_access_list: BlockAccessLists,
 };
 
 pub const Config: proto.Config = .{

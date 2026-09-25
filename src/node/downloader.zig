@@ -62,6 +62,15 @@ pub const Downloader = struct {
     state: ?struct {
         pivot: types.BlockHeader,
     } = null,
+    state_heal: ?struct {
+        next_pivot: types.BlockHeader,
+        target_pivot: types.BlockHeader,
+
+        bal_requested: bool = false,
+        bal_arena: ?std.heap.ArenaAllocator = null,
+        bal: ?rlp.RawValue = null,
+        pivot_hash_buf: [1][32]u8 = undefined,
+    } = null,
 
     pub fn init(
         io: std.Io,
@@ -139,6 +148,9 @@ pub const Downloader = struct {
         if (self.state != null) {
             try self.updatePivot();
         }
+        if (self.state_heal != null) {
+            try self.advanceStateHeal();
+        }
         try self.checkEthRequestTimeouts();
         try self.checkSnapRequestTimeouts();
     }
@@ -198,6 +210,11 @@ pub const Downloader = struct {
             .block_headers => |headers| {
                 if (matchRequest(eth.Message, &self.inflight_eth_requests, peer, headers.request_id, .get_block_headers)) |req|
                     try self.handleHeaders(req, headers);
+            },
+            .block_access_list => |access_lists| {
+                if (matchRequest(eth.Message, &self.inflight_eth_requests, peer, access_lists.request_id, .get_block_access_list)) |req| {
+                    try self.handleBals(req, access_lists);
+                }
             },
             else => {},
         }
@@ -530,6 +547,12 @@ pub const Downloader = struct {
                     return e;
                 };
                 std.debug.assert(no_reorg);
+
+                std.debug.assert(self.state_heal == null);
+                self.state_heal = .{
+                    .target_pivot = try self.readHeader(new_pivot_height) orelse unreachable,
+                    .next_pivot = try self.readHeader(cur_pivot.number + 1) orelse unreachable,
+                };
             } else {
                 self.requestAccountRange(
                     self.free_snap_requests.pop() orelse unreachable,
@@ -541,6 +564,31 @@ pub const Downloader = struct {
 
             log.debug("new pivot {}, old {}", .{ new_pivot, cur_pivot });
             self.state.?.pivot = new_pivot;
+        }
+    }
+
+    fn requestBals(self: *Self, req: *Request(eth.Message), hashes: [][32]u8) void {
+        const id = self.eth_provider.nextRequestId();
+        const msg: eth.Message = .{ .get_block_access_list = .{ .id = id, .query = hashes } };
+        req.* = .{
+            .id = id,
+            .peer = self.sendEthMessage(msg) catch invalid_peer,
+            .msg = msg,
+            .deadline = std.Io.Clock.now(.real, self.io).addDuration(.fromSeconds(3)),
+        };
+        self.inflight_eth_requests.push(req);
+    }
+
+    fn advanceStateHeal(self: *Self) !void {
+        const state_heal = &self.state_heal.?;
+
+        if (state_heal.bal_requested == false) {
+            const bal_req = self.free_eth_requests.pop() orelse return;
+            errdefer self.free_eth_requests.push(bal_req);
+
+            state_heal.pivot_hash_buf[0] = state_heal.next_pivot.hash();
+            self.requestBals(bal_req, state_heal.pivot_hash_buf[0..1]);
+            state_heal.bal_requested = true;
         }
     }
 
@@ -668,6 +716,27 @@ pub const Downloader = struct {
         }
 
         try txn.commit();
+    }
+
+    fn handleBals(self: *Self, req: *Request(eth.Message), access_lists: eth.BlockAccessLists) !void {
+        if (self.state_heal) |*state_heal| {
+            if (access_lists.data.len >= 1) {
+                var calculated_hash: [32]u8 = undefined;
+                std.crypto.hash.sha3.Keccak256.hash(access_lists.data[0].value, &calculated_hash, .{});
+                if (std.meta.eql(calculated_hash, state_heal.next_pivot.block_access_list_hash.?)) {
+                    if (state_heal.next_pivot.number + 1 > state_heal.target_pivot.number) {
+                        self.state_heal = null;
+                        return;
+                    }
+
+                    state_heal.next_pivot = try self.readHeader(state_heal.next_pivot.number + 1) orelse unreachable;
+                    std.debug.assert(std.meta.eql(state_heal.pivot_hash_buf[0], state_heal.next_pivot.parent_hash));
+                    state_heal.pivot_hash_buf[0] = state_heal.next_pivot.hash();
+                    state_heal.bal_requested = false;
+                }
+            }
+            self.requestBals(req, state_heal.pivot_hash_buf[0..1]);
+        }
     }
 
     fn matchRequest(
