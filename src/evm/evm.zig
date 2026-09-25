@@ -412,10 +412,9 @@ pub const EVM = struct {
             return Errors.OutOfGas;
         }
 
+        if (msg.gas_limit > cfg.fork.max_tx_total_gas) return Errors.GasOverflow;
         if (cfg.fork.isEnabled(.Amsterdam)) {
             if (@max(total_intrinsic, floor_cost) > cfg.fork.max_tx_gas) return Errors.OutOfGas;
-        } else {
-            if (msg.gas_limit > cfg.fork.max_tx_gas) return Errors.GasOverflow;
         }
 
         if (msg.nonce == std.math.maxInt(u64)) {

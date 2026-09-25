@@ -22,6 +22,7 @@ const BenchmarkDef = struct {
 const bench_fork: Config = blk: {
     var f = spec.Osaka;
     f.max_tx_gas = std.math.maxInt(u32);
+    f.max_tx_total_gas = std.math.maxInt(u32);
     break :blk .{ .fork = f, .tracing_enabled = false };
 };
 
