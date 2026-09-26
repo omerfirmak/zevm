@@ -825,8 +825,8 @@ pub const Downloader = struct {
                     addr_hash,
                     addr_hash,
                 );
-            } else if (try self.eth_db.readAccount(self.allocator, txn, addr_hash)) |account| {
-                var updated_account = account;
+            } else {
+                var updated_account = try self.eth_db.readAccount(self.allocator, txn, addr_hash) orelse types.EmptyAccount;
                 if (changes.balance_changes.len > 0)
                     updated_account.balance = changes.balance_changes[changes.balance_changes.len - 1].balance;
                 if (changes.nonce_changes.len > 0)

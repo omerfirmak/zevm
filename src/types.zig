@@ -51,6 +51,13 @@ pub const Account = struct {
     }
 };
 
+pub const EmptyAccount: Account = .{
+    .balance = 0,
+    .nonce = 0,
+    .storage_hash = empty_root_hash,
+    .code_hash = empty_code_hash,
+};
+
 pub const ExtraData = struct {
     buf: [32]u8,
     len: usize,
