@@ -546,7 +546,7 @@ pub const Downloader = struct {
         const new_pivot_height = if (head_height > 32) head_height - 32 else 0;
 
         const cur_pivot = self.state.?.pivot;
-        if (new_pivot_height - cur_pivot.number >= 2) {
+        if (new_pivot_height - cur_pivot.number >= 64) {
             const new_pivot = try self.readHeader(new_pivot_height) orelse return;
 
             if (cur_pivot.number != 0) {
