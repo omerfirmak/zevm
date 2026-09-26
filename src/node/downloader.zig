@@ -556,12 +556,15 @@ pub const Downloader = struct {
                 };
                 std.debug.assert(no_reorg);
 
-                self.stashSnapRequests();
-                std.debug.assert(self.state_heal == null);
-                self.state_heal = .{
-                    .target_pivot = try self.readHeader(new_pivot_height) orelse unreachable,
-                    .next_pivot = try self.readHeader(cur_pivot.number + 1) orelse unreachable,
-                };
+                if (self.state_heal) |*state_heal| {
+                    state_heal.target_pivot = try self.readHeader(new_pivot_height) orelse unreachable;
+                } else {
+                    self.stashSnapRequests();
+                    self.state_heal = .{
+                        .target_pivot = try self.readHeader(new_pivot_height) orelse unreachable,
+                        .next_pivot = try self.readHeader(cur_pivot.number + 1) orelse unreachable,
+                    };
+                }
             } else {
                 self.requestAccountRange(
                     self.free_snap_requests.pop() orelse unreachable,
