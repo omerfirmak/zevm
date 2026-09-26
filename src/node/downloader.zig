@@ -67,8 +67,12 @@ pub const Downloader = struct {
         target_pivot: types.BlockHeader,
 
         bal_requested: bool = false,
-        bal_arena: ?std.heap.ArenaAllocator = null,
-        bal: ?rlp.RawValue = null,
+        bal: ?struct {
+            arena: std.heap.ArenaAllocator,
+            rlp: rlp.RawValue,
+            parsed: types.BlockAccessLists,
+            resume_index: usize = 0,
+        } = null,
         pivot_hash_buf: [1][32]u8 = undefined,
     } = null,
 
@@ -582,6 +586,24 @@ pub const Downloader = struct {
     fn advanceStateHeal(self: *Self) !void {
         const state_heal = &self.state_heal.?;
 
+        if (state_heal.bal) |*bal| {
+            bal.resume_index = try self.applyBal(bal.parsed, bal.resume_index);
+            if (bal.resume_index > bal.parsed.len and self.inflight_snap_requests.empty()) {
+                if (state_heal.next_pivot.number + 1 > state_heal.target_pivot.number) {
+                    self.state_heal = null;
+                    return;
+                }
+
+                state_heal.next_pivot = try self.readHeader(state_heal.next_pivot.number + 1) orelse unreachable;
+                std.debug.assert(std.meta.eql(state_heal.pivot_hash_buf[0], state_heal.next_pivot.parent_hash));
+                state_heal.pivot_hash_buf[0] = state_heal.next_pivot.hash();
+                state_heal.bal_requested = false;
+
+                bal.arena.deinit();
+                state_heal.bal = null;
+            }
+        }
+
         if (state_heal.bal_requested == false) {
             const bal_req = self.free_eth_requests.pop() orelse return;
             errdefer self.free_eth_requests.push(bal_req);
@@ -724,19 +746,29 @@ pub const Downloader = struct {
                 var calculated_hash: [32]u8 = undefined;
                 std.crypto.hash.sha3.Keccak256.hash(access_lists.data[0].value, &calculated_hash, .{});
                 if (std.meta.eql(calculated_hash, state_heal.next_pivot.block_access_list_hash.?)) {
-                    if (state_heal.next_pivot.number + 1 > state_heal.target_pivot.number) {
-                        self.state_heal = null;
-                        return;
-                    }
+                    var arena = self.snap_arena;
+                    self.snap_arena = .init(self.allocator);
 
-                    state_heal.next_pivot = try self.readHeader(state_heal.next_pivot.number + 1) orelse unreachable;
-                    std.debug.assert(std.meta.eql(state_heal.pivot_hash_buf[0], state_heal.next_pivot.parent_hash));
-                    state_heal.pivot_hash_buf[0] = state_heal.next_pivot.hash();
-                    state_heal.bal_requested = false;
+                    var bal: types.BlockAccessLists = undefined;
+                    if (rlp.deserialize(types.BlockAccessLists, arena.allocator(), access_lists.data[0].value, &bal)) |_| {
+                        std.debug.assert(state_heal.bal == null);
+
+                        state_heal.bal = .{
+                            .arena = arena,
+                            .rlp = access_lists.data[0],
+                            .parsed = bal,
+                        };
+                        try self.advanceStateHeal();
+                        return;
+                    } else |_| {}
                 }
             }
             self.requestBals(req, state_heal.pivot_hash_buf[0..1]);
         }
+    }
+
+    fn applyBal(_: *Self, bal: types.BlockAccessLists, _: usize) !usize {
+        return bal.len + 1;
     }
 
     fn matchRequest(
