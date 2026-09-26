@@ -47,6 +47,7 @@ pub const Downloader = struct {
     snap_provider: *snap.Provider,
     free_snap_requests: List(Request(snap.Message)),
     inflight_snap_requests: List(Request(snap.Message)) = .{},
+    stashed_snap_requests: []Request(snap.Message),
 
     sync_target: ?struct {
         number: u64,
@@ -87,6 +88,8 @@ pub const Downloader = struct {
         const peer_ranges = try allocator.alloc(?PeerRange, eth_provider.peers.len);
         @memset(peer_ranges, null);
 
+        var stashed_snap_requests = try allocator.alloc(Request(snap.Message), max_inflight_requests);
+        stashed_snap_requests.len = 0;
         return .{
             .io = io,
             .allocator = allocator,
@@ -98,6 +101,7 @@ pub const Downloader = struct {
             .snap_arena = .init(allocator),
             .snap_provider = snap_provider,
             .free_snap_requests = try .init(allocator, max_inflight_requests),
+            .stashed_snap_requests = stashed_snap_requests,
             .peer_ranges = peer_ranges,
         };
     }
@@ -552,6 +556,7 @@ pub const Downloader = struct {
                 };
                 std.debug.assert(no_reorg);
 
+                self.stashSnapRequests();
                 std.debug.assert(self.state_heal == null);
                 self.state_heal = .{
                     .target_pivot = try self.readHeader(new_pivot_height) orelse unreachable,
@@ -568,6 +573,35 @@ pub const Downloader = struct {
 
             log.debug("new pivot {}, old {}", .{ new_pivot, cur_pivot });
             self.state.?.pivot = new_pivot;
+        }
+    }
+
+    fn stashSnapRequests(self: *Self) void {
+        while (self.inflight_snap_requests.pop()) |node| {
+            self.stashed_snap_requests.len += 1;
+            self.stashed_snap_requests[self.stashed_snap_requests.len - 1] = node.*;
+            self.free_snap_requests.push(node);
+        }
+    }
+
+    fn popSnapRequests(self: *Self) void {
+        std.debug.assert(self.inflight_snap_requests.empty());
+
+        const pivot_root = self.state.?.pivot.state_root;
+
+        for (self.stashed_snap_requests) |stashed_req| {
+            const req = self.free_snap_requests.pop() orelse unreachable;
+            req.* = stashed_req;
+            req.id = self.snap_provider.nextRequestId();
+            switch (req.msg) {
+                .get_account_range => |*account_range_req| {
+                    account_range_req.id = req.id;
+                    account_range_req.root = pivot_root;
+                },
+                else => {},
+            }
+
+            self.inflight_snap_requests.push(req);
         }
     }
 
@@ -593,6 +627,7 @@ pub const Downloader = struct {
             if (bal.resume_index == bal.parsed.len and self.inflight_snap_requests.empty()) {
                 if (state_heal.next_pivot.number + 1 > state_heal.target_pivot.number) {
                     self.state_heal = null;
+                    self.popSnapRequests();
                     return;
                 }
 
