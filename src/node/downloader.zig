@@ -587,8 +587,10 @@ pub const Downloader = struct {
         const state_heal = &self.state_heal.?;
 
         if (state_heal.bal) |*bal| {
-            bal.resume_index = try self.applyBal(bal.parsed, bal.resume_index);
-            if (bal.resume_index > bal.parsed.len and self.inflight_snap_requests.empty()) {
+            if (bal.resume_index < bal.parsed.len) {
+                bal.resume_index = try self.applyBal(bal.parsed, bal.resume_index);
+            }
+            if (bal.resume_index == bal.parsed.len and self.inflight_snap_requests.empty()) {
                 if (state_heal.next_pivot.number + 1 > state_heal.target_pivot.number) {
                     self.state_heal = null;
                     return;
@@ -654,11 +656,6 @@ pub const Downloader = struct {
         const allocator = self.snap_arena.allocator();
 
         const get_accounts_range = request.msg.get_account_range;
-        const pivot_state_root = self.state.?.pivot.state_root;
-        if (!std.mem.eql(u8, &pivot_state_root, &get_accounts_range.root)) {
-            self.requestAccountRange(request, pivot_state_root, get_accounts_range.origin, get_accounts_range.limit);
-            return;
-        }
 
         var hashes: [][32]u8 = try allocator.alloc([32]u8, response.accounts.len);
         var accounts: [][]const u8 = try allocator.alloc([]const u8, response.accounts.len);
@@ -711,6 +708,7 @@ pub const Downloader = struct {
             const limit_numeric = std.mem.readInt(u256, &limit, .big);
             const min_range = (std.math.maxInt(u256) / (1 << 16));
 
+            const pivot_state_root = self.state.?.pivot.state_root;
             if (limit_numeric - origin_numeric < min_range) {
                 self.requestAccountRange(request, pivot_state_root, origin, limit);
             } else if (self.free_snap_requests.pop()) |new_req| {
@@ -767,8 +765,45 @@ pub const Downloader = struct {
         }
     }
 
-    fn applyBal(_: *Self, bal: types.BlockAccessLists, _: usize) !usize {
-        return bal.len + 1;
+    fn applyBal(self: *Self, bal: types.BlockAccessLists, resume_index: usize) !usize {
+        const txn = try self.eth_db.kv_store.transaction_rw();
+        defer txn.commit() catch unreachable;
+
+        for (resume_index..bal.len) |account_index| {
+            const changes = bal[account_index];
+            if (changes.balance_changes.len == 0 and
+                changes.code_changes.len == 0 and
+                changes.nonce_changes.len == 0 and
+                changes.storage_changes.len == 0) continue;
+
+            var addr_buf: [20]u8 = undefined;
+            std.mem.writeInt(u160, &addr_buf, changes.addr, .big);
+            var addr_hash: [32]u8 = undefined;
+            std.crypto.hash.sha3.Keccak256.hash(&addr_buf, &addr_hash, .{});
+            if (changes.storage_changes.len > 0) {
+                self.requestAccountRange(
+                    self.free_snap_requests.pop() orelse return account_index,
+                    self.state_heal.?.next_pivot.state_root,
+                    addr_hash,
+                    addr_hash,
+                );
+            } else if (try self.eth_db.readAccount(self.allocator, txn, addr_hash)) |account| {
+                var updated_account = account;
+                if (changes.balance_changes.len > 0)
+                    updated_account.balance = changes.balance_changes[changes.balance_changes.len - 1].balance;
+                if (changes.nonce_changes.len > 0)
+                    updated_account.nonce = changes.nonce_changes[changes.nonce_changes.len - 1].nonce;
+                if (changes.code_changes.len > 0) {
+                    var code_hash: [32]u8 = undefined;
+                    std.crypto.hash.sha3.Keccak256.hash(changes.code_changes[changes.code_changes.len - 1].code, &code_hash, .{});
+                    updated_account.code_hash = code_hash;
+                    // todo: write code to db
+                }
+                try self.eth_db.writeAccount(self.allocator, txn, addr_hash, updated_account);
+            }
+        }
+
+        return bal.len;
     }
 
     fn matchRequest(
