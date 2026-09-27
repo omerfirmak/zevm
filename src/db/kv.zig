@@ -6,6 +6,7 @@ pub const Transaction = lmdbx.Transaction;
 pub const Table = enum {
     accounts,
     storage,
+    codes,
 
     pub fn options(self: Table) lmdbx.Database.Options {
         return switch (self) {

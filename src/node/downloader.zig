@@ -6,6 +6,7 @@ const snap = @import("../devp2p/snap.zig");
 const types = @import("../types.zig");
 const rlp = @import("rlp");
 const trie = @import("../trie/trie.zig");
+const lmdbx = @import("lmdbx");
 
 const verifyRangeProof = @import("../trie/range_proof.zig").verifyRangeProof;
 const EthDb = @import("../db/eth.zig").Eth;
@@ -806,6 +807,7 @@ pub const Downloader = struct {
     fn applyBal(self: *Self, bal: types.BlockAccessLists, resume_index: usize) !usize {
         const txn = try self.eth_db.kv_store.transaction_rw();
         defer txn.commit() catch unreachable;
+        const codes = self.eth_db.kv_store.table(txn, .codes);
 
         for (resume_index..bal.len) |account_index| {
             const changes = bal[account_index];
@@ -818,6 +820,15 @@ pub const Downloader = struct {
             std.mem.writeInt(u160, &addr_buf, changes.addr, .big);
             var addr_hash: [32]u8 = undefined;
             std.crypto.hash.sha3.Keccak256.hash(&addr_buf, &addr_hash, .{});
+            var code_hash: [32]u8 = types.empty_code_hash;
+            if (changes.code_changes.len > 0) {
+                const code = changes.code_changes[changes.code_changes.len - 1].code;
+                std.crypto.hash.sha3.Keccak256.hash(code, &code_hash, .{});
+                codes.set(&code_hash, code, .Create) catch |e| {
+                    if (e != lmdbx.Error.MDBX_KEYEXIST) return e;
+                };
+            }
+
             if (changes.storage_changes.len > 0) {
                 self.requestAccountRange(
                     self.free_snap_requests.pop() orelse return account_index,
@@ -832,10 +843,7 @@ pub const Downloader = struct {
                 if (changes.nonce_changes.len > 0)
                     updated_account.nonce = changes.nonce_changes[changes.nonce_changes.len - 1].nonce;
                 if (changes.code_changes.len > 0) {
-                    var code_hash: [32]u8 = undefined;
-                    std.crypto.hash.sha3.Keccak256.hash(changes.code_changes[changes.code_changes.len - 1].code, &code_hash, .{});
                     updated_account.code_hash = code_hash;
-                    // todo: write code to db
                 }
                 try self.eth_db.writeAccount(self.allocator, txn, addr_hash, updated_account);
             }
