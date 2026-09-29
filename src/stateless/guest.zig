@@ -197,14 +197,16 @@ fn makeBlock(
         .mix_hash = payload.prev_randao,
         .nonce = [_]u8{0} ** 8, // post-merge: always zero
         .base_fee_per_gas = @intCast(payload.base_fee_per_gas),
-        .withdrawals_root = std.mem.zeroes([32]u8),
+        .withdrawals_root = try zevm.processor.computeRoot(zevm.types.Withdrawal, allocator, withdrawals),
         .blob_gas_used = payload.blob_gas_used,
         .excess_blob_gas = payload.excess_blob_gas,
         .parent_beacon_block_root = request.parent_beacon_block_root,
-        .requests_hash = std.mem.zeroes([32]u8),
+        .requests_hash = try computeRequestsHash(allocator, &request.execution_requests),
         .block_access_list_hash = bal_hash,
         .slot_number = payload.slot_number,
     };
+
+    if (!std.mem.eql(u8, &header.hash(), &payload.block_hash)) return error.InvalidBlockHash;
 
     var encoded = std.array_list.Managed(u8).init(allocator);
     defer encoded.deinit();
@@ -231,6 +233,29 @@ fn makeBlock(
         .bal = bal,
         .senders = senders,
     };
+}
+
+fn computeRequestsHash(allocator: std.mem.Allocator, requests: *const types.ExecutionRequests) ![32]u8 {
+    var hashes: [5 * 32]u8 = undefined;
+    var n: usize = 0;
+    inline for (.{
+        .{ 0x00, "deposits" },
+        .{ 0x01, "withdrawals" },
+        .{ 0x02, "consolidations" },
+        .{ 0x03, "builder_deposits" },
+        .{ 0x04, "builder_exits" },
+    }) |entry| {
+        const items = @field(requests, entry[1]).constSlice();
+        if (items.len > 0) {
+            var buf: std.ArrayList(u8) = .empty;
+            defer buf.deinit(allocator);
+            try buf.append(allocator, entry[0]);
+            for (items) |item| try ssz.serialize(@TypeOf(item), item, &buf, allocator);
+            hashes[n * 32 ..][0..32].* = zevm.crypto.hash.sha256(buf.items);
+            n += 1;
+        }
+    }
+    return zevm.crypto.hash.sha256(hashes[0 .. n * 32]);
 }
 
 fn stateCapacities(comptime spec: Spec, bal: zevm.types.BlockAccessLists, codes: anytype, txs: []const zevm.types.Transaction, num_withdrawals: usize, gas_limit: u64) Spec.StateCapacities {
