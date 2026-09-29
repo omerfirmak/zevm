@@ -34,7 +34,7 @@ pub const SlimAccount = struct {
 pub const AccountRange = struct {
     id: u64,
     accounts: []struct { hash: [32]u8, account: rlp.RawValue },
-    proof: [][]u8,
+    proof: [][]const u8,
 };
 
 pub const Message = union(MessageId) {
