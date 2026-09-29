@@ -53,7 +53,8 @@ pub fn verify(allocator: std.mem.Allocator, input: types.StatelessInput) !void {
     const header_hashes = try allocator.alloc([32]u8, input.witness.headers.len());
     for (input.witness.headers.constSlice(), 0..) |*header_bytes, i| {
         header_hashes[i] = zevm.crypto.hash.keccak256(header_bytes.constSlice());
-        _ = try rlp.deserialize(zevm.types.BlockHeader, allocator, header_bytes.constSlice(), &headers[i]);
+        const consumed = try rlp.deserialize(zevm.types.BlockHeader, allocator, header_bytes.constSlice(), &headers[i]);
+        if (consumed != header_bytes.len()) return error.InvalidWitnessHeader;
         if (i > 0 and !std.mem.eql(u8, &header_hashes[i - 1], &headers[i].parent_hash)) {
             return error.InvalidAncestors;
         }
