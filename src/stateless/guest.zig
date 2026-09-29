@@ -74,7 +74,7 @@ pub fn verify(allocator: std.mem.Allocator, input: types.StatelessInput) !void {
     var state = try zevm.state.State.init(
         allocator,
         &committed,
-        stateCapacities(spec.evmSpec(), block.bal.?, input.witness.codes, block.block.transactions, block.block.header.gas_used),
+        stateCapacities(spec.evmSpec(), block.bal.?, input.witness.codes, block.block.transactions, block.block.withdrawals.len, block.block.header.gas_used),
     );
 
     // processBlock doesn't touch the code of these contracts, assert they exist in the witness here
@@ -233,7 +233,7 @@ fn makeBlock(
     };
 }
 
-fn stateCapacities(comptime spec: Spec, bal: zevm.types.BlockAccessLists, codes: anytype, txs: []const zevm.types.Transaction, gas_limit: u64) Spec.StateCapacities {
+fn stateCapacities(comptime spec: Spec, bal: zevm.types.BlockAccessLists, codes: anytype, txs: []const zevm.types.Transaction, num_withdrawals: usize, gas_limit: u64) Spec.StateCapacities {
     var caps = spec.stateCapacities(gas_limit);
 
     var slots_num: usize = 0;
@@ -243,7 +243,7 @@ fn stateCapacities(comptime spec: Spec, bal: zevm.types.BlockAccessLists, codes:
 
     caps.contract_dirties = @intCast(slots_num + 128);
     caps.account_dirties = @intCast(bal.len + 16);
-    caps.account_journal = @max(caps.account_journal, caps.account_dirties);
+    caps.account_journal = @max(caps.account_journal, caps.account_dirties) + @as(u32, @intCast(num_withdrawals));
 
     const fn_size = @sizeOf(usize);
     const delegation_code_len = 23; // 3-byte prefix + 20-byte address
