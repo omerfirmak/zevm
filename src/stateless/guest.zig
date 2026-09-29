@@ -61,7 +61,7 @@ pub fn verify(allocator: std.mem.Allocator, input: types.StatelessInput) !void {
 
     if (headers.len == 0) return error.MissingParentHeader;
     const parent = &headers[headers.len - 1];
-    var block = try makeBlock(allocator, &input.new_payload_request, input.public_keys.constSlice());
+    var block = try makeBlock(allocator, &input.new_payload_request, input.chain_id);
     try validateVersionedHashes(&block, input.new_payload_request.versioned_hashes.constSlice());
 
     var ancestors: [256]u256 = @splat(0);
@@ -131,7 +131,7 @@ fn assertAccountCodeIsInWitness(committed: *const CommittedState, addr: u160) !v
 fn makeBlock(
     allocator: std.mem.Allocator,
     request: *const types.NewPayloadRequest,
-    public_keys: []const [65]u8,
+    chain_id: u64,
 ) !zevm.processor.PreprocessedBlock {
     const payload = &request.execution_payload;
 
@@ -158,7 +158,7 @@ fn makeBlock(
     }
 
     const senders = try allocator.alloc(u160, payload.transactions.len());
-    for (public_keys, 0..) |pk, i| senders[i] = zevm.crypto.curve.addressFromPubkey(pk);
+    for (txs, senders) |*tx, *sender| sender.* = try zevm.processor.recoverTxSender(allocator, tx, chain_id);
 
     const withdrawals = try allocator.alloc(zevm.types.Withdrawal, payload.withdrawals.len());
     for (payload.withdrawals.constSlice(), withdrawals) |*src, *dst| {

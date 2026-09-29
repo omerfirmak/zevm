@@ -9,7 +9,6 @@ const MAX_WITNESS_HEADERS = 256;
 const MAX_BYTES_PER_WITNESS_NODE = 1 << 10;
 const MAX_BYTES_PER_CODE = 1 << 16;
 const MAX_BYTES_PER_HEADER = 1 << 10;
-const PUBLIC_KEY_BYTES = 65;
 
 pub const Withdrawal = struct {
     index: u64,
@@ -101,7 +100,6 @@ pub const StatelessInput = struct {
     new_payload_request: NewPayloadRequest,
     witness: ExecutionWitness,
     chain_id: u64,
-    public_keys: ProgressiveList([PUBLIC_KEY_BYTES]u8),
 };
 
 pub const StatelessValidationResult = struct {
