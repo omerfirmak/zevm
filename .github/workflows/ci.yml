@@ -86,7 +86,7 @@ jobs:
 
       - name: Download and extract zkEVM test fixtures
         run: |
-          curl -L https://github.com/ethereum/execution-specs/releases/download/tests-zkevm%40v21.0.0/fixtures_zkevm.tar.gz | tar -xz
+          curl -L https://github.com/ethereum/execution-specs/releases/download/tests-zkevm%40v21.0.1/fixtures_zkevm.tar.gz | tar -xz
           mv fixtures zk_fixtures
 
       - name: Run zkEVM tests
