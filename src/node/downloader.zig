@@ -6,6 +6,7 @@ const snap = @import("../devp2p/snap.zig");
 const types = @import("../types.zig");
 const rlp = @import("rlp");
 const trie = @import("../trie/trie.zig");
+const kv = @import("../db/kv.zig");
 const lmdbx = @import("lmdbx");
 
 const verifyRangeProof = @import("../trie/range_proof.zig").verifyRangeProof;
@@ -13,6 +14,7 @@ const EthDb = @import("../db/eth.zig").Eth;
 const List = @import("../free_list.zig").List;
 const max_inflight_requests = 100;
 const header_persist_chunk = 1024;
+const batch_storage_code_req_size = 256;
 
 const log = std.log.scoped(.downloader);
 
@@ -63,6 +65,10 @@ pub const Downloader = struct {
     } = null,
     state: ?struct {
         pivot: types.BlockHeader,
+
+        accounts_done: bool = false,
+        storage_fetch_head: [32]u8 = @splat(0),
+        storage_and_fetch_initiated: bool = false,
     } = null,
     state_heal: ?struct {
         next_pivot: types.BlockHeader,
@@ -156,6 +162,7 @@ pub const Downloader = struct {
         }
         if (self.state != null) {
             try self.updatePivot();
+            try self.advanceStateDownload();
         }
         if (self.state_heal != null) {
             try self.advanceStateHeal();
@@ -580,6 +587,142 @@ pub const Downloader = struct {
         }
     }
 
+    fn advanceStateDownload(self: *Self) !void {
+        if (self.state_heal != null) return; // state download is paused
+
+        const state = &self.state.?;
+
+        if (state.accounts_done and !state.storage_and_fetch_initiated)
+            try self.advanceStorageAndCodeDownload();
+
+        if (self.state.?.pivot.number > 0 and self.inflight_snap_requests.empty() and self.stashed_snap_requests.len == 0) {
+            if (state.accounts_done and state.storage_and_fetch_initiated) {
+                self.state = null;
+                log.info("state download done", .{});
+            } else {
+                state.accounts_done = true;
+                log.info("account download done", .{});
+            }
+        }
+    }
+
+    fn advanceStorageAndCodeDownload(self: *Self) !void {
+        const state = &self.state.?;
+
+        if (self.free_snap_requests.empty()) return;
+
+        const txn = try self.eth_db.kv_store.transaction_ro();
+        defer txn.abort() catch unreachable;
+        const accounts_table = self.eth_db.kv_store.table(txn, .accounts);
+        const account_iterator = try accounts_table.cursor();
+        defer account_iterator.deinit();
+        const codes_table = self.eth_db.kv_store.table(txn, .codes);
+        const codes_iterator = try codes_table.cursor();
+        defer codes_iterator.deinit();
+
+        if (try account_iterator.seekLowerBound(&state.storage_fetch_head) == null) {
+            state.storage_and_fetch_initiated = true;
+            return;
+        }
+
+        while (true) {
+            const code_request = self.free_snap_requests.pop();
+            const storage_request = self.free_snap_requests.pop();
+            if (storage_request == null) {
+                if (code_request) |req|
+                    self.free_snap_requests.push(req);
+                return;
+            }
+            errdefer {
+                self.free_snap_requests.push(code_request.?);
+                self.free_snap_requests.push(storage_request.?);
+            }
+
+            var account_hashes = try self.allocator.alloc([32]u8, batch_storage_code_req_size);
+            account_hashes.len = 0;
+            errdefer {
+                account_hashes.len = batch_storage_code_req_size;
+                self.allocator.free(account_hashes);
+            }
+            var code_hashes = try self.allocator.alloc([32]u8, batch_storage_code_req_size);
+            code_hashes.len = 0;
+            errdefer {
+                code_hashes.len = batch_storage_code_req_size;
+                self.allocator.free(code_hashes);
+            }
+
+            while (true) {
+                const cur = try account_iterator.getCurrentEntry();
+                state.storage_fetch_head = cur.key[0..32].*;
+
+                const acc = EthDb.decodeAccount(self.allocator, cur.value) catch unreachable;
+
+                var has_code = false;
+                if (!std.meta.eql(acc.code_hash, types.empty_code_hash)) {
+                    has_code = if (try codes_iterator.seekLowerBound(&acc.code_hash)) |res| res.exact else true;
+                }
+                const has_storage = !std.meta.eql(acc.storage_hash, types.empty_root_hash);
+
+                if (has_code and code_hashes.len == batch_storage_code_req_size or
+                    has_storage and account_hashes.len == batch_storage_code_req_size)
+                    break;
+
+                if (has_code) {
+                    code_hashes.len += 1;
+                    code_hashes[code_hashes.len - 1] = acc.code_hash;
+                }
+
+                if (has_storage) {
+                    account_hashes.len += 1;
+                    account_hashes[account_hashes.len - 1] = cur.key[0..32].*;
+                }
+
+                if (try account_iterator.goToNext() == null) {
+                    state.storage_and_fetch_initiated = true;
+                    return;
+                }
+            }
+
+            self.requestStorageRanges(storage_request.?, state.pivot.state_root, account_hashes);
+            self.requestCodes(code_request.?, code_hashes);
+        }
+    }
+
+    fn requestStorageRanges(self: *Self, req: *Request(snap.Message), state_root: [32]u8, accounts: [][32]u8) void {
+        log.debug("requesting storage ranges accounts: {}", .{accounts.len});
+        const id = self.snap_provider.nextRequestId();
+        const msg: snap.Message = .{ .get_storage_ranges = .{
+            .id = id,
+            .account_hashes = accounts,
+            .root_hash = state_root,
+        } };
+
+        req.* = .{
+            .id = id,
+            .peer = self.sendSnapMessage(msg) catch invalid_peer,
+            .msg = msg,
+            .deadline = std.Io.Clock.now(.real, self.io).addDuration(.fromSeconds(3)),
+        };
+        self.inflight_snap_requests.push(req);
+    }
+
+    fn requestCodes(self: *Self, req: *Request(snap.Message), code_hashes: [][32]u8) void {
+        log.debug("requesting codes: {}", .{code_hashes.len});
+        const id = self.snap_provider.nextRequestId();
+        const msg: snap.Message = .{ .get_byte_codes = .{
+            .hashes = code_hashes,
+            .id = id,
+        } };
+
+        req.* = .{
+            .id = id,
+            .peer = self.sendSnapMessage(msg) catch invalid_peer,
+            .msg = msg,
+            .deadline = std.Io.Clock.now(.real, self.io).addDuration(.fromSeconds(3)),
+        };
+        self.inflight_snap_requests.push(req);
+    }
+
     fn stashSnapRequests(self: *Self) void {
         while (self.inflight_snap_requests.pop()) |node| {
             self.stashed_snap_requests.len += 1;
@@ -687,8 +830,22 @@ pub const Downloader = struct {
                     try self.handleAccounts(request, &account_range);
                 }
             },
+            .storage_ranges => |storage_ranges| {
+                if (matchRequest(snap.Message, &self.inflight_snap_requests, peer, storage_ranges.id, .get_storage_ranges)) |req| {
+                    self.allocator.free(req.msg.get_storage_ranges.account_hashes);
+                    self.free_snap_requests.push(req);
+                }
+            },
+            .byte_codes => |byte_codes| {
+                if (matchRequest(snap.Message, &self.inflight_snap_requests, peer, byte_codes.id, .get_byte_codes)) |req| {
+                    self.allocator.free(req.msg.get_byte_codes.hashes);
+                    self.free_snap_requests.push(req);
+                }
+            },
             else => {},
         }
+        if (self.state != null)
+            try self.advanceStateDownload();
     }
 
     fn handleAccounts(self: *Self, request: *Request(snap.Message), response: *const snap.AccountRange) !void {

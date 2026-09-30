@@ -37,13 +37,39 @@ pub const AccountRange = struct {
     proof: [][]const u8,
 };
 
+pub const GetByteCodes = struct {
+    id: u64,
+    hashes: [][32]u8,
+    bytes: u64 = 10_000_000,
+};
+
+pub const ByteCodes = struct {
+    id: u64,
+    bytecodes: [][]const u8,
+};
+
+pub const GetStorageRanges = struct {
+    id: u64,
+    root_hash: [32]u8,
+    account_hashes: [][32]u8,
+    starting_hash: [32]u8 = @splat(0),
+    limit_hash: [32]u8 = @splat(0xff),
+    response_bytes: u64 = 10_000_000,
+};
+
+pub const StorageRanges = struct {
+    id: u64,
+    slots: [][]struct { hash: [32]u8, data: []const u8 },
+    proof: [][]const u8,
+};
+
 pub const Message = union(MessageId) {
     get_account_range: GetAccountRange,
     account_range: AccountRange,
-    get_storage_ranges: rlp.RawValue,
-    storage_ranges: rlp.RawValue,
-    get_byte_codes: rlp.RawValue,
-    byte_codes: rlp.RawValue,
+    get_storage_ranges: GetStorageRanges,
+    storage_ranges: StorageRanges,
+    get_byte_codes: GetByteCodes,
+    byte_codes: ByteCodes,
     get_trie_nodes: rlp.RawValue,
     trie_nodes: rlp.RawValue,
     get_access_lists: rlp.RawValue,
@@ -53,7 +79,7 @@ pub const Message = union(MessageId) {
 pub const Config: proto.Config = .{
     .name = "snap",
     .version = 1,
-    .message_count = 10,
+    .message_count = 8,
     .required = false,
     .Message = Message,
 };

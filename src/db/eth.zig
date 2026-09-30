@@ -20,6 +20,13 @@ pub const Eth = struct {
         var acc: SlimAccount = undefined;
         _ = try rlp.deserialize(SlimAccount, allocator, bytes, &acc);
 
+        return try decodeAccount(allocator, bytes);
+    }
+
+    pub fn decodeAccount(allocator: std.mem.Allocator, rlp_bytes: []const u8) !types.Account {
+        var acc: SlimAccount = undefined;
+        _ = try rlp.deserialize(SlimAccount, allocator, rlp_bytes, &acc);
+
         return .{
             .nonce = acc.nonce,
             .balance = acc.balance,
