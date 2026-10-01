@@ -23,6 +23,7 @@ fn Request(comptime msg: type) type {
         id: u64,
         peer: rlpx.Server.PeerId,
         msg: msg,
+        sent_at: std.Io.Timestamp,
         deadline: std.Io.Timestamp,
     };
 }
@@ -172,31 +173,30 @@ pub const Downloader = struct {
     }
 
     fn checkEthRequestTimeouts(self: *Self) !void {
-        var current_node = self.inflight_eth_requests.inner.first;
-
-        const now = std.Io.Clock.now(.real, self.io).toMilliseconds();
-        while (current_node) |node| {
-            const next_node = node.next;
-            const request: *List(Request(eth.Message)).Node = @alignCast(@fieldParentPtr("node", node));
-
-            if (request.elem.deadline.toMilliseconds() < now) {
-                self.reissueEthRequest(&request.elem) catch {};
-            }
-
-            current_node = next_node;
-        }
+        return self.checkRequestTimeouts(eth.Message, &self.inflight_eth_requests, self.eth_provider, Self.reissueEthRequest);
     }
 
     fn checkSnapRequestTimeouts(self: *Self) !void {
-        var current_node = self.inflight_snap_requests.inner.first;
+        return self.checkRequestTimeouts(snap.Message, &self.inflight_snap_requests, self.snap_provider, Self.reissueSnapRequest);
+    }
 
-        const now = std.Io.Clock.now(.real, self.io).toMilliseconds();
+    fn checkRequestTimeouts(
+        self: *Self,
+        comptime Message: type,
+        list: *List(Request(Message)),
+        provider: anytype,
+        reissue_fn: anytype,
+    ) !void {
+        var current_node = list.inner.first;
+
+        const now = std.Io.Clock.now(.real, self.io);
         while (current_node) |node| {
             const next_node = node.next;
-            const request: *List(Request(snap.Message)).Node = @alignCast(@fieldParentPtr("node", node));
+            const request: *List(Request(Message)).Node = @alignCast(@fieldParentPtr("node", node));
 
-            if (request.elem.deadline.toMilliseconds() < now) {
-                self.reissueSnapRequest(&request.elem) catch {};
+            if (request.elem.deadline.toMilliseconds() < now.toMilliseconds()) {
+                provider.observeDelay(request.elem.peer, std.meta.activeTag(request.elem.msg), request.elem.sent_at.durationTo(now));
+                reissue_fn(self, &request.elem) catch {};
             }
 
             current_node = next_node;
@@ -218,11 +218,11 @@ pub const Downloader = struct {
                 self.peer_ranges[peer.peer_index] = .{ .id = peer, .range = update };
             },
             .block_headers => |headers| {
-                if (matchRequest(eth.Message, &self.inflight_eth_requests, peer, headers.request_id, .get_block_headers)) |req|
+                if (self.matchRequest(eth.Message, self.eth_provider, &self.inflight_eth_requests, peer, headers.request_id, .get_block_headers)) |req|
                     try self.handleHeaders(req, headers);
             },
             .block_access_list => |access_lists| {
-                if (matchRequest(eth.Message, &self.inflight_eth_requests, peer, access_lists.request_id, .get_block_access_list)) |req| {
+                if (self.matchRequest(eth.Message, self.eth_provider, &self.inflight_eth_requests, peer, access_lists.request_id, .get_block_access_list)) |req| {
                     try self.handleBals(req, access_lists);
                 }
             },
@@ -278,9 +278,10 @@ pub const Downloader = struct {
                 msg.id = req.id;
             },
         }
-        req.deadline = sent_at.addDuration(.fromSeconds(3));
+        req.sent_at = sent_at;
         req.peer = try pick_peer_fn(self, req.msg);
         try provider.send(req.peer, req.msg);
+        req.deadline = sent_at.addDuration(try provider.timeoutFor(req.peer, std.meta.activeTag(req.msg)));
     }
 
     fn reissueEthRequest(self: *Self, req: *Request(eth.Message)) !void {
@@ -782,18 +783,18 @@ pub const Downloader = struct {
     fn handleSnap(self: *Self, msg: snap.Message, peer: rlpx.Server.PeerId) !void {
         switch (msg) {
             .account_range => |account_range| {
-                if (matchRequest(snap.Message, &self.inflight_snap_requests, peer, account_range.id, .get_account_range)) |request| {
+                if (self.matchRequest(snap.Message, self.snap_provider, &self.inflight_snap_requests, peer, account_range.id, .get_account_range)) |request| {
                     try self.handleAccounts(request, &account_range);
                 }
             },
             .storage_ranges => |storage_ranges| {
-                if (matchRequest(snap.Message, &self.inflight_snap_requests, peer, storage_ranges.id, .get_storage_ranges)) |req| {
+                if (self.matchRequest(snap.Message, self.snap_provider, &self.inflight_snap_requests, peer, storage_ranges.id, .get_storage_ranges)) |req| {
                     self.allocator.free(req.msg.get_storage_ranges.account_hashes);
                     self.free_snap_requests.push(req);
                 }
             },
             .byte_codes => |byte_codes| {
-                if (matchRequest(snap.Message, &self.inflight_snap_requests, peer, byte_codes.id, .get_byte_codes)) |req| {
+                if (self.matchRequest(snap.Message, self.snap_provider, &self.inflight_snap_requests, peer, byte_codes.id, .get_byte_codes)) |req| {
                     self.allocator.free(req.msg.get_byte_codes.hashes);
                     self.free_snap_requests.push(req);
                 }
@@ -966,7 +967,9 @@ pub const Downloader = struct {
     }
 
     fn matchRequest(
+        self: *Self,
         comptime Message: type,
+        provider: anytype,
         list: *List(Request(Message)),
         peer: rlpx.Server.PeerId,
         id: u64,
@@ -979,6 +982,7 @@ pub const Downloader = struct {
             const request: *List(Request(Message)).Node = @alignCast(@fieldParentPtr("node", node));
 
             if (request.elem.id == id and std.meta.eql(peer, request.elem.peer) and std.meta.eql(request_tag, request.elem.msg)) {
+                provider.observeDelay(peer, request_tag, request.elem.sent_at.untilNow(self.io, .real));
                 list.inner.remove(node);
                 node.next = null;
                 node.prev = null;

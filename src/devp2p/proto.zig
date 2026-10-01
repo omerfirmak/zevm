@@ -17,8 +17,15 @@ pub fn Provider(comptime cfg: Config) type {
             epoch: usize,
             offset: usize,
         };
+        pub const MessageIds = std.meta.Tag(cfg.Message);
+        const default_rtt: std.Io.Duration = .fromSeconds(5);
+        const min_timeout: std.Io.Duration = .fromSeconds(3);
+        const PeerSlot = struct {
+            info: std.atomic.Value(Peer),
+            rtt: std.enums.EnumArray(MessageIds, std.Io.Duration) = .initFill(default_rtt),
+        };
 
-        peers: []std.atomic.Value(Peer),
+        peers: []PeerSlot,
         next_random_peer: std.atomic.Value(usize),
         queue: std.Io.Queue(rlpx.QueuedRead),
         req_id: std.atomic.Value(u64),
@@ -26,9 +33,9 @@ pub fn Provider(comptime cfg: Config) type {
         hello: ?cfg.Message,
 
         pub fn init(allocator: std.mem.Allocator) !Self {
-            const peers = try allocator.alloc(std.atomic.Value(Peer), rlpx.Server.max_peers);
+            const peers = try allocator.alloc(PeerSlot, rlpx.Server.max_peers);
             errdefer allocator.free(peers);
-            @memset(peers, .init(std.mem.zeroes(Peer)));
+            @memset(peers, .{ .info = .init(std.mem.zeroes(Peer)) });
             return .{
                 .queue = .init(try allocator.alloc(rlpx.QueuedRead, 1024)),
                 .peers = peers,
@@ -61,7 +68,7 @@ pub fn Provider(comptime cfg: Config) type {
             const read = try self.queue.getOne(io);
             errdefer frame_allocator.free(read.payload);
 
-            const tag = std.enums.fromInt(std.meta.Tag(cfg.Message), read.id) orelse
+            const tag = std.enums.fromInt(MessageIds, read.id) orelse
                 return error.InvalidMessageId;
             switch (tag) {
                 inline else => |t| {
@@ -79,14 +86,14 @@ pub fn Provider(comptime cfg: Config) type {
 
         pub fn onConnected(ctx: *anyopaque, peer: rlpx.Server.PeerId, offset: usize) void {
             var self: *Self = @ptrCast(@alignCast(ctx));
-            self.peers[peer.peer_index].store(.{ .epoch = peer.peer_epoch, .offset = offset }, .release);
+            self.peers[peer.peer_index].info.store(.{ .epoch = peer.peer_epoch, .offset = offset }, .release);
             if (self.hello) |hello|
                 self.send(peer, hello) catch {}; //todo: log
         }
 
         pub fn onDisconnected(ctx: *anyopaque, peer: rlpx.Server.PeerId) void {
             var self: *Self = @ptrCast(@alignCast(ctx));
-            self.peers[peer.peer_index].store(std.mem.zeroes(Peer), .release);
+            self.peers[peer.peer_index].info.store(std.mem.zeroes(Peer), .release);
         }
 
         pub fn nextRequestId(self: *Self) u64 {
@@ -94,7 +101,7 @@ pub fn Provider(comptime cfg: Config) type {
         }
 
         pub fn send(self: *Self, peer_id: rlpx.Server.PeerId, msg: cfg.Message) !void {
-            const peer = self.peers[peer_id.peer_index].load(.acquire);
+            const peer = self.peers[peer_id.peer_index].info.load(.acquire);
             if (peer_id.peer_epoch != peer.epoch or peer.offset == 0) return error.StalePeer;
 
             switch (msg) {
@@ -106,7 +113,7 @@ pub fn Provider(comptime cfg: Config) type {
 
         pub fn broadcast(self: *Self, msg: cfg.Message) void {
             for (self.peers, 0..) |*p, index| {
-                const peer = p.load(.acquire);
+                const peer = p.info.load(.acquire);
                 if (peer.offset == 0) continue;
                 self.send(.{
                     .peer_index = index,
@@ -122,7 +129,7 @@ pub fn Provider(comptime cfg: Config) type {
                 [2]usize{ 0, start_index },
             }) |range| {
                 for (range[0]..range[1]) |index| {
-                    const peer = self.peers[index].load(.acquire);
+                    const peer = self.peers[index].info.load(.acquire);
                     if (peer.offset == 0) continue;
 
                     const peer_id: rlpx.Server.PeerId = .{
@@ -146,10 +153,27 @@ pub fn Provider(comptime cfg: Config) type {
         pub fn peerCount(self: *Self) usize {
             var count: usize = 0;
             for (0..self.peers.len) |index| {
-                if (self.peers[index].load(.acquire).offset != 0) count += 1;
+                if (self.peers[index].info.load(.acquire).offset != 0) count += 1;
             }
 
             return count;
+        }
+
+        pub fn timeoutFor(self: *Self, peer_id: rlpx.Server.PeerId, id: MessageIds) !std.Io.Duration {
+            const peer = self.peers[peer_id.peer_index].info.load(.acquire);
+            if (peer_id.peer_epoch != peer.epoch or peer.offset == 0) {
+                self.peers[peer_id.peer_index].rtt.set(id, default_rtt);
+                return error.StalePeer;
+            }
+            const rtt = self.peers[peer_id.peer_index].rtt.get(id);
+            return .{ .nanoseconds = @max(min_timeout.nanoseconds, 3 * rtt.nanoseconds) };
+        }
+
+        pub fn observeDelay(self: *Self, peer_id: rlpx.Server.PeerId, id: MessageIds, delay: std.Io.Duration) void {
+            if (peer_id.peer_index >= self.peers.len) return;
+            _ = self.timeoutFor(peer_id, id) catch return;
+            const rtt = self.peers[peer_id.peer_index].rtt.getPtr(id);
+            rtt.nanoseconds = @divTrunc(8 * rtt.nanoseconds + 2 * delay.nanoseconds, 10);
         }
     };
 }
