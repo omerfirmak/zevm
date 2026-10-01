@@ -65,18 +65,30 @@ pub const HashOrNumber = union(enum) {
     }
 };
 
-pub const GetBlockHeaders = proto.Request(struct {
-    origin: HashOrNumber,
-    amount: u64,
-    skip: u64 = 0,
-    reverse: bool = true,
-});
+pub const GetBlockHeaders = struct {
+    id: u64 = 0,
+    range: struct {
+        origin: HashOrNumber,
+        amount: u64,
+        skip: u64 = 0,
+        reverse: bool = true,
+    },
+};
 
-pub const BlockHeaders = proto.Response([]rlp.RawValue);
+pub const BlockHeaders = struct {
+    request_id: u64,
+    rlps: []rlp.RawValue,
+};
 
-pub const GetBlockAccessLists = proto.Request([][32]u8);
+pub const GetBlockAccessLists = struct {
+    id: u64 = 0,
+    hashes: [][32]u8,
+};
 
-pub const BlockAccessLists = proto.Response([]rlp.RawValue);
+pub const BlockAccessLists = struct {
+    request_id: u64,
+    rlps: []rlp.RawValue,
+};
 
 pub const Message = union(MessageId) {
     status: Status,

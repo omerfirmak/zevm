@@ -17,7 +17,7 @@ pub const MessageId = enum(u8) {
 };
 
 pub const GetAccountRange = struct {
-    id: u64,
+    id: u64 = 0,
     root: [32]u8,
     origin: [32]u8,
     limit: [32]u8,
@@ -38,7 +38,7 @@ pub const AccountRange = struct {
 };
 
 pub const GetByteCodes = struct {
-    id: u64,
+    id: u64 = 0,
     hashes: [][32]u8,
     bytes: u64 = 10_000_000,
 };
@@ -49,7 +49,7 @@ pub const ByteCodes = struct {
 };
 
 pub const GetStorageRanges = struct {
-    id: u64,
+    id: u64 = 0,
     root_hash: [32]u8,
     account_hashes: [][32]u8,
     starting_hash: [32]u8 = @splat(0),

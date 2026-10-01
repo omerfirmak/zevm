@@ -180,10 +180,7 @@ pub const Downloader = struct {
             const request: *List(Request(eth.Message)).Node = @alignCast(@fieldParentPtr("node", node));
 
             if (request.elem.deadline.toMilliseconds() < now) {
-                if (self.sendEthMessage(request.elem.msg)) |peer_id| {
-                    request.elem.peer = peer_id;
-                    request.elem.deadline = std.Io.Clock.now(.real, self.io).addDuration(.fromSeconds(3));
-                } else |_| {}
+                self.reissueEthRequest(&request.elem) catch {};
             }
 
             current_node = next_node;
@@ -199,10 +196,7 @@ pub const Downloader = struct {
             const request: *List(Request(snap.Message)).Node = @alignCast(@fieldParentPtr("node", node));
 
             if (request.elem.deadline.toMilliseconds() < now) {
-                if (self.sendSnapMessage(request.elem.msg)) |peer_id| {
-                    request.elem.peer = peer_id;
-                    request.elem.deadline = std.Io.Clock.now(.real, self.io).addDuration(.fromSeconds(3));
-                } else |_| {}
+                self.reissueSnapRequest(&request.elem) catch {};
             }
 
             current_node = next_node;
@@ -262,7 +256,7 @@ pub const Downloader = struct {
 
     fn pickEthPeer(self: *Self, msg: eth.Message) !rlpx.Server.PeerId {
         switch (msg) {
-            .get_block_headers => |header_req| switch (header_req.query.origin) {
+            .get_block_headers => |header_req| switch (header_req.range.origin) {
                 .number => |number| return self.eth_provider.pickRandomPeer(HeightFilter.init(number, self)),
                 else => {},
             },
@@ -271,10 +265,31 @@ pub const Downloader = struct {
         return self.eth_provider.pickRandomPeer({});
     }
 
-    fn sendEthMessage(self: *Self, msg: eth.Message) !rlpx.Server.PeerId {
-        const peer = try self.pickEthPeer(msg);
-        try self.eth_provider.send(peer, msg);
-        return peer;
+    fn sendRequest(self: *Self, provider: anytype, pick_peer_fn: anytype, req: anytype) !void {
+        const sent_at = std.Io.Clock.now(.real, self.io);
+        errdefer {
+            req.peer = invalid_peer;
+            req.deadline = sent_at;
+        }
+
+        req.id = provider.nextRequestId();
+        switch (req.msg) {
+            inline else => |*msg| if (@hasField(@TypeOf(msg.*), "id")) {
+                msg.id = req.id;
+            },
+        }
+        req.deadline = sent_at.addDuration(.fromSeconds(3));
+        req.peer = try pick_peer_fn(self, req.msg);
+        try provider.send(req.peer, req.msg);
+    }
+
+    fn reissueEthRequest(self: *Self, req: *Request(eth.Message)) !void {
+        return self.sendRequest(self.eth_provider, Self.pickEthPeer, req);
+    }
+
+    fn sendEthRequest(self: *Self, req: *Request(eth.Message)) !void {
+        self.inflight_eth_requests.push(req);
+        return self.sendRequest(self.eth_provider, Self.pickEthPeer, req);
     }
 
     fn advanceHeaderDownload(self: *Self) !void {
@@ -286,9 +301,10 @@ pub const Downloader = struct {
             // target moved, fill the gap from new head to old head
             requestHeaders(
                 self,
+                self.free_eth_requests.pop() orelse return,
                 .{ .hash = target.hash },
                 target.number - status.requested_header_head,
-            ) catch return;
+            );
             status.requested_header_head = target.number;
         }
 
@@ -298,90 +314,61 @@ pub const Downloader = struct {
             else
                 .{ .{ .number = status.requested_header_tail }, status.requested_header_tail };
             const batch_size = @as(u64, @min(1023, origin_num - target.cutoff_number)) + 1;
-            requestHeaders(self, origin, batch_size) catch {
-                return;
-            };
+            requestHeaders(
+                self,
+                self.free_eth_requests.pop() orelse return,
+                origin,
+                batch_size,
+            );
             status.requested_header_tail = (origin_num + 1) - batch_size;
             if (status.requested_header_head < origin_num)
                 status.requested_header_head = origin_num;
         }
     }
 
-    fn headerQuery(id: u64, origin: eth.HashOrNumber, amount: u64) eth.Message {
-        return .{ .get_block_headers = .{ .id = id, .query = .{
+    fn requestHeaders(self: *Self, req: *Request(eth.Message), origin: eth.HashOrNumber, amount: u64) void {
+        req.msg = .{ .get_block_headers = .{ .range = .{
             .origin = origin,
             .amount = amount,
             .skip = 0,
             .reverse = true,
         } } };
-    }
-
-    fn requestHeaders(self: *Self, origin: eth.HashOrNumber, amount: u64) !void {
-        const id = self.eth_provider.nextRequestId();
-
-        const req = self.free_eth_requests.pop() orelse return error.ReachedConcurrentRequestsLimit;
-        errdefer self.free_eth_requests.push(req);
-
-        const msg = headerQuery(id, origin, amount);
-        const peer = try self.sendEthMessage(msg);
-
-        req.* = .{
-            .id = id,
-            .peer = peer,
-            .msg = msg,
-            .deadline = std.Io.Clock.now(.real, self.io).addDuration(.fromSeconds(3)),
-        };
-        self.inflight_eth_requests.push(req);
-
+        self.sendEthRequest(req) catch {};
         log.debug("requesting headers origin {} amount {}", .{ origin, amount });
-    }
-
-    fn reissueHeaderRequest(self: *Self, request: *Request(eth.Message), origin: eth.HashOrNumber, amount: u64) void {
-        const id = self.eth_provider.nextRequestId();
-        request.id = id;
-        request.msg = headerQuery(id, origin, amount);
-        if (self.sendEthMessage(request.msg)) |peer| {
-            request.peer = peer;
-            request.deadline = std.Io.Clock.now(.real, self.io).addDuration(.fromSeconds(3));
-        } else |e| {
-            log.debug("reissue for origin {} amount {} deferred: {t}", .{ origin, amount, e });
-            request.deadline = std.Io.Clock.now(.real, self.io);
-        }
-        self.inflight_eth_requests.push(request);
     }
 
     fn handleHeaders(self: *Self, matched_request: *Request(eth.Message), response: eth.BlockHeaders) !void {
         const headers_request = matched_request.msg.get_block_headers;
 
         const hashes, const headers = self.validateHeadersResponse(headers_request, response) catch |e| {
-            log.debug("header validation failed for origin {} amount {}: {t}", .{ headers_request.query.origin, headers_request.query.amount, e });
-            self.reissueHeaderRequest(matched_request, headers_request.query.origin, headers_request.query.amount);
+            log.debug("header validation failed for origin {} amount {}: {t}", .{ headers_request.range.origin, headers_request.range.amount, e });
+            self.requestHeaders(matched_request, headers_request.range.origin, headers_request.range.amount);
             return;
         };
 
-        var followup_request: ?@TypeOf(headers_request.query) = null;
+        var followup_request: ?@TypeOf(headers_request.range) = null;
         if (headers.len > 0) {
             const invalidated_range = try self.persistDownloadedHeaderChain(
                 headers,
                 hashes,
-                headers_request.query.amount,
+                headers_request.range.amount,
             );
             if (invalidated_range) |range| {
                 followup_request = .{
                     .origin = .{ .hash = range.origin },
                     .amount = range.amount,
                 };
-            } else if (headers_request.query.amount > headers.len and headers[0].number > 0) {
+            } else if (headers_request.range.amount > headers.len and headers[0].number > 0) {
                 followup_request = .{
                     .origin = .{ .hash = headers[0].parent_hash },
-                    .amount = headers_request.query.amount - headers.len,
+                    .amount = headers_request.range.amount - headers.len,
                 };
             }
             log.debug("validated header range start {} end {} invalidated {any}", .{ headers[0].number, headers[0].number + headers.len - 1, invalidated_range });
-        } else followup_request = headers_request.query;
+        } else followup_request = headers_request.range;
 
         if (followup_request) |followup| {
-            self.reissueHeaderRequest(matched_request, followup.origin, followup.amount);
+            self.requestHeaders(matched_request, followup.origin, followup.amount);
         } else {
             self.free_eth_requests.push(matched_request);
             try self.advanceHeaderDownload();
@@ -395,13 +382,13 @@ pub const Downloader = struct {
         request: eth.GetBlockHeaders,
         response: eth.BlockHeaders,
     ) !struct { [][32]u8, []types.BlockHeader } {
-        if (response.data.len == 0) return .{ &[_][32]u8{}, &[_]types.BlockHeader{} };
+        if (response.rlps.len == 0) return .{ &[_][32]u8{}, &[_]types.BlockHeader{} };
 
         const allocator = self.eth_arena.allocator();
-        var headers: []types.BlockHeader = try allocator.alloc(types.BlockHeader, response.data.len);
-        var hashes: [][32]u8 = try allocator.alloc([32]u8, response.data.len);
-        for (response.data, 0..) |header_rlp, index| {
-            const canon_index = if (request.query.reverse) response.data.len - index - 1 else index;
+        var headers: []types.BlockHeader = try allocator.alloc(types.BlockHeader, response.rlps.len);
+        var hashes: [][32]u8 = try allocator.alloc([32]u8, response.rlps.len);
+        for (response.rlps, 0..) |header_rlp, index| {
+            const canon_index = if (request.range.reverse) response.rlps.len - index - 1 else index;
             _ = try rlp.deserialize(types.BlockHeader, allocator, header_rlp.value, &headers[canon_index]);
             std.crypto.hash.sha3.Keccak256.hash(header_rlp.value, &hashes[canon_index], .{});
         }
@@ -412,7 +399,7 @@ pub const Downloader = struct {
             }
         }
 
-        switch (request.query.origin) {
+        switch (request.range.origin) {
             .hash => |expected_hash| {
                 if (!std.meta.eql(hashes[hashes.len - 1], expected_hash)) return error.UnexpectedOriginHeader;
             },
@@ -690,37 +677,19 @@ pub const Downloader = struct {
 
     fn requestStorageRanges(self: *Self, req: *Request(snap.Message), state_root: [32]u8, accounts: [][32]u8) void {
         log.debug("requesting storage ranges accounts: {}", .{accounts.len});
-        const id = self.snap_provider.nextRequestId();
-        const msg: snap.Message = .{ .get_storage_ranges = .{
-            .id = id,
+        req.msg = .{ .get_storage_ranges = .{
             .account_hashes = accounts,
             .root_hash = state_root,
         } };
-
-        req.* = .{
-            .id = id,
-            .peer = self.sendSnapMessage(msg) catch invalid_peer,
-            .msg = msg,
-            .deadline = std.Io.Clock.now(.real, self.io).addDuration(.fromSeconds(3)),
-        };
-        self.inflight_snap_requests.push(req);
+        self.sendSnapRequest(req) catch {};
     }
 
     fn requestCodes(self: *Self, req: *Request(snap.Message), code_hashes: [][32]u8) void {
         log.debug("requesting codes: {}", .{code_hashes.len});
-        const id = self.snap_provider.nextRequestId();
-        const msg: snap.Message = .{ .get_byte_codes = .{
+        req.msg = .{ .get_byte_codes = .{
             .hashes = code_hashes,
-            .id = id,
         } };
-
-        req.* = .{
-            .id = id,
-            .peer = self.sendSnapMessage(msg) catch invalid_peer,
-            .msg = msg,
-            .deadline = std.Io.Clock.now(.real, self.io).addDuration(.fromSeconds(3)),
-        };
-        self.inflight_snap_requests.push(req);
+        self.sendSnapRequest(req) catch {};
     }
 
     fn stashSnapRequests(self: *Self) void {
@@ -753,15 +722,8 @@ pub const Downloader = struct {
     }
 
     fn requestBals(self: *Self, req: *Request(eth.Message), hashes: [][32]u8) void {
-        const id = self.eth_provider.nextRequestId();
-        const msg: eth.Message = .{ .get_block_access_list = .{ .id = id, .query = hashes } };
-        req.* = .{
-            .id = id,
-            .peer = self.sendEthMessage(msg) catch invalid_peer,
-            .msg = msg,
-            .deadline = std.Io.Clock.now(.real, self.io).addDuration(.fromSeconds(3)),
-        };
-        self.inflight_eth_requests.push(req);
+        req.msg = .{ .get_block_access_list = .{ .hashes = hashes } };
+        self.sendEthRequest(req) catch {};
     }
 
     fn advanceStateHeal(self: *Self) !void {
@@ -798,29 +760,27 @@ pub const Downloader = struct {
         }
     }
 
-    fn sendSnapMessage(self: *Self, msg: snap.Message) !rlpx.Server.PeerId {
-        const peer = try self.snap_provider.pickRandomPeer(HeightFilter.init(self.state.?.pivot.number, self));
-        try self.snap_provider.send(peer, msg);
-        return peer;
+    fn pickSnapPeer(self: *Self, _: snap.Message) !rlpx.Server.PeerId {
+        return self.snap_provider.pickRandomPeer(HeightFilter.init(self.state.?.pivot.number, self));
+    }
+
+    fn reissueSnapRequest(self: *Self, req: *Request(snap.Message)) !void {
+        return self.sendRequest(self.snap_provider, Self.pickSnapPeer, req);
+    }
+
+    fn sendSnapRequest(self: *Self, req: *Request(snap.Message)) !void {
+        self.inflight_snap_requests.push(req);
+        return self.sendRequest(self.snap_provider, Self.pickSnapPeer, req);
     }
 
     fn requestAccountRange(self: *Self, req: *Request(snap.Message), state_root: [32]u8, origin: [32]u8, limit: [32]u8) void {
         log.debug("requesting account range origin: {x} limit: {x}", .{ origin, limit });
-        const id = self.snap_provider.nextRequestId();
-        const msg: snap.Message = .{ .get_account_range = .{
-            .id = id,
+        req.msg = .{ .get_account_range = .{
             .root = state_root,
             .origin = origin,
             .limit = limit,
         } };
-
-        req.* = .{
-            .id = id,
-            .peer = self.sendSnapMessage(msg) catch invalid_peer,
-            .msg = msg,
-            .deadline = std.Io.Clock.now(.real, self.io).addDuration(.fromSeconds(3)),
-        };
-        self.inflight_snap_requests.push(req);
+        self.sendSnapRequest(req) catch {};
     }
 
     fn handleSnap(self: *Self, msg: snap.Message, peer: rlpx.Server.PeerId) !void {
@@ -936,20 +896,20 @@ pub const Downloader = struct {
 
     fn handleBals(self: *Self, req: *Request(eth.Message), access_lists: eth.BlockAccessLists) !void {
         if (self.state_heal) |*state_heal| {
-            if (access_lists.data.len >= 1) {
+            if (access_lists.rlps.len >= 1) {
                 var calculated_hash: [32]u8 = undefined;
-                std.crypto.hash.sha3.Keccak256.hash(access_lists.data[0].value, &calculated_hash, .{});
+                std.crypto.hash.sha3.Keccak256.hash(access_lists.rlps[0].value, &calculated_hash, .{});
                 if (std.meta.eql(calculated_hash, state_heal.next_pivot.block_access_list_hash.?)) {
                     var arena = self.snap_arena;
                     self.snap_arena = .init(self.allocator);
 
                     var bal: types.BlockAccessLists = undefined;
-                    if (rlp.deserialize(types.BlockAccessLists, arena.allocator(), access_lists.data[0].value, &bal)) |_| {
+                    if (rlp.deserialize(types.BlockAccessLists, arena.allocator(), access_lists.rlps[0].value, &bal)) |_| {
                         std.debug.assert(state_heal.bal == null);
 
                         state_heal.bal = .{
                             .arena = arena,
-                            .rlp = access_lists.data[0],
+                            .rlp = access_lists.rlps[0],
                             .parsed = bal,
                         };
                         try self.advanceStateHeal();
