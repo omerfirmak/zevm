@@ -154,6 +154,14 @@ pub const Server = struct {
 
     pub const max_peers = 50;
 
+    pub const Stats = struct {
+        dials: std.atomic.Value(u64) = .init(0),
+        failed_dials: std.atomic.Value(u64) = .init(0),
+        inbound: std.atomic.Value(u64) = .init(0),
+        handshakes: std.atomic.Value(u64) = .init(0),
+        disconnects: std.atomic.Value(u64) = .init(0),
+    };
+
     allocator: std.mem.Allocator,
     io: std.Io,
 
@@ -171,6 +179,8 @@ pub const Server = struct {
 
     batch_op_storage: []std.Io.Operation.Storage,
     batch: std.Io.Batch,
+
+    stats: Stats = .{},
 
     pub fn init(allocator: std.mem.Allocator, io: std.Io, identity: Ecdsa.KeyPair, port: u16, proto_handlers: []RegisteredCapability) !Self {
         const addr: std.Io.net.IpAddress = .{ .ip4 = .unspecified(port) };
@@ -290,6 +300,7 @@ pub const Server = struct {
         errdefer slot.status.store(.Empty, .release);
         slot.peer = try .init(self.allocator, stream, self);
         slot.status.store(.Ready, .release);
+        _ = self.stats.inbound.fetchAdd(1, .monotonic);
     }
 
     fn listenPeers(self: *Self) !void {
@@ -446,7 +457,16 @@ pub const Server = struct {
         slot.peer.deinit(self.allocator, self.io);
         slot.peer = undefined;
         slot.epoch += 1;
+        _ = self.stats.disconnects.fetchAdd(1, .monotonic);
         slot.status.store(.Empty, .release);
+    }
+
+    pub fn connectionCount(self: *Self) usize {
+        var count: usize = 0;
+        for (self.slots) |*slot| {
+            if (slot.status.load(.acquire) == .Active) count += 1;
+        }
+        return count;
     }
 
     fn allocateSlot(self: *Self) !*PeerSlot {
@@ -474,6 +494,8 @@ pub const Server = struct {
     pub fn dial(self: *Self, record: enr.Record) !void {
         const remote_addr = record.tcpAddr().?;
         log.debug("dialing peer {any}", .{record.tcpAddr()});
+        _ = self.stats.dials.fetchAdd(1, .monotonic);
+        errdefer _ = self.stats.failed_dials.fetchAdd(1, .monotonic);
 
         const slot = try self.allocateSlot();
         errdefer slot.status.store(.Empty, .release);
@@ -710,6 +732,7 @@ const Peer = struct {
                             if (hello.version < p2p_version) return error.IncompatibleVersion;
                             const caps = try self.server.sharedCaps(allocator, hello.caps);
                             log.debug("received hello from {} id {s}", .{ self.server.peerId(self), hello.client_id });
+                            _ = self.server.stats.handshakes.fetchAdd(1, .monotonic);
                             self.status = .{ .active = .{ .session = session.*, .caps = caps } };
                             for (caps) |c| {
                                 const handler = &self.server.proto_handlers[c.registered_cap_index];

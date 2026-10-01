@@ -15,6 +15,7 @@ const List = @import("../free_list.zig").List;
 const max_inflight_requests = 100;
 const header_persist_chunk = 1024;
 const batch_storage_code_req_size = 256;
+const progress_log_interval: std.Io.Duration = .fromSeconds(8);
 
 const log = std.log.scoped(.downloader);
 
@@ -25,6 +26,7 @@ fn Request(comptime msg: type) type {
         msg: msg,
         sent_at: std.Io.Timestamp,
         deadline: std.Io.Timestamp,
+        keyspace: [2]u256 = .{ 0, 0 },
     };
 }
 
@@ -84,6 +86,13 @@ pub const Downloader = struct {
         } = null,
         pivot_hash_buf: [1][32]u8 = undefined,
     } = null,
+    progress: struct {
+        headers: u64 = 0,
+        account_keyspace: u256 = 0,
+        storage_keyspace: u256 = 0,
+        code_keyspace: u256 = 0,
+        last_log: ?std.Io.Timestamp = null,
+    } = .{},
 
     pub fn init(
         io: std.Io,
@@ -158,6 +167,7 @@ pub const Downloader = struct {
     }
 
     fn handleTick(self: *Self) !void {
+        self.logProgress();
         if (self.header != null) {
             try self.advanceHeaderDownload();
         }
@@ -195,6 +205,15 @@ pub const Downloader = struct {
             const request: *List(Request(Message)).Node = @alignCast(@fieldParentPtr("node", node));
 
             if (request.elem.deadline.toMilliseconds() < now.toMilliseconds()) {
+                if (!std.meta.eql(request.elem.peer, invalid_peer)) {
+                    log.warn("{t} request {} to {} timed out after {}ms (timeout {}ms)", .{
+                        std.meta.activeTag(request.elem.msg),
+                        request.elem.id,
+                        request.elem.peer,
+                        request.elem.sent_at.durationTo(now).toMilliseconds(),
+                        request.elem.sent_at.durationTo(request.elem.deadline).toMilliseconds(),
+                    });
+                }
                 provider.observeDelay(request.elem.peer, std.meta.activeTag(request.elem.msg), request.elem.sent_at.durationTo(now));
                 reissue_fn(self, &request.elem) catch {};
             }
@@ -244,6 +263,7 @@ pub const Downloader = struct {
             };
             self.state = .{ .pivot = try self.bc.readHeader(0) orelse unreachable };
         }
+        if (self.sync_target == null) self.progress.headers = 0;
         self.sync_target = .{
             .hash = hash,
             .number = number,
@@ -365,6 +385,7 @@ pub const Downloader = struct {
                     .amount = headers_request.range.amount - headers.len,
                 };
             }
+            self.progress.headers += headers.len;
             log.debug("validated header range start {} end {} invalidated {any}", .{ headers[0].number, headers[0].number + headers.len - 1, invalidated_range });
         } else followup_request = headers_request.range;
 
@@ -639,6 +660,7 @@ pub const Downloader = struct {
                 self.allocator.free(code_hashes);
             }
 
+            const batch_start = std.mem.readInt(u256, &state.storage_fetch_head, .big);
             while (true) {
                 const cur = try account_iterator.getCurrentEntry();
                 state.storage_fetch_head = cur.key[0..32].*;
@@ -671,6 +693,9 @@ pub const Downloader = struct {
                 }
             }
 
+            const batch_keyspace: [2]u256 = .{ batch_start, std.mem.readInt(u256, &state.storage_fetch_head, .big) };
+            storage_request.?.keyspace = batch_keyspace;
+            code_request.?.keyspace = batch_keyspace;
             self.requestStorageRanges(storage_request.?, state.pivot.state_root, account_hashes);
             self.requestCodes(code_request.?, code_hashes);
         }
@@ -789,12 +814,14 @@ pub const Downloader = struct {
             },
             .storage_ranges => |storage_ranges| {
                 if (self.matchRequest(snap.Message, self.snap_provider, &self.inflight_snap_requests, peer, storage_ranges.id, .get_storage_ranges)) |req| {
+                    self.progress.storage_keyspace +|= req.keyspace[1] - req.keyspace[0];
                     self.allocator.free(req.msg.get_storage_ranges.account_hashes);
                     self.free_snap_requests.push(req);
                 }
             },
             .byte_codes => |byte_codes| {
                 if (self.matchRequest(snap.Message, self.snap_provider, &self.inflight_snap_requests, peer, byte_codes.id, .get_byte_codes)) |req| {
+                    self.progress.code_keyspace +|= req.keyspace[1] - req.keyspace[0];
                     self.allocator.free(req.msg.get_byte_codes.hashes);
                     self.free_snap_requests.push(req);
                 }
@@ -848,6 +875,8 @@ pub const Downloader = struct {
             if (has_more and std.mem.order(u8, &last, &get_accounts_range.limit) == .lt)
                 remaining = .{ last, get_accounts_range.limit };
             try self.persistAccounts(hashes, response);
+            const covered_until = if (has_more) last else get_accounts_range.limit;
+            self.progress.account_keyspace +|= std.mem.readInt(u256, &covered_until, .big) - std.mem.readInt(u256, &get_accounts_range.origin, .big);
         } else |_| {
             remaining = .{ get_accounts_range.origin, get_accounts_range.limit };
         }
@@ -964,6 +993,54 @@ pub const Downloader = struct {
         }
 
         return bal.len;
+    }
+
+    fn logProgress(self: *Self) void {
+        const now = std.Io.Clock.now(.real, self.io);
+        if (self.progress.last_log) |last| {
+            if (last.durationTo(now).nanoseconds < progress_log_interval.nanoseconds) return;
+        }
+        self.progress.last_log = now;
+
+        if (self.eth_provider.server) |server| {
+            log.info("peers: {}/{} connections, eth {}, snap {}; dials {} (failed {}), inbound {}, handshakes {}, disconnects {}", .{
+                server.connectionCount(),
+                rlpx.Server.max_peers,
+                self.eth_provider.peerCount(),
+                self.snap_provider.peerCount(),
+                server.stats.dials.load(.monotonic),
+                server.stats.failed_dials.load(.monotonic),
+                server.stats.inbound.load(.monotonic),
+                server.stats.handshakes.load(.monotonic),
+                server.stats.disconnects.load(.monotonic),
+            });
+        }
+
+        if (self.sync_target) |target| {
+            const total_headers = target.number - target.cutoff_number + 1;
+            log.info("header download: {d:.2}% ({}/{} headers), target {}, inflight requests {}", .{
+                @as(f64, @floatFromInt(self.progress.headers)) / @as(f64, @floatFromInt(total_headers)) * 100,
+                self.progress.headers,
+                total_headers,
+                target.number,
+                self.inflight_eth_requests.inner.len(),
+            });
+        }
+        if (self.state) |state| {
+            log.info("state download: pivot {}, accounts {d:.2}% (done: {}), storage {d:.2}%, codes {d:.2}%, inflight requests {}, healing {}", .{
+                state.pivot.number,
+                keyspacePercent(self.progress.account_keyspace),
+                state.accounts_done,
+                keyspacePercent(self.progress.storage_keyspace),
+                keyspacePercent(self.progress.code_keyspace),
+                self.inflight_snap_requests.inner.len(),
+                self.state_heal != null,
+            });
+        }
+    }
+
+    fn keyspacePercent(covered: u256) f64 {
+        return @as(f64, @floatFromInt(@as(u64, @truncate(covered >> 192)))) / std.math.pow(f64, 2, 64) * 100;
     }
 
     fn matchRequest(

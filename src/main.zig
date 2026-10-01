@@ -20,7 +20,7 @@ const RpcServer = @import("rpc/jsonrpc.zig").Server;
 const RpcHttpServer = @import("rpc/http.zig").HttpServer;
 
 pub const std_options: std.Options = .{
-    .log_level = .debug,
+    .log_level = .info,
     .logFn = @import("log.zig").timestamped,
 };
 
