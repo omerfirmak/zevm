@@ -661,7 +661,7 @@ pub const Downloader = struct {
             }
 
             const batch_start = std.mem.readInt(u256, &state.storage_fetch_head, .big);
-            while (true) {
+            const accounts_exhausted = while (true) {
                 const cur = try account_iterator.getCurrentEntry();
                 state.storage_fetch_head = cur.key[0..32].*;
 
@@ -675,7 +675,7 @@ pub const Downloader = struct {
 
                 if (has_code and code_hashes.len == batch_storage_code_req_size or
                     has_storage and account_hashes.len == batch_storage_code_req_size)
-                    break;
+                    break false;
 
                 if (has_code) {
                     code_hashes.len += 1;
@@ -687,17 +687,23 @@ pub const Downloader = struct {
                     account_hashes[account_hashes.len - 1] = cur.key[0..32].*;
                 }
 
-                if (try account_iterator.goToNext() == null) {
-                    state.storage_and_fetch_initiated = true;
-                    return;
-                }
-            }
+                if (try account_iterator.goToNext() == null) break true;
+            };
 
-            const batch_keyspace: [2]u256 = .{ batch_start, std.mem.readInt(u256, &state.storage_fetch_head, .big) };
-            storage_request.?.keyspace = batch_keyspace;
-            code_request.?.keyspace = batch_keyspace;
+            const batch_end = if (accounts_exhausted) std.math.maxInt(u256) else std.mem.readInt(
+                u256,
+                &state.storage_fetch_head,
+                .big,
+            );
+            storage_request.?.keyspace = .{ batch_start, batch_end };
+            code_request.?.keyspace = .{ batch_start, batch_end };
             self.requestStorageRanges(storage_request.?, state.pivot.state_root, account_hashes);
             self.requestCodes(code_request.?, code_hashes);
+
+            if (accounts_exhausted) {
+                state.storage_and_fetch_initiated = true;
+                return;
+            }
         }
     }
 
