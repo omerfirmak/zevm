@@ -708,16 +708,13 @@ pub const Downloader = struct {
         for (self.stashed_snap_requests) |stashed_req| {
             const req = self.free_snap_requests.pop() orelse unreachable;
             req.* = stashed_req;
-            req.id = self.snap_provider.nextRequestId();
             switch (req.msg) {
-                .get_account_range => |*account_range_req| {
-                    account_range_req.id = req.id;
-                    account_range_req.root = pivot_root;
-                },
+                .get_account_range => |*account_range_req| account_range_req.root = pivot_root,
+                .get_storage_ranges => |*storage_ranges_req| storage_ranges_req.root_hash = pivot_root,
                 else => {},
             }
 
-            self.inflight_snap_requests.push(req);
+            self.sendSnapRequest(req) catch {};
         }
     }
 
