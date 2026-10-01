@@ -917,7 +917,7 @@ pub const Downloader = struct {
                 }
             }
             self.requestBals(req, state_heal.pivot_hash_buf[0..1]);
-        }
+        } else unreachable;
     }
 
     fn applyBal(self: *Self, bal: types.BlockAccessLists, resume_index: usize) !usize {
