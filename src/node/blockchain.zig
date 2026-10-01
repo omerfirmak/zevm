@@ -149,3 +149,38 @@ test "mainnet genesis hash" {
     const expected: [32]u8 = .{ 0xd4, 0xe5, 0x67, 0x40, 0xf8, 0x76, 0xae, 0xf8, 0xc0, 0x10, 0xb8, 0x6a, 0x40, 0xd5, 0xf5, 0x67, 0x45, 0xa1, 0x18, 0xd0, 0x90, 0x6a, 0x34, 0xe6, 0x9a, 0xec, 0x8c, 0x0d, 0xb1, 0xcb, 0x8f, 0xa3 };
     try std.testing.expectEqual(expected, mainnet_config.genesis_header.hash());
 }
+
+pub const sepolia_config: Config = .{
+    .chain_id = 11155111,
+    .genesis_header = .{
+        .parent_hash = .{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+        .ommers_hash = .{ 29, 204, 77, 232, 222, 199, 93, 122, 171, 133, 181, 103, 182, 204, 212, 26, 211, 18, 69, 27, 148, 138, 116, 19, 240, 161, 66, 253, 64, 212, 147, 71 },
+        .beneficiary = .{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+        .state_root = .{ 94, 182, 227, 113, 166, 152, 184, 214, 143, 102, 81, 146, 53, 15, 252, 236, 187, 191, 50, 41, 22, 244, 181, 27, 215, 155, 182, 136, 125, 163, 244, 148 },
+        .transactions_root = .{ 86, 232, 31, 23, 27, 204, 85, 166, 255, 131, 69, 230, 146, 192, 248, 110, 91, 72, 224, 27, 153, 108, 173, 192, 1, 98, 47, 181, 227, 99, 180, 33 },
+        .receipts_root = .{ 86, 232, 31, 23, 27, 204, 85, 166, 255, 131, 69, 230, 146, 192, 248, 110, 91, 72, 224, 27, 153, 108, 173, 192, 1, 98, 47, 181, 227, 99, 180, 33 },
+        .logs_bloom = .{0} ** 256,
+        .difficulty = 131072,
+        .number = 0,
+        .gas_limit = 30000000,
+        .gas_used = 0,
+        .timestamp = 1633267481,
+        .extra_data = .{ .buf = .{ 83, 101, 112, 111, 108, 105, 97, 44, 32, 65, 116, 104, 101, 110, 115, 44, 32, 65, 116, 116, 105, 99, 97, 44, 32, 71, 114, 101, 101, 99, 101, 33 }, .len = 32 },
+        .mix_hash = .{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+        .nonce = .{ 0, 0, 0, 0, 0, 0, 0, 0 },
+        .base_fee_per_gas = 1000000000,
+        .withdrawals_root = null,
+        .blob_gas_used = null,
+        .excess_blob_gas = null,
+        .parent_beacon_block_root = null,
+        .requests_hash = null,
+        .block_access_list_hash = null,
+        .slot_number = null,
+    },
+    .fork_schedule = forks.sepolia_schedule,
+};
+
+test "sepolia genesis hash" {
+    const expected: [32]u8 = .{ 0x25, 0xa5, 0xcc, 0x10, 0x6e, 0xea, 0x71, 0x38, 0xac, 0xab, 0x33, 0x23, 0x1d, 0x71, 0x60, 0xd6, 0x9c, 0xb7, 0x77, 0xee, 0x0c, 0x2c, 0x55, 0x3f, 0xcd, 0xdf, 0x51, 0x38, 0x99, 0x3e, 0x6d, 0xd9 };
+    try std.testing.expectEqual(expected, sepolia_config.genesis_header.hash());
+}

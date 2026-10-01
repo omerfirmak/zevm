@@ -61,6 +61,18 @@ pub const mainnet_schedule = Schedule.init(.{
     .BPO2 = 1767747671,
 });
 
+// Forks activated at genesis are omitted, they don't contribute to the fork id.
+pub const sepolia_schedule = Schedule.init(.{
+    .Paris = 1_735_371,
+    .Shanghai = 1677557088,
+    .Cancun = 1706655072,
+    .Prague = 1741159776,
+    .Osaka = 1760427360,
+    .BPO1 = 1761017184,
+    .BPO2 = 1761607008,
+    .Amsterdam = 1791294816,
+});
+
 pub const glamsterdam_devnet8_schedule = Schedule.init(.{
     .Amsterdam = 1_787_212_224,
 });
