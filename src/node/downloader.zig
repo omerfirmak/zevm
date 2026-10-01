@@ -752,7 +752,6 @@ pub const Downloader = struct {
 
         if (state_heal.bal_requested == false) {
             const bal_req = self.free_eth_requests.pop() orelse return;
-            errdefer self.free_eth_requests.push(bal_req);
 
             state_heal.pivot_hash_buf[0] = state_heal.next_pivot.hash();
             self.requestBals(bal_req, state_heal.pivot_hash_buf[0..1]);
