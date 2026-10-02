@@ -48,11 +48,13 @@ pub const Downloader = struct {
     eth_provider: *eth.Provider,
     free_eth_requests: List(Request(eth.Message)),
     inflight_eth_requests: List(Request(eth.Message)) = .{},
+    pending_eth_requests: List(Request(eth.Message)) = .{},
 
     snap_arena: std.heap.ArenaAllocator,
     snap_provider: *snap.Provider,
     free_snap_requests: List(Request(snap.Message)),
     inflight_snap_requests: List(Request(snap.Message)) = .{},
+    pending_snap_requests: List(Request(snap.Message)) = .{},
     stashed_snap_requests: []Request(snap.Message),
 
     sync_target: ?struct {
@@ -183,20 +185,22 @@ pub const Downloader = struct {
     }
 
     fn checkEthRequestTimeouts(self: *Self) !void {
-        return self.checkRequestTimeouts(eth.Message, &self.inflight_eth_requests, self.eth_provider, Self.reissueEthRequest);
+        self.checkRequestTimeouts(eth.Message, &self.inflight_eth_requests, &self.pending_eth_requests, self.eth_provider);
+        self.drainPendingEthRequests();
     }
 
     fn checkSnapRequestTimeouts(self: *Self) !void {
-        return self.checkRequestTimeouts(snap.Message, &self.inflight_snap_requests, self.snap_provider, Self.reissueSnapRequest);
+        self.checkRequestTimeouts(snap.Message, &self.inflight_snap_requests, &self.pending_snap_requests, self.snap_provider);
+        self.drainPendingSnapRequests();
     }
 
     fn checkRequestTimeouts(
         self: *Self,
         comptime Message: type,
         list: *List(Request(Message)),
+        pending: *List(Request(Message)),
         provider: anytype,
-        reissue_fn: anytype,
-    ) !void {
+    ) void {
         var current_node = list.inner.first;
 
         const now = std.Io.Clock.now(.real, self.io);
@@ -216,7 +220,8 @@ pub const Downloader = struct {
                 }
                 const assumed_rtt: std.Io.Duration = .fromNanoseconds(request.elem.sent_at.durationTo(now).nanoseconds * 2);
                 provider.observeDelay(request.elem.peer, std.meta.activeTag(request.elem.msg), assumed_rtt);
-                reissue_fn(self, &request.elem) catch {};
+                list.inner.remove(node);
+                pending.prepend(&request.elem);
             }
 
             current_node = next_node;
@@ -248,6 +253,7 @@ pub const Downloader = struct {
             },
             else => {},
         }
+        self.drainPendingEthRequests();
     }
 
     fn updateTarget(self: *Self, number: u64, hash: [32]u8) !void {
@@ -310,8 +316,19 @@ pub const Downloader = struct {
     }
 
     fn sendEthRequest(self: *Self, req: *Request(eth.Message)) !void {
-        self.inflight_eth_requests.push(req);
-        return self.sendRequest(self.eth_provider, Self.pickEthPeer, req);
+        self.pending_eth_requests.push(req);
+        self.drainPendingEthRequests();
+    }
+
+    fn drainPendingEthRequests(self: *Self) void {
+        drainPendingRequests(self, &self.pending_eth_requests, &self.inflight_eth_requests, Self.reissueEthRequest);
+    }
+
+    fn drainPendingRequests(self: *Self, pending: anytype, inflight: anytype, send_fn: anytype) void {
+        while (pending.pop()) |req| {
+            send_fn(self, req) catch return pending.prepend(req);
+            inflight.push(req);
+        }
     }
 
     fn advanceHeaderDownload(self: *Self) !void {
@@ -327,7 +344,7 @@ pub const Downloader = struct {
                 req,
                 .{ .hash = target.hash },
                 target.number - status.requested_header_head,
-            ) catch return self.free_eth_requests.push(req);
+            ) catch self.pending_eth_requests.prepend(req);
             status.requested_header_head = target.number;
         }
 
@@ -368,7 +385,7 @@ pub const Downloader = struct {
         const hashes, const headers = self.validateHeadersResponse(headers_request, response) catch |e| {
             log.debug("header validation failed for origin {} amount {}: {t}", .{ headers_request.range.origin, headers_request.range.amount, e });
             self.requestHeaders(matched_request, headers_request.range.origin, headers_request.range.amount) catch
-                self.inflight_eth_requests.push(matched_request);
+                self.pending_eth_requests.prepend(matched_request);
             return;
         };
 
@@ -396,7 +413,7 @@ pub const Downloader = struct {
 
         if (followup_request) |followup| {
             self.requestHeaders(matched_request, followup.origin, followup.amount) catch
-                self.inflight_eth_requests.push(matched_request);
+                self.pending_eth_requests.prepend(matched_request);
         } else {
             self.free_eth_requests.push(matched_request);
             try self.advanceHeaderDownload();
@@ -533,6 +550,7 @@ pub const Downloader = struct {
             self.header.?.requested_header_tail > self.sync_target.?.cutoff_number)
             return;
 
+        if (!self.pending_eth_requests.empty()) return;
         var current_node = self.inflight_eth_requests.inner.first;
         while (current_node) |node| {
             const next_node = node.next;
@@ -610,7 +628,9 @@ pub const Downloader = struct {
         if (state.accounts_done and !state.storage_and_fetch_initiated)
             try self.advanceStorageAndCodeDownload();
 
-        if (self.state.?.pivot.number > 0 and self.inflight_snap_requests.empty() and self.stashed_snap_requests.len == 0) {
+        if (self.state.?.pivot.number > 0 and self.inflight_snap_requests.empty() and
+            self.pending_snap_requests.empty() and self.stashed_snap_requests.len == 0)
+        {
             if (state.accounts_done and state.storage_and_fetch_initiated) {
                 self.state = null;
                 log.info("state download done", .{});
@@ -731,7 +751,7 @@ pub const Downloader = struct {
     }
 
     fn stashSnapRequests(self: *Self) void {
-        while (self.inflight_snap_requests.pop()) |node| {
+        while (self.inflight_snap_requests.pop() orelse self.pending_snap_requests.pop()) |node| {
             self.stashed_snap_requests.len += 1;
             self.stashed_snap_requests[self.stashed_snap_requests.len - 1] = node.*;
             self.free_snap_requests.push(node);
@@ -739,7 +759,7 @@ pub const Downloader = struct {
     }
 
     fn popSnapRequests(self: *Self) void {
-        std.debug.assert(self.inflight_snap_requests.empty());
+        std.debug.assert(self.inflight_snap_requests.empty() and self.pending_snap_requests.empty());
 
         const pivot_root = self.state.?.pivot.state_root;
 
@@ -768,7 +788,7 @@ pub const Downloader = struct {
             if (bal.resume_index < bal.parsed.len) {
                 bal.resume_index = try self.applyBal(bal.parsed, bal.resume_index);
             }
-            if (bal.resume_index == bal.parsed.len and self.inflight_snap_requests.empty()) {
+            if (bal.resume_index == bal.parsed.len and self.inflight_snap_requests.empty() and self.pending_snap_requests.empty()) {
                 if (state_heal.next_pivot.number + 1 > state_heal.target_pivot.number) {
                     self.state_heal = null;
                     self.popSnapRequests();
@@ -803,8 +823,12 @@ pub const Downloader = struct {
     }
 
     fn sendSnapRequest(self: *Self, req: *Request(snap.Message)) !void {
-        self.inflight_snap_requests.push(req);
-        return self.sendRequest(self.snap_provider, Self.pickSnapPeer, req);
+        self.pending_snap_requests.push(req);
+        self.drainPendingSnapRequests();
+    }
+
+    fn drainPendingSnapRequests(self: *Self) void {
+        drainPendingRequests(self, &self.pending_snap_requests, &self.inflight_snap_requests, Self.reissueSnapRequest);
     }
 
     fn requestAccountRange(self: *Self, req: *Request(snap.Message), state_root: [32]u8, origin: [32]u8, limit: [32]u8) void {
@@ -840,6 +864,7 @@ pub const Downloader = struct {
             },
             else => {},
         }
+        self.drainPendingSnapRequests();
         if (self.state != null)
             try self.advanceStateDownload();
     }
