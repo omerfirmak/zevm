@@ -214,7 +214,8 @@ pub const Downloader = struct {
                         request.elem.sent_at.durationTo(request.elem.deadline).toMilliseconds(),
                     });
                 }
-                provider.observeDelay(request.elem.peer, std.meta.activeTag(request.elem.msg), request.elem.sent_at.durationTo(now));
+                const assumed_rtt: std.Io.Duration = .fromNanoseconds(request.elem.sent_at.durationTo(now).nanoseconds * 2);
+                provider.observeDelay(request.elem.peer, std.meta.activeTag(request.elem.msg), assumed_rtt);
                 reissue_fn(self, &request.elem) catch {};
             }
 
