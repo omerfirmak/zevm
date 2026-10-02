@@ -284,9 +284,12 @@ pub const Downloader = struct {
 
     fn pickEthPeer(self: *Self, msg: eth.Message) !rlpx.Server.PeerId {
         switch (msg) {
-            .get_block_headers => |header_req| switch (header_req.range.origin) {
-                .number => |number| return self.eth_provider.pickRandomPeer(PeerFilter(eth.Message).init(self, &self.inflight_eth_requests, number)),
-                else => {},
+            .get_block_headers => |header_req| {
+                const height = switch (header_req.range.origin) {
+                    .number => |number| number,
+                    .hash => self.sync_target.?.number,
+                };
+                return self.eth_provider.pickRandomPeer(PeerFilter(eth.Message).init(self, &self.inflight_eth_requests, height));
             },
             else => {},
         }
