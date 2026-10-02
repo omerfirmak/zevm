@@ -320,12 +320,13 @@ pub const Downloader = struct {
         var status = &self.header.?;
         if (status.requested_header_tail != std.math.maxInt(u64) and status.requested_header_head < target.number) {
             // target moved, fill the gap from new head to old head
+            const req = self.free_eth_requests.pop() orelse return;
             requestHeaders(
                 self,
-                self.free_eth_requests.pop() orelse return,
+                req,
                 .{ .hash = target.hash },
                 target.number - status.requested_header_head,
-            );
+            ) catch return self.free_eth_requests.push(req);
             status.requested_header_head = target.number;
         }
 
@@ -335,26 +336,28 @@ pub const Downloader = struct {
             else
                 .{ .{ .number = status.requested_header_tail }, status.requested_header_tail };
             const batch_size = @as(u64, @min(1023, origin_num - target.cutoff_number)) + 1;
+            const req = self.free_eth_requests.pop() orelse return;
             requestHeaders(
                 self,
-                self.free_eth_requests.pop() orelse return,
+                req,
                 origin,
                 batch_size,
-            );
+            ) catch return self.free_eth_requests.push(req);
             status.requested_header_tail = (origin_num + 1) - batch_size;
             if (status.requested_header_head < origin_num)
                 status.requested_header_head = origin_num;
         }
     }
 
-    fn requestHeaders(self: *Self, req: *Request(eth.Message), origin: eth.HashOrNumber, amount: u64) void {
+    fn requestHeaders(self: *Self, req: *Request(eth.Message), origin: eth.HashOrNumber, amount: u64) !void {
         req.msg = .{ .get_block_headers = .{ .range = .{
             .origin = origin,
             .amount = amount,
             .skip = 0,
             .reverse = true,
         } } };
-        self.sendEthRequest(req) catch {};
+        try self.sendRequest(self.eth_provider, Self.pickEthPeer, req);
+        self.inflight_eth_requests.push(req);
         log.debug("requesting headers origin {} amount {}", .{ origin, amount });
     }
 
@@ -363,7 +366,8 @@ pub const Downloader = struct {
 
         const hashes, const headers = self.validateHeadersResponse(headers_request, response) catch |e| {
             log.debug("header validation failed for origin {} amount {}: {t}", .{ headers_request.range.origin, headers_request.range.amount, e });
-            self.requestHeaders(matched_request, headers_request.range.origin, headers_request.range.amount);
+            self.requestHeaders(matched_request, headers_request.range.origin, headers_request.range.amount) catch
+                self.inflight_eth_requests.push(matched_request);
             return;
         };
 
@@ -390,7 +394,8 @@ pub const Downloader = struct {
         } else followup_request = headers_request.range;
 
         if (followup_request) |followup| {
-            self.requestHeaders(matched_request, followup.origin, followup.amount);
+            self.requestHeaders(matched_request, followup.origin, followup.amount) catch
+                self.inflight_eth_requests.push(matched_request);
         } else {
             self.free_eth_requests.push(matched_request);
             try self.advanceHeaderDownload();
