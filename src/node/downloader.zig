@@ -13,6 +13,7 @@ const verifyRangeProof = @import("../trie/range_proof.zig").verifyRangeProof;
 const EthDb = @import("../db/eth.zig").Eth;
 const List = @import("../free_list.zig").List;
 const max_inflight_requests = 100;
+const max_inflight_requests_per_peer = 2;
 const header_persist_chunk = 1024;
 const batch_storage_code_req_size = 256;
 const progress_log_interval: std.Io.Duration = .fromSeconds(8);
@@ -284,12 +285,12 @@ pub const Downloader = struct {
     fn pickEthPeer(self: *Self, msg: eth.Message) !rlpx.Server.PeerId {
         switch (msg) {
             .get_block_headers => |header_req| switch (header_req.range.origin) {
-                .number => |number| return self.eth_provider.pickRandomPeer(HeightFilter.init(number, self)),
+                .number => |number| return self.eth_provider.pickRandomPeer(PeerFilter(eth.Message).init(self, &self.inflight_eth_requests, number)),
                 else => {},
             },
             else => {},
         }
-        return self.eth_provider.pickRandomPeer({});
+        return self.eth_provider.pickRandomPeer(PeerFilter(eth.Message).init(self, &self.inflight_eth_requests, null));
     }
 
     fn sendRequest(self: *Self, provider: anytype, pick_peer_fn: anytype, req: anytype) !void {
@@ -334,6 +335,9 @@ pub const Downloader = struct {
     fn advanceHeaderDownload(self: *Self) !void {
         if (self.sync_target == null) return;
         const target = self.sync_target.?;
+
+        self.drainPendingEthRequests();
+        if (!self.pending_eth_requests.empty()) return;
 
         var status = &self.header.?;
         if (status.requested_header_tail != std.math.maxInt(u64) and status.requested_header_head < target.number) {
@@ -815,7 +819,7 @@ pub const Downloader = struct {
     }
 
     fn pickSnapPeer(self: *Self, _: snap.Message) !rlpx.Server.PeerId {
-        return self.snap_provider.pickRandomPeer(HeightFilter.init(self.state.?.pivot.number, self));
+        return self.snap_provider.pickRandomPeer(PeerFilter(snap.Message).init(self, &self.inflight_snap_requests, self.state.?.pivot.number));
     }
 
     fn reissueSnapRequest(self: *Self, req: *Request(snap.Message)) !void {
@@ -1135,21 +1139,36 @@ const invalid_peer: rlpx.Server.PeerId = .{
     .peer_epoch = std.math.maxInt(usize),
 };
 
-const HeightFilter = struct {
-    min_height: u64,
-    downloader: *Downloader,
+fn PeerFilter(comptime Message: type) type {
+    return struct {
+        downloader: *Downloader,
+        min_height: ?u64,
+        inflight: [rlpx.Server.max_peers]struct { epoch: usize = 0, count: usize = 0 } = @splat(.{}),
 
-    fn init(min_height: u64, downloader: *Downloader) HeightFilter {
-        return .{ .downloader = downloader, .min_height = min_height };
-    }
-
-    pub fn validPeer(self: *const HeightFilter, peer_id: rlpx.Server.PeerId) bool {
-        if (self.downloader.peer_ranges[peer_id.peer_index]) |peer_range| {
-            return peer_range.id.peer_epoch == peer_id.peer_epoch and self.min_height <= peer_range.range.latest_block;
+        fn init(downloader: *Downloader, inflight: *List(Request(Message)), min_height: ?u64) @This() {
+            var self: @This() = .{ .downloader = downloader, .min_height = min_height };
+            var current_node = inflight.inner.first;
+            while (current_node) |node| : (current_node = node.next) {
+                const request: *List(Request(Message)).Node = @alignCast(@fieldParentPtr("node", node));
+                const peer = request.elem.peer;
+                const slot = &self.inflight[peer.peer_index];
+                if (peer.peer_epoch > slot.epoch) slot.* = .{ .epoch = peer.peer_epoch };
+                if (peer.peer_epoch == slot.epoch) slot.count += 1;
+            }
+            return self;
         }
-        return false;
-    }
-};
+
+        pub fn validPeer(self: *const @This(), peer_id: rlpx.Server.PeerId) bool {
+            if (self.min_height) |min_height| {
+                const peer_range = self.downloader.peer_ranges[peer_id.peer_index] orelse return false;
+                if (peer_range.id.peer_epoch != peer_id.peer_epoch or min_height > peer_range.range.latest_block) return false;
+            }
+
+            const slot = self.inflight[peer_id.peer_index];
+            return slot.epoch != peer_id.peer_epoch or slot.count < max_inflight_requests_per_peer;
+        }
+    };
+}
 
 fn slimToFullAccount(slim: snap.SlimAccount) types.Account {
     return .{
