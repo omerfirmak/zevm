@@ -316,8 +316,8 @@ pub const Downloader = struct {
         return self.sendRequest(self.eth_provider, Self.pickEthPeer, req);
     }
 
-    fn sendEthRequest(self: *Self, req: *Request(eth.Message)) !void {
-        self.pending_eth_requests.push(req);
+    fn sendEthRequest(self: *Self, req: *Request(eth.Message), urgent: bool) void {
+        if (urgent) self.pending_eth_requests.prepend(req) else self.pending_eth_requests.push(req);
         self.drainPendingEthRequests();
     }
 
@@ -336,19 +336,15 @@ pub const Downloader = struct {
         if (self.sync_target == null) return;
         const target = self.sync_target.?;
 
-        self.drainPendingEthRequests();
-        if (!self.pending_eth_requests.empty()) return;
-
         var status = &self.header.?;
         if (status.requested_header_tail != std.math.maxInt(u64) and status.requested_header_head < target.number) {
             // target moved, fill the gap from new head to old head
-            const req = self.free_eth_requests.pop() orelse return;
             requestHeaders(
                 self,
-                req,
+                self.free_eth_requests.pop() orelse return,
                 .{ .hash = target.hash },
                 target.number - status.requested_header_head,
-            ) catch self.pending_eth_requests.prepend(req);
+            );
             status.requested_header_head = target.number;
         }
 
@@ -358,28 +354,26 @@ pub const Downloader = struct {
             else
                 .{ .{ .number = status.requested_header_tail }, status.requested_header_tail };
             const batch_size = @as(u64, @min(1023, origin_num - target.cutoff_number)) + 1;
-            const req = self.free_eth_requests.pop() orelse return;
             requestHeaders(
                 self,
-                req,
+                self.free_eth_requests.pop() orelse return,
                 origin,
                 batch_size,
-            ) catch return self.free_eth_requests.push(req);
+            );
             status.requested_header_tail = (origin_num + 1) - batch_size;
             if (status.requested_header_head < origin_num)
                 status.requested_header_head = origin_num;
         }
     }
 
-    fn requestHeaders(self: *Self, req: *Request(eth.Message), origin: eth.HashOrNumber, amount: u64) !void {
+    fn requestHeaders(self: *Self, req: *Request(eth.Message), origin: eth.HashOrNumber, amount: u64) void {
         req.msg = .{ .get_block_headers = .{ .range = .{
             .origin = origin,
             .amount = amount,
             .skip = 0,
             .reverse = true,
         } } };
-        try self.sendRequest(self.eth_provider, Self.pickEthPeer, req);
-        self.inflight_eth_requests.push(req);
+        self.sendEthRequest(req, origin == .hash);
         log.debug("requesting headers origin {} amount {}", .{ origin, amount });
     }
 
@@ -388,8 +382,7 @@ pub const Downloader = struct {
 
         const hashes, const headers = self.validateHeadersResponse(headers_request, response) catch |e| {
             log.debug("header validation failed for origin {} amount {}: {t}", .{ headers_request.range.origin, headers_request.range.amount, e });
-            self.requestHeaders(matched_request, headers_request.range.origin, headers_request.range.amount) catch
-                self.pending_eth_requests.prepend(matched_request);
+            self.requestHeaders(matched_request, headers_request.range.origin, headers_request.range.amount);
             return;
         };
 
@@ -416,8 +409,7 @@ pub const Downloader = struct {
         } else followup_request = headers_request.range;
 
         if (followup_request) |followup| {
-            self.requestHeaders(matched_request, followup.origin, followup.amount) catch
-                self.pending_eth_requests.prepend(matched_request);
+            self.requestHeaders(matched_request, followup.origin, followup.amount);
         } else {
             self.free_eth_requests.push(matched_request);
             try self.advanceHeaderDownload();
@@ -782,7 +774,7 @@ pub const Downloader = struct {
 
     fn requestBals(self: *Self, req: *Request(eth.Message), hashes: [][32]u8) void {
         req.msg = .{ .get_block_access_list = .{ .hashes = hashes } };
-        self.sendEthRequest(req) catch {};
+        self.sendEthRequest(req, true);
     }
 
     fn advanceStateHeal(self: *Self) !void {
