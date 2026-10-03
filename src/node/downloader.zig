@@ -694,7 +694,7 @@ pub const Downloader = struct {
 
                 var has_code = false;
                 if (!std.meta.eql(acc.code_hash, types.empty_code_hash)) {
-                    has_code = if (try codes_iterator.seekLowerBound(&acc.code_hash)) |res| res.exact else true;
+                    has_code = if (try codes_iterator.seekLowerBound(&acc.code_hash)) |res| !res.exact else true;
                 }
                 const has_storage = !std.meta.eql(acc.storage_hash, types.empty_root_hash);
 
@@ -856,9 +856,7 @@ pub const Downloader = struct {
             },
             .byte_codes => |byte_codes| {
                 if (self.matchRequest(snap.Message, self.snap_provider, &self.inflight_snap_requests, peer, byte_codes.id, .get_byte_codes)) |req| {
-                    self.progress.code_keyspace +|= req.keyspace[1] - req.keyspace[0];
-                    self.allocator.free(req.msg.get_byte_codes.hashes);
-                    self.free_snap_requests.push(req);
+                    try self.handleCodes(req, byte_codes);
                 }
             },
             else => {},
@@ -1029,6 +1027,43 @@ pub const Downloader = struct {
         }
 
         return bal.len;
+    }
+
+    fn handleCodes(self: *Self, req: *Request(snap.Message), codes: snap.ByteCodes) !void {
+        const txn = try self.eth_db.kv_store.transaction_rw();
+        defer txn.commit() catch unreachable;
+        const table = self.eth_db.kv_store.table(txn, .codes);
+
+        const requested_hashes = req.msg.get_byte_codes.hashes;
+
+        var retry_count: usize = 0;
+        var next_hash_index: usize = 0;
+        for (codes.bytecodes) |code| {
+            var code_hash: [32]u8 = undefined;
+            std.crypto.hash.sha3.Keccak256.hash(code, &code_hash, .{});
+
+            while (next_hash_index < requested_hashes.len and !std.meta.eql(requested_hashes[next_hash_index], code_hash)) : (next_hash_index += 1) {
+                requested_hashes[retry_count] = requested_hashes[next_hash_index];
+                retry_count += 1;
+            }
+            if (next_hash_index == requested_hashes.len) break;
+
+            table.set(&code_hash, code, .Create) catch |e| {
+                if (e != lmdbx.Error.MDBX_KEYEXIST) return e;
+            };
+            next_hash_index += 1;
+        }
+        const unserved = requested_hashes[next_hash_index..];
+        std.mem.copyForwards([32]u8, requested_hashes[retry_count..][0..unserved.len], unserved);
+        retry_count += unserved.len;
+
+        if (retry_count > 0) {
+            self.requestCodes(req, requested_hashes[0..retry_count]);
+        } else {
+            self.allocator.free(@as([][32]u8, requested_hashes.ptr[0..batch_storage_code_req_size]));
+            self.progress.code_keyspace +|= req.keyspace[1] - req.keyspace[0];
+            self.free_snap_requests.push(req);
+        }
     }
 
     fn logProgress(self: *Self) void {
