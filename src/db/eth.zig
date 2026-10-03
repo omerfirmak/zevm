@@ -2,6 +2,7 @@ const std = @import("std");
 const kv = @import("kv.zig");
 const types = @import("../types.zig");
 const rlp = @import("rlp");
+const lmdbx = @import("lmdbx");
 
 pub const Eth = struct {
     const Self = @This();
@@ -61,6 +62,13 @@ pub const Eth = struct {
         }, &list);
 
         try table.set(&hash, list.items, .Upsert);
+    }
+
+    pub fn deleteAccount(self: *Self, txn: kv.Transaction, hash: [32]u8) !void {
+        const table = self.kv_store.table(txn, .accounts);
+        table.delete(&hash) catch |e| {
+            if (e != lmdbx.Error.MDBX_NOTFOUND) return e;
+        };
     }
 };
 

@@ -908,7 +908,7 @@ pub const Downloader = struct {
             log.debug("verified account range {x}-{x}", .{ get_accounts_range.origin, last });
             if (has_more and std.mem.order(u8, &last, &get_accounts_range.limit) == .lt)
                 remaining = .{ last, get_accounts_range.limit };
-            try self.persistAccounts(hashes, response);
+            try self.persistAccounts(get_accounts_range, hashes, response);
             const covered_until = if (has_more) last else get_accounts_range.limit;
             self.progress.account_keyspace +|= std.mem.readInt(u256, &covered_until, .big) - std.mem.readInt(u256, &get_accounts_range.origin, .big);
         } else |_| {
@@ -940,7 +940,7 @@ pub const Downloader = struct {
         }
     }
 
-    fn persistAccounts(self: *Self, hashes: [][32]u8, response: *const snap.AccountRange) !void {
+    fn persistAccounts(self: *Self, request: snap.GetAccountRange, hashes: [][32]u8, response: *const snap.AccountRange) !void {
         const txn = try self.eth_db.kv_store.transaction_rw();
         errdefer _ = txn.abort() catch |e| {
             log.err("failed to abort txn {}", .{e});
@@ -949,6 +949,10 @@ pub const Downloader = struct {
         const table = self.eth_db.kv_store.table(txn, .accounts);
         for (hashes, 0..) |hash, index| {
             try table.set(&hash, response.accounts[index].account.value, .Upsert);
+        }
+        // a proven single account query that doesn't return the account means it no longer exists
+        if (std.meta.eql(request.origin, request.limit) and (hashes.len == 0 or !std.meta.eql(hashes[0], request.origin))) {
+            try self.eth_db.deleteAccount(txn, request.origin);
         }
 
         try txn.commit();
@@ -1022,7 +1026,9 @@ pub const Downloader = struct {
                 if (changes.code_changes.len > 0) {
                     updated_account.code_hash = code_hash;
                 }
-                try self.eth_db.writeAccount(self.allocator, txn, addr_hash, updated_account);
+                if (updated_account.isEmpty()) {
+                    try self.eth_db.deleteAccount(txn, addr_hash);
+                } else try self.eth_db.writeAccount(self.allocator, txn, addr_hash, updated_account);
             }
         }
 
