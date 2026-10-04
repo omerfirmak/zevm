@@ -17,6 +17,7 @@ const max_inflight_requests_per_peer = 2;
 const header_persist_chunk = 1024;
 const batch_storage_code_req_size = 256;
 const progress_log_interval: std.Io.Duration = .fromSeconds(8);
+const arena_retain_limit = (32 << 20) - 64;
 
 const log = std.log.scoped(.downloader);
 
@@ -145,7 +146,7 @@ pub const Downloader = struct {
             switch (select.await() catch |e| return e) {
                 .eth => |res| {
                     defer {
-                        _ = self.eth_arena.reset(.retain_capacity);
+                        _ = self.eth_arena.reset(.{ .retain_with_limit = arena_retain_limit });
                         select.async(.eth, eth.Provider.next, .{ self.eth_provider, self.io, self.eth_arena.allocator(), self.allocator });
                     }
                     const received_message = res catch continue;
@@ -154,7 +155,7 @@ pub const Downloader = struct {
                 },
                 .snap => |res| {
                     defer {
-                        _ = self.snap_arena.reset(.retain_capacity);
+                        _ = self.snap_arena.reset(.{ .retain_with_limit = arena_retain_limit });
                         select.async(.snap, snap.Provider.next, .{ self.snap_provider, self.io, self.snap_arena.allocator(), self.allocator });
                     }
                     const received_message = res catch continue;
