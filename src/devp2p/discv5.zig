@@ -29,6 +29,8 @@ const StaticHeader = struct {
     authdata_size: [2]u8,
 };
 
+const max_packet_size = 1280;
+const batch_size = 8;
 const max_sessions = 8192;
 const max_pending = 8192;
 const seen_bits = 1 << 21;
@@ -66,8 +68,13 @@ pub const Server = struct {
     keypair: Ecdsa.KeyPair,
     id: [32]u8,
 
-    rx_buf: [1280]u8 = undefined,
-    tx_buf: [1280]u8 = undefined,
+    rx_buf: [batch_size * max_packet_size]u8 = undefined,
+    rx_msgs: [batch_size]std.Io.net.IncomingMessage = undefined,
+    tx_bufs: [batch_size][max_packet_size]u8 = undefined,
+    tx_buf: *[max_packet_size]u8 = undefined,
+    tx_addrs: [batch_size]std.Io.net.IpAddress = undefined,
+    tx_msgs: [batch_size]std.Io.net.OutgoingMessage = undefined,
+    tx_count: usize = 0,
     socket: std.Io.net.Socket,
 
     record_buf: [300]u8 = undefined,
@@ -117,6 +124,7 @@ pub const Server = struct {
 
     pub fn run(self: *Self) !void {
         log.info("starting to listen on {}", .{self.socket.address});
+        try self.flushSends();
 
         var next_walk: std.Io.Clock.Timestamp = .fromNow(self.io, .{ .raw = .zero, .clock = .real });
         while (true) {
@@ -127,28 +135,59 @@ pub const Server = struct {
                     if (e == std.Io.Cancelable.Canceled) break;
                     next_walk = .fromNow(self.io, .{ .raw = .fromSeconds(1), .clock = .real });
                 }
+                self.flushSends() catch |e| if (e == std.Io.Cancelable.Canceled) break;
             }
 
-            const msg = self.socket.receiveTimeout(self.io, &self.rx_buf, .{ .deadline = next_walk }) catch |e| {
-                if (e == std.Io.Cancelable.Canceled) break;
-                log.debug("receiveTimeout errored with {}", .{e});
-                continue;
-            };
-            if (msg.flags.trunc or msg.flags.ctrunc or msg.flags.errqueue) continue;
+            @memset(&self.rx_msgs, .init);
+            const receive_err, const received = self.socket.receiveManyTimeout(
+                self.io,
+                &self.rx_msgs,
+                &self.rx_buf,
+                .{},
+                .{ .deadline = next_walk },
+            );
+            for (self.rx_msgs[0..received]) |*msg| {
+                if (msg.flags.trunc or msg.flags.ctrunc or msg.flags.errqueue) continue;
 
-            const res = self.handlePacket(msg.data, msg.from) catch |e| {
-                if (e == std.Io.Cancelable.Canceled) break;
-                log.debug("handlePacket errored with {} for {x} from {}", .{ e, msg.data, msg.from });
-                continue;
-            };
-            if (res) |packet| {
-                self.socket.send(self.io, &msg.from, packet) catch |e| {
-                    if (e == std.Io.Cancelable.Canceled) break;
-                    log.debug("send errored with {} for {x} to {}", .{ e, packet, msg.from });
+                const res = self.handlePacket(msg.data, msg.from) catch |e| {
+                    if (e == std.Io.Cancelable.Canceled) return;
+                    log.debug("handlePacket errored with {} for {x} from {}", .{ e, msg.data, msg.from });
                     continue;
                 };
+                if (res) |packet| self.queueSend(msg.from, packet) catch |e| if (e == std.Io.Cancelable.Canceled) return;
+            }
+            self.flushSends() catch |e| if (e == std.Io.Cancelable.Canceled) break;
+
+            if (receive_err) |e| {
+                if (e == std.Io.Cancelable.Canceled) break;
+                if (e != error.Timeout) log.debug("receiveManyTimeout errored with {}", .{e});
             }
         }
+    }
+
+    fn queueSend(self: *Self, addr: std.Io.net.IpAddress, packet: []const u8) !void {
+        std.debug.assert(packet.ptr == self.tx_buf);
+        self.tx_addrs[self.tx_count] = addr;
+        self.tx_msgs[self.tx_count] = .{
+            .address = &self.tx_addrs[self.tx_count],
+            .data_ptr = packet.ptr,
+            .data_len = packet.len,
+        };
+        self.tx_count += 1;
+        if (self.tx_count == batch_size) return self.flushSends();
+        self.tx_buf = &self.tx_bufs[self.tx_count];
+    }
+
+    fn flushSends(self: *Self) !void {
+        defer {
+            self.tx_count = 0;
+            self.tx_buf = &self.tx_bufs[0];
+        }
+        if (self.tx_count == 0) return;
+        self.socket.sendMany(self.io, self.tx_msgs[0..self.tx_count], .{}) catch |e| {
+            if (e == std.Io.Cancelable.Canceled) return e;
+            log.debug("sendMany errored with {} for {} packets", .{ e, self.tx_count });
+        };
     }
 
     fn nextNonce(self: *Self) [12]u8 {
@@ -390,12 +429,12 @@ pub const Server = struct {
         if (self.sessions.get(&session_id.encode())) |session_entry| {
             defer session_entry.release();
 
-            _ = try self.socket.send(self.io, &addr, try self.encodePacket(record.node_id.?, .Message, nonce, &self.id, FindNode{
+            try self.queueSend(addr, try self.encodePacket(record.node_id.?, .Message, nonce, &self.id, FindNode{
                 .request_id = &self.nextRequestId(),
                 .distances = &.{ 256, 255, 254, 253 },
             }, session_entry.value.write_key));
         } else {
-            _ = try self.socket.send(self.io, &addr, try self.encodePacket(record.node_id.?, .Message, nonce, &self.id, Ping{
+            try self.queueSend(addr, try self.encodePacket(record.node_id.?, .Message, nonce, &self.id, Ping{
                 .request_id = &self.nextRequestId(),
                 .enr_seq = 1,
             }, undefined));
