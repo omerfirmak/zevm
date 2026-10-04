@@ -30,6 +30,12 @@ pub const Store = struct {
         const env = try lmdbx.Environment.init(init_path, .{
             .max_dbs = table_count,
             .safe_nosync = true,
+            .geometry = .{
+                .lower_size = 0,
+                .upper_size = 8 << 40,
+                .growth_step = 4 << 30,
+                .shrink_threshold = 0,
+            },
         });
         errdefer env.deinit() catch {};
 
