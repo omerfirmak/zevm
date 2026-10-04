@@ -64,6 +64,50 @@ pub const Eth = struct {
         try table.set(&hash, list.items, .Upsert);
     }
 
+    const max_value_rlp_len = 33;
+
+    fn encodeSlot(buf: *[32 + max_value_rlp_len]u8, slot_hash: [32]u8, value_rlp: []const u8) ![]const u8 {
+        if (value_rlp.len > max_value_rlp_len) return error.StorageValueTooLong;
+        @memcpy(buf[0..32], &slot_hash);
+        @memcpy(buf[32..][0..value_rlp.len], value_rlp);
+        return buf[0 .. 32 + value_rlp.len];
+    }
+
+    pub fn insertStorage(self: *Self, txn: kv.Transaction, account_hash: [32]u8, slot_hashes: []const [32]u8, values_rlp: []const []const u8) !void {
+        const cursor = try self.kv_store.table(txn, .storage).cursor();
+        defer cursor.deinit();
+        var buf: [32 + max_value_rlp_len]u8 = undefined;
+        for (slot_hashes, values_rlp) |slot_hash, value_rlp| {
+            try cursor.put(&account_hash, try encodeSlot(&buf, slot_hash, value_rlp), .Upsert);
+        }
+    }
+
+    pub fn writeStorage(self: *Self, txn: kv.Transaction, account_hash: [32]u8, slot_hash: [32]u8, value: u256) !void {
+        const cursor = try self.kv_store.table(txn, .storage).cursor();
+        defer cursor.deinit();
+
+        var k: lmdbx.c.MDBX_val = .{ .iov_len = account_hash.len, .iov_base = @constCast(&account_hash) };
+        var v: lmdbx.c.MDBX_val = .{ .iov_len = slot_hash.len, .iov_base = @constCast(&slot_hash) };
+        switch (lmdbx.c.mdbx_cursor_get(cursor.ptr, &k, &v, lmdbx.c.MDBX_GET_BOTH_RANGE)) {
+            lmdbx.c.MDBX_SUCCESS => {
+                const found: [*]const u8 = @ptrCast(v.iov_base);
+                if (v.iov_len >= slot_hash.len and std.mem.eql(u8, found[0..slot_hash.len], &slot_hash))
+                    try cursor.del(.Current);
+            },
+            lmdbx.c.MDBX_NOTFOUND => {},
+            else => return error.StorageSeekFailed,
+        }
+
+        if (value != 0) {
+            var buf: [32 + max_value_rlp_len]u8 = undefined;
+            var fba = std.heap.FixedBufferAllocator.init(&buf);
+            var entry = try std.array_list.Managed(u8).initCapacity(fba.allocator(), buf.len);
+            entry.appendSliceAssumeCapacity(&slot_hash);
+            try rlp.serialize(u256, fba.allocator(), value, &entry);
+            try cursor.put(&account_hash, entry.items, .Upsert);
+        }
+    }
+
     pub fn deleteAccount(self: *Self, txn: kv.Transaction, hash: [32]u8) !void {
         const table = self.kv_store.table(txn, .accounts);
         table.delete(&hash) catch |e| {

@@ -850,9 +850,7 @@ pub const Downloader = struct {
             },
             .storage_ranges => |storage_ranges| {
                 if (self.matchRequest(snap.Message, self.snap_provider, &self.inflight_snap_requests, peer, storage_ranges.id, .get_storage_ranges)) |req| {
-                    self.progress.storage_keyspace +|= req.keyspace[1] - req.keyspace[0];
-                    self.allocator.free(req.msg.get_storage_ranges.account_hashes);
-                    self.free_snap_requests.push(req);
+                    try self.handleStorage(req, &storage_ranges);
                 }
             },
             .byte_codes => |byte_codes| {
@@ -1011,6 +1009,17 @@ pub const Downloader = struct {
                 };
             }
 
+            for (changes.storage_changes) |slot_changes| {
+                if (slot_changes.changes.len == 0) continue;
+                var slot_key: [32]u8 = undefined;
+                std.mem.writeInt(u256, &slot_key, slot_changes.key, .big);
+                var slot_hash: [32]u8 = undefined;
+                std.crypto.hash.sha3.Keccak256.hash(&slot_key, &slot_hash, .{});
+
+                if (!self.isStorageFetched(addr_hash, slot_hash)) continue;
+                try self.eth_db.writeStorage(txn, addr_hash, slot_hash, slot_changes.changes[slot_changes.changes.len - 1].value);
+            }
+
             if (changes.storage_changes.len > 0) {
                 self.requestAccountRange(
                     self.free_snap_requests.pop() orelse return account_index,
@@ -1034,6 +1043,106 @@ pub const Downloader = struct {
         }
 
         return bal.len;
+    }
+
+    fn isStorageFetched(self: *Self, account_hash: [32]u8, slot_hash: [32]u8) bool {
+        std.debug.assert(self.state_heal != null);
+        const state = &self.state.?;
+        if (!state.accounts_done) return false;
+        if (!state.storage_and_fetch_initiated and
+            std.mem.order(u8, &account_hash, &state.storage_fetch_head) != .lt) return false;
+
+        for (self.stashed_snap_requests) |request| {
+            if (request.msg != .get_storage_ranges) continue;
+            const storage_request = request.msg.get_storage_ranges;
+            for (storage_request.account_hashes, 0..) |requested_account, index| {
+                if (std.meta.eql(requested_account, account_hash))
+                    return index == 0 and std.mem.order(u8, &slot_hash, &storage_request.starting_hash) == .lt;
+            }
+        }
+        return true;
+    }
+
+    fn handleStorage(self: *Self, req: *Request(snap.Message), response: *const snap.StorageRanges) !void {
+        const allocator = self.snap_arena.allocator();
+        const request = &req.msg.get_storage_ranges;
+        const requested_accounts = request.account_hashes;
+
+        var proof: trie.NodesHashMap = .empty;
+        if (response.proof.len > 0) {
+            try proof.ensureTotalCapacity(allocator, @intCast(response.proof.len));
+            for (response.proof) |node| {
+                var h: [32]u8 align(8) = undefined;
+                std.crypto.hash.sha3.Keccak256.hash(node, &h, .{});
+                try proof.put(allocator, h, node);
+            }
+        }
+
+        const txn = try self.eth_db.kv_store.transaction_rw();
+        errdefer _ = txn.abort() catch |e| {
+            log.err("failed to abort txn {}", .{e});
+        };
+
+        var verified: usize = 0;
+        var continue_from: ?[32]u8 = null;
+        for (response.slots[0..@min(response.slots.len, requested_accounts.len)], 0..) |slots, index| {
+            const account_hash = requested_accounts[index];
+            const account = try self.eth_db.readAccount(allocator, txn, account_hash) orelse break;
+            const origin: [32]u8 = if (index == 0) request.starting_hash else @splat(0);
+            const is_last = index + 1 == response.slots.len;
+
+            const keys = try allocator.alloc([32]u8, slots.len);
+            const values = try allocator.alloc([]const u8, slots.len);
+            for (slots, 0..) |slot, slot_index| {
+                keys[slot_index] = slot.hash;
+                values[slot_index] = slot.data;
+            }
+
+            const has_more = verifyRangeProof(
+                allocator,
+                account.storage_hash,
+                origin,
+                keys,
+                values,
+                if (is_last and response.proof.len > 0) &proof else null,
+            ) catch break;
+
+            try self.eth_db.insertStorage(txn, account_hash, keys, values);
+            verified += 1;
+            if (has_more) {
+                continue_from = origin;
+                if (keys.len > 0)
+                    std.mem.writeInt(
+                        u256,
+                        &continue_from.?,
+                        std.mem.readInt(u256, &keys[keys.len - 1], .big) + 1,
+                        .big,
+                    );
+                break;
+            }
+        }
+        try txn.commit();
+
+        var remaining: usize = 0;
+        var next_start: [32]u8 = if (verified == 0) request.starting_hash else @splat(0);
+        if (continue_from) |slot| {
+            requested_accounts[0] = requested_accounts[verified - 1];
+            next_start = slot;
+            remaining = 1;
+        }
+        const unserved = requested_accounts[verified..];
+        std.mem.copyForwards([32]u8, requested_accounts[remaining..][0..unserved.len], unserved);
+        remaining += unserved.len;
+
+        if (remaining > 0) {
+            request.account_hashes = requested_accounts[0..remaining];
+            request.starting_hash = next_start;
+            self.sendSnapRequest(req) catch {};
+        } else {
+            self.allocator.free(@as([][32]u8, requested_accounts.ptr[0..batch_storage_code_req_size]));
+            self.progress.storage_keyspace +|= req.keyspace[1] - req.keyspace[0];
+            self.free_snap_requests.push(req);
+        }
     }
 
     fn handleCodes(self: *Self, req: *Request(snap.Message), codes: snap.ByteCodes) !void {
