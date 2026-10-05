@@ -481,6 +481,7 @@ pub fn build(b: *std.Build) void {
     main_exe.root_module.addImport("snappy", snappy_dep.module("snappy"));
     main_exe.root_module.addImport("cache", cache_dep.module("cache"));
     main_exe.root_module.addImport("lmdbx", mdbx_dep.module("lmdbx"));
+    main_exe.root_module.addImport("clap", clap_dep.module("clap"));
     main_exe.root_module.addOptions("build_options", native_opts);
     const main_step = b.step("zevm", "");
     const main_install = b.addInstallArtifact(main_exe, .{});

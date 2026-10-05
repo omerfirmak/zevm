@@ -12,16 +12,12 @@ pub const HttpServer = struct {
     rpc: *const jsonrpc.Server,
     listener: std.Io.net.Server,
 
-    pub fn init(io: std.Io, allocator: std.mem.Allocator, rpc: *const jsonrpc.Server, port: u16) !Self {
+    pub fn init(io: std.Io, allocator: std.mem.Allocator, rpc: *const jsonrpc.Server, addr: std.Io.net.IpAddress) !Self {
         return .{
             .io = io,
             .arena = .init(allocator),
             .rpc = rpc,
-            .listener = try std.Io.net.IpAddress.listen(
-                &.{ .ip4 = std.Io.net.Ip4Address.unspecified(port) },
-                io,
-                .{},
-            ),
+            .listener = try addr.listen(io, .{}),
         };
     }
 

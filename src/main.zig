@@ -1,4 +1,5 @@
 const std = @import("std");
+const clap = @import("clap");
 const discv5 = @import("devp2p/discv5.zig");
 const rlpx = @import("devp2p/rlpx.zig");
 const proto = @import("devp2p/proto.zig");
@@ -12,7 +13,8 @@ const Dialer = @import("devp2p/dialer.zig").Dialer;
 const SlabAllocator = @import("devp2p/allocator.zig").SlabAllocator;
 const Record = @import("devp2p/enr.zig").Record;
 const forks = @import("forks.zig");
-const Blockchain = @import("node/blockchain.zig").Blockchain;
+const blockchain = @import("node/blockchain.zig");
+const Blockchain = blockchain.Blockchain;
 const Downloader = @import("node/downloader.zig").Downloader;
 const FileStorage = @import("db/file.zig").Storage;
 const EthApi = @import("rpc/eth.zig").Eth;
@@ -24,22 +26,96 @@ pub const std_options: std.Options = .{
     .logFn = @import("log.zig").timestamped,
 };
 
+const Network = enum { glamsterdam_devnet8, mainnet, sepolia };
+
+const params = clap.parseParamsComptime(
+    \\-h, --help                Display this help and exit.
+    \\-n, --network <network>   Network to join: glamsterdam_devnet8, mainnet, sepolia (default: glamsterdam_devnet8).
+    \\-d, --datadir <str>       Data directory (default: datadir).
+    \\    --port <u16>          RLPx TCP listening port (default: 30303).
+    \\    --discovery-port <u16> discv5 UDP listening port (default: 33034).
+    \\    --bootnode <str>...   Bootnode ENR, can be repeated. Replaces the network's default bootnodes.
+    \\    --http-addr <str>     JSON-RPC HTTP listening address (default: 127.0.0.1).
+    \\    --http-port <u16>     JSON-RPC HTTP listening port (default: 8545).
+    \\
+);
+
+const parsers = .{
+    .str = clap.parsers.string,
+    .u16 = clap.parsers.int(u16, 10),
+    .network = clap.parsers.enumeration(Network),
+};
+
+const Options = struct {
+    config: blockchain.Config,
+    bootnodes: []const []const u8,
+    datadir: []const u8,
+    port: u16,
+    discovery_port: u16,
+    http_addr: std.Io.net.IpAddress,
+
+    fn parse(init: std.process.Init) !?Options {
+        var diag = clap.Diagnostic{};
+        const res = clap.parse(clap.Help, &params, parsers, init.minimal.args, .{
+            .diagnostic = &diag,
+            .allocator = init.arena.allocator(),
+        }) catch |err| {
+            try diag.reportToFile(init.io, std.Io.File.stderr(), err);
+            std.process.exit(1);
+        };
+
+        if (res.args.help != 0) {
+            try clap.helpToFile(init.io, std.Io.File.stderr(), clap.Help, &params, .{});
+            return null;
+        }
+
+        const network = res.args.network orelse .glamsterdam_devnet8;
+        const http_addr = res.args.@"http-addr" orelse "127.0.0.1";
+        const http_port = res.args.@"http-port" orelse 8545;
+        return .{
+            .config = switch (network) {
+                .glamsterdam_devnet8 => blockchain.glamsterdam_devnet8_config,
+                .mainnet => blockchain.mainnet_config,
+                .sepolia => blockchain.sepolia_config,
+            },
+            .bootnodes = if (res.args.bootnode.len > 0) res.args.bootnode else switch (network) {
+                .glamsterdam_devnet8 => &bootnodes.glamsterdam_devnet8,
+                .mainnet => &bootnodes.mainnet,
+                .sepolia => &bootnodes.sepolia,
+            },
+            .datadir = res.args.datadir orelse "datadir",
+            .port = res.args.port orelse 30303,
+            .discovery_port = res.args.@"discovery-port" orelse 33034,
+            .http_addr = std.Io.net.IpAddress.parse(http_addr, http_port) catch |e| {
+                std.log.err("invalid --http-addr {s}: {}", .{ http_addr, e });
+                std.process.exit(1);
+            },
+        };
+    }
+};
+
+fn openDataSubdir(io: std.Io, allocator: std.mem.Allocator, datadir: std.Io.Dir, sub_path: []const u8) ![]const u8 {
+    var dir = try datadir.createDirPathOpen(io, sub_path, .{});
+    defer dir.close(io);
+    var path: [std.fs.max_path_bytes]u8 = undefined;
+    const len = try dir.realPath(io, &path);
+    return allocator.dupe(u8, path[0..len]);
+}
+
 pub fn main(init: std.process.Init) !void {
+    const opts = try Options.parse(init) orelse return;
+
     const kp = std.crypto.sign.ecdsa.EcdsaSecp256k1Sha256.KeyPair.generate(init.io);
 
     var slabs = SlabAllocator.init(init.arena.allocator());
 
-    const static_datadir = try std.Io.Dir.cwd().createDirPathOpen(init.io, "datadir/static", .{});
-    var static_datadir_path: [2048]u8 = undefined;
-    const static_datadir_path_len = try static_datadir.realPath(init.io, &static_datadir_path);
+    var datadir = try std.Io.Dir.cwd().createDirPathOpen(init.io, opts.datadir, .{});
+    defer datadir.close(init.io);
+    const static_path = try openDataSubdir(init.io, init.arena.allocator(), datadir, "static");
+    const mdbx_path = try openDataSubdir(init.io, init.arena.allocator(), datadir, "mdbx");
 
-    var fs = try FileStorage.init(init.io, slabs.allocator(), static_datadir_path[0..static_datadir_path_len]);
-    var bc = try Blockchain.init(
-        init.io,
-        slabs.allocator(),
-        @import("node/blockchain.zig").glamsterdam_devnet8_config,
-        &fs,
-    );
+    var fs = try FileStorage.init(init.io, slabs.allocator(), static_path);
+    var bc = try Blockchain.init(init.io, slabs.allocator(), opts.config, &fs);
 
     var id_filter = forks.IdFilter.init(bc.genesisHash(), &bc.cfg.fork_schedule);
     const genesis_head_header = try bc.headHeader();
@@ -61,7 +137,7 @@ pub fn main(init: std.process.Init) !void {
         ethproto.register(),
         snapproto.register(),
     };
-    var rlpx_server = try rlpx.Server.init(slabs.allocator(), init.io, kp, 30303, &caps);
+    var rlpx_server = try rlpx.Server.init(slabs.allocator(), init.io, kp, opts.port, &caps);
     defer rlpx_server.deinit();
     ethproto.server = &rlpx_server;
     snapproto.server = &rlpx_server;
@@ -75,8 +151,8 @@ pub fn main(init: std.process.Init) !void {
         slabs.allocator(),
         init.io,
         kp,
-        33034,
-        try bootnodes.parse(init.arena.allocator(), &bootnodes.glamsterdam_devnet8),
+        opts.discovery_port,
+        try bootnodes.parse(init.arena.allocator(), opts.bootnodes),
         &dialer,
     );
     var discv_thread = try init.io.concurrent(discv5.Server.run, .{&server});
@@ -86,20 +162,11 @@ pub fn main(init: std.process.Init) !void {
     var jsonrpc_server: RpcServer = .{};
     try eth_api.register(init.arena.allocator(), &jsonrpc_server);
 
-    var jsonrpc_http: RpcHttpServer = try .init(
-        init.io,
-        slabs.allocator(),
-        &jsonrpc_server,
-        8545,
-    );
+    var jsonrpc_http: RpcHttpServer = try .init(init.io, slabs.allocator(), &jsonrpc_server, opts.http_addr);
     var rpc_thread = try init.io.concurrent(RpcHttpServer.run, .{&jsonrpc_http});
     defer rpc_thread.cancel(init.io) catch {};
 
-    const mdbx_datadir = try std.Io.Dir.cwd().createDirPathOpen(init.io, "datadir/mdbx", .{});
-    var mdbx_datadir_path: [2048]u8 = undefined;
-    const mdbx_datadir_path_len = try mdbx_datadir.realPath(init.io, &mdbx_datadir_path);
-
-    var store = try kv.Store.init(slabs.allocator(), mdbx_datadir_path[0..mdbx_datadir_path_len]);
+    var store = try kv.Store.init(slabs.allocator(), mdbx_path);
     var eth_db = EthDb.init(&store);
 
     var downloader = try Downloader.init(
