@@ -20,6 +20,7 @@ const FileStorage = @import("db/file.zig").Storage;
 const EthApi = @import("rpc/eth.zig").Eth;
 const RpcServer = @import("rpc/jsonrpc.zig").Server;
 const RpcHttpServer = @import("rpc/http.zig").HttpServer;
+const jwt = @import("rpc/jwt.zig");
 
 pub const std_options: std.Options = .{
     .log_level = .info,
@@ -37,6 +38,9 @@ const params = clap.parseParamsComptime(
     \\    --bootnode <str>...   Bootnode ENR, can be repeated. Replaces the network's default bootnodes.
     \\    --http-addr <str>     JSON-RPC HTTP listening address (default: 127.0.0.1).
     \\    --http-port <u16>     JSON-RPC HTTP listening port (default: 8545).
+    \\    --authrpc-addr <str>  Authenticated (Engine API) RPC listening address (default: 127.0.0.1).
+    \\    --authrpc-port <u16>  Authenticated (Engine API) RPC listening port (default: 8551).
+    \\    --authrpc-jwtsecret <str> Path to the hex-encoded JWT secret; created if missing (default: <datadir>/jwt.hex).
     \\
 );
 
@@ -53,6 +57,8 @@ const Options = struct {
     port: u16,
     discovery_port: u16,
     http_addr: std.Io.net.IpAddress,
+    authrpc_addr: std.Io.net.IpAddress,
+    authrpc_jwtsecret: ?[]const u8,
 
     fn parse(init: std.process.Init) !?Options {
         var diag = clap.Diagnostic{};
@@ -72,6 +78,8 @@ const Options = struct {
         const network = res.args.network orelse .glamsterdam_devnet8;
         const http_addr = res.args.@"http-addr" orelse "127.0.0.1";
         const http_port = res.args.@"http-port" orelse 8545;
+        const authrpc_addr = res.args.@"authrpc-addr" orelse "127.0.0.1";
+        const authrpc_port = res.args.@"authrpc-port" orelse 8551;
         return .{
             .config = switch (network) {
                 .glamsterdam_devnet8 => blockchain.glamsterdam_devnet8_config,
@@ -90,6 +98,11 @@ const Options = struct {
                 std.log.err("invalid --http-addr {s}: {}", .{ http_addr, e });
                 std.process.exit(1);
             },
+            .authrpc_addr = std.Io.net.IpAddress.parse(authrpc_addr, authrpc_port) catch |e| {
+                std.log.err("invalid --authrpc-addr {s}: {}", .{ authrpc_addr, e });
+                std.process.exit(1);
+            },
+            .authrpc_jwtsecret = res.args.@"authrpc-jwtsecret",
         };
     }
 };
@@ -165,6 +178,15 @@ pub fn main(init: std.process.Init) !void {
     var jsonrpc_http: RpcHttpServer = try .init(init.io, slabs.allocator(), &jsonrpc_server, opts.http_addr);
     var rpc_thread = try init.io.concurrent(RpcHttpServer.run, .{&jsonrpc_http});
     defer rpc_thread.cancel(init.io) catch {};
+
+    const jwt_secret = try jwt.loadOrCreateSecret(init.io, datadir, opts.authrpc_jwtsecret);
+    var authrpc_server: RpcServer = .{};
+    try eth_api.register(init.arena.allocator(), &authrpc_server);
+
+    var authrpc_http = (try RpcHttpServer.init(init.io, slabs.allocator(), &authrpc_server, opts.authrpc_addr))
+        .with_auth(jwt_secret);
+    var authrpc_thread = try init.io.concurrent(RpcHttpServer.run, .{&authrpc_http});
+    defer authrpc_thread.cancel(init.io) catch {};
 
     var store = try kv.Store.init(slabs.allocator(), mdbx_path);
     var eth_db = EthDb.init(&store);
