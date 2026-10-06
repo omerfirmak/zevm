@@ -1008,6 +1008,7 @@ pub const Downloader = struct {
                             .rlp = access_lists.rlps[0],
                             .parsed = bal,
                         };
+                        self.free_eth_requests.push(req);
                         try self.advanceStateHeal();
                         return;
                     } else |_| {}
