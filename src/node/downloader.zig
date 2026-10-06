@@ -879,6 +879,8 @@ pub const Downloader = struct {
         self.drainPendingSnapRequests();
         if (self.state != null)
             try self.advanceStateDownload();
+        if (self.state_heal != null)
+            try self.advanceStateHeal();
     }
 
     fn handleAccounts(self: *Self, request: *Request(snap.Message), response: *const snap.AccountRange) !void {
