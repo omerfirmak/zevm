@@ -82,6 +82,8 @@ pub const Downloader = struct {
     state_heal: ?struct {
         next_pivot: types.BlockHeader,
         target_pivot: types.BlockHeader,
+        start_number: u64,
+        started_at: std.Io.Timestamp,
 
         bal_requested: bool = false,
         bal: ?struct {
@@ -614,12 +616,21 @@ pub const Downloader = struct {
 
                 if (self.state_heal) |*state_heal| {
                     state_heal.target_pivot = try self.readHeader(new_pivot_height) orelse unreachable;
+                    log.info("state heal: target moved to {}", .{new_pivot_height});
                 } else {
                     self.stashSnapRequests();
                     self.state_heal = .{
                         .target_pivot = try self.readHeader(new_pivot_height) orelse unreachable,
                         .next_pivot = try self.readHeader(cur_pivot.number + 1) orelse unreachable,
+                        .start_number = cur_pivot.number,
+                        .started_at = std.Io.Clock.now(.real, self.io),
                     };
+                    log.info("state heal: started, pivot {} -> {} ({} blocks, {} snap requests stashed)", .{
+                        cur_pivot.number,
+                        new_pivot_height,
+                        new_pivot_height - cur_pivot.number,
+                        self.stashed_snap_requests.len,
+                    });
                 }
             } else {
                 self.requestAccountRange(
@@ -806,6 +817,10 @@ pub const Downloader = struct {
             }
             if (bal.resume_index == bal.parsed.len and self.inflight_snap_requests.empty() and self.pending_snap_requests.empty()) {
                 if (state_heal.next_pivot.number + 1 > state_heal.target_pivot.number) {
+                    log.info("state heal: done, healed {} blocks in {}s", .{
+                        state_heal.target_pivot.number - state_heal.start_number,
+                        state_heal.started_at.durationTo(std.Io.Clock.now(.real, self.io)).toSeconds(),
+                    });
                     self.state_heal = null;
                     self.popSnapRequests();
                     return;
@@ -1240,6 +1255,28 @@ pub const Downloader = struct {
                 keyspacePercent(self.progress.code_keyspace),
                 self.inflight_snap_requests.inner.len(),
                 self.state_heal != null,
+            });
+        }
+        if (self.state_heal) |state_heal| {
+            const healed = state_heal.next_pivot.number - 1 - state_heal.start_number;
+            const total = state_heal.target_pivot.number - state_heal.start_number;
+            const bal_status: []const u8, const applied: usize, const touched: usize = if (state_heal.bal) |bal|
+                .{ "applying", bal.resume_index, bal.parsed.len }
+            else if (state_heal.bal_requested)
+                .{ "requested", 0, 0 }
+            else
+                .{ "not requested", 0, 0 };
+            log.info("state heal: block {} ({}/{} healed, {}s elapsed), bal {s} ({}/{} accounts), inflight snap {}, pending snap {}, inflight eth {}", .{
+                state_heal.next_pivot.number,
+                healed,
+                total,
+                state_heal.started_at.durationTo(now).toSeconds(),
+                bal_status,
+                applied,
+                touched,
+                self.inflight_snap_requests.inner.len(),
+                self.pending_snap_requests.inner.len(),
+                self.inflight_eth_requests.inner.len(),
             });
         }
     }
