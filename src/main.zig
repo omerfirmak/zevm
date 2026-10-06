@@ -18,6 +18,7 @@ const Blockchain = blockchain.Blockchain;
 const Downloader = @import("node/downloader.zig").Downloader;
 const FileStorage = @import("db/file.zig").Storage;
 const EthApi = @import("rpc/eth.zig").Eth;
+const EngineApi = @import("rpc/engine.zig").Engine;
 const RpcServer = @import("rpc/jsonrpc.zig").Server;
 const RpcHttpServer = @import("rpc/http.zig").HttpServer;
 const jwt = @import("rpc/jwt.zig");
@@ -194,6 +195,8 @@ pub fn main(init: std.process.Init) !void {
     const jwt_secret = try jwt.loadOrCreateSecret(init.io, datadir, opts.authrpc_jwtsecret);
     var authrpc_server: RpcServer = .{};
     try eth_api.register(init.arena.allocator(), &authrpc_server);
+    var engine_api: EngineApi = .init(&bc, &downloader);
+    try engine_api.register(init.arena.allocator(), &authrpc_server);
 
     var authrpc_http = (try RpcHttpServer.init(init.io, slabs.allocator(), &authrpc_server, opts.authrpc_addr))
         .with_auth(jwt_secret);
