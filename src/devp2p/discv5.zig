@@ -144,7 +144,7 @@ pub const Server = struct {
                 &self.rx_msgs,
                 &self.rx_buf,
                 .{},
-                .{ .deadline = next_walk },
+                .{ .duration = .{ .raw = .fromSeconds(15), .clock = .real } },
             );
             for (self.rx_msgs[0..received]) |*msg| {
                 if (msg.flags.trunc or msg.flags.ctrunc or msg.flags.errqueue) continue;
@@ -160,7 +160,11 @@ pub const Server = struct {
 
             if (receive_err) |e| {
                 if (e == std.Io.Cancelable.Canceled) break;
-                if (e != error.Timeout) log.debug("receiveManyTimeout errored with {}", .{e});
+                if (e == error.Timeout) {
+                    next_walk = .fromNow(self.io, .{ .raw = .zero, .clock = .real });
+                } else {
+                    log.debug("receiveManyTimeout errored with {}", .{e});
+                }
             }
         }
     }
