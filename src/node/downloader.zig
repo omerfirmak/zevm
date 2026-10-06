@@ -140,16 +140,16 @@ pub const Downloader = struct {
         var buf: [3]msg = undefined;
         var select: std.Io.Select(msg) = .init(self.io, &buf);
 
-        select.async(.eth, eth.Provider.next, .{ self.eth_provider, self.io, self.eth_arena.allocator(), self.allocator });
-        select.async(.snap, snap.Provider.next, .{ self.snap_provider, self.io, self.snap_arena.allocator(), self.allocator });
-        select.async(.tick, std.Io.sleep, .{ self.io, .fromSeconds(1), .real });
+        try select.concurrent(.eth, eth.Provider.next, .{ self.eth_provider, self.io, self.eth_arena.allocator(), self.allocator });
+        try select.concurrent(.snap, snap.Provider.next, .{ self.snap_provider, self.io, self.snap_arena.allocator(), self.allocator });
+        try select.concurrent(.tick, std.Io.sleep, .{ self.io, .fromSeconds(1), .real });
 
         while (true) {
             switch (select.await() catch |e| return e) {
                 .eth => |res| {
                     defer {
                         _ = self.eth_arena.reset(.{ .retain_with_limit = arena_retain_limit });
-                        select.async(.eth, eth.Provider.next, .{ self.eth_provider, self.io, self.eth_arena.allocator(), self.allocator });
+                        select.concurrent(.eth, eth.Provider.next, .{ self.eth_provider, self.io, self.eth_arena.allocator(), self.allocator }) catch |e| std.debug.panic("downloader: failed to spawn task: {}", .{e});
                     }
                     const received_message = res catch continue;
                     defer self.allocator.free(received_message.read.payload);
@@ -158,14 +158,14 @@ pub const Downloader = struct {
                 .snap => |res| {
                     defer {
                         _ = self.snap_arena.reset(.{ .retain_with_limit = arena_retain_limit });
-                        select.async(.snap, snap.Provider.next, .{ self.snap_provider, self.io, self.snap_arena.allocator(), self.allocator });
+                        select.concurrent(.snap, snap.Provider.next, .{ self.snap_provider, self.io, self.snap_arena.allocator(), self.allocator }) catch |e| std.debug.panic("downloader: failed to spawn task: {}", .{e});
                     }
                     const received_message = res catch continue;
                     defer self.allocator.free(received_message.read.payload);
                     try self.handleSnap(received_message.msg, received_message.read.peer);
                 },
                 .tick => {
-                    defer select.async(.tick, std.Io.sleep, .{ self.io, .fromSeconds(1), .real });
+                    defer select.concurrent(.tick, std.Io.sleep, .{ self.io, .fromSeconds(1), .real }) catch |e| std.debug.panic("downloader: failed to spawn task: {}", .{e});
                     try self.handleTick();
                 },
             }

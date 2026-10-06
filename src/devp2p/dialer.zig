@@ -24,7 +24,7 @@ pub const Dialer = struct {
             self.filter.check(remote, head.number, head.timestamp) and
             self.server.candidatePeer(record))
         {
-            _ = io.async(rlpx.Server.dial, .{ self.server, record });
+            _ = io.concurrent(rlpx.Server.dial, .{ self.server, record }) catch return;
         }
     }
 };
