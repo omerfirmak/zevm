@@ -996,13 +996,13 @@ pub const Downloader = struct {
                 var calculated_hash: [32]u8 = undefined;
                 std.crypto.hash.sha3.Keccak256.hash(access_lists.rlps[0].value, &calculated_hash, .{});
                 if (std.meta.eql(calculated_hash, state_heal.next_pivot.block_access_list_hash.?)) {
-                    var arena = self.snap_arena;
-                    self.snap_arena = .init(self.allocator);
-
                     var bal: types.BlockAccessLists = undefined;
-                    if (rlp.deserialize(types.BlockAccessLists, arena.allocator(), access_lists.rlps[0].value, &bal)) |_| {
+                    if (rlp.deserialize(types.BlockAccessLists, self.eth_arena.allocator(), access_lists.rlps[0].value, &bal)) |_| {
                         std.debug.assert(state_heal.bal == null);
 
+                        // the parsed bal outlives this message, take ownership of the eth arena it lives in
+                        const arena = self.eth_arena;
+                        self.eth_arena = .init(self.allocator);
                         state_heal.bal = .{
                             .arena = arena,
                             .rlp = access_lists.rlps[0],
