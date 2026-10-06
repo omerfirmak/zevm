@@ -789,6 +789,7 @@ pub const Downloader = struct {
 
             self.sendSnapRequest(req) catch {};
         }
+        self.stashed_snap_requests.len = 0;
     }
 
     fn requestBals(self: *Self, req: *Request(eth.Message), hashes: [][32]u8) void {
