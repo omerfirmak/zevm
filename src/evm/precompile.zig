@@ -280,7 +280,7 @@ pub fn Handlers(comptime fork: Spec) type {
             const remaining_gas = gas - fork.ecrecover_gas;
             const bail: Result = .{ .remaining_gas = remaining_gas };
 
-            var padded: [128]u8 align(8) = [_]u8{0} ** 128;
+            var padded: [128]u8 align(8) = @splat(0);
             @memcpy(padded[0..@min(calldata.len, 128)], calldata[0..@min(calldata.len, 128)]);
 
             // v is a big-endian u256 at bytes 32..64; high 31 bytes must be zero, low byte is 27 or 28
@@ -347,7 +347,7 @@ pub fn Handlers(comptime fork: Spec) type {
 
             // ECDSA verification: R' = s^{-1}*hash*G + s^{-1}*r*Q
             // Reduce hash mod n via fromBytes48 (hash is 32 bytes, may exceed n)
-            var hash_padded: [48]u8 = [_]u8{0} ** 48;
+            var hash_padded: [48]u8 = @splat(0);
             @memcpy(hash_padded[16..48], hash);
             const e = Scalar.fromBytes48(hash_padded, .big);
             const s_inv = s.invert();
@@ -359,7 +359,7 @@ pub fn Handlers(comptime fork: Spec) type {
             R.rejectIdentity() catch return bail;
 
             // R.x mod n must equal r (mod n comparison per EIP-7951)
-            var rx_padded: [48]u8 = [_]u8{0} ** 48;
+            var rx_padded: [48]u8 = @splat(0);
             @memcpy(rx_padded[16..48], &R.affineCoordinates().x.toBytes(.big));
             const r_check = Scalar.fromBytes48(rx_padded, .big).toBytes(.big);
             if (!std.mem.eql(u8, &r_check, r_bytes)) return bail;
@@ -942,13 +942,13 @@ pub fn Handlers(comptime fork: Spec) type {
                 @memset(out[0..64], 0);
                 return;
             }
-            var tmp = [_]u8{0} ** 32;
+            var tmp: [32]u8 = @splat(0);
 
             if (mcl.mclBnFp_getLittleEndian(@ptrCast(&tmp), 32, &p.x) == 0)
                 return error.InvalidInput;
             reverseBytes32(out[0..32], &tmp);
 
-            tmp = [_]u8{0} ** 32;
+            tmp = @splat(0);
             if (mcl.mclBnFp_getLittleEndian(@ptrCast(&tmp), 32, &p.y) == 0)
                 return error.InvalidInput;
             reverseBytes32(out[32..64], &tmp);
@@ -962,7 +962,7 @@ pub fn Handlers(comptime fork: Spec) type {
         ) Result {
             if (gas < fork.ecadd_gas) return out_of_gas;
 
-            var padded: [128]u8 align(8) = [_]u8{0} ** 128;
+            var padded: [128]u8 align(8) = @splat(0);
             @memcpy(padded[0..@min(calldata.len, 128)], calldata[0..@min(calldata.len, 128)]);
 
             if (build_options.platform == .zkvm) {
@@ -1000,7 +1000,7 @@ pub fn Handlers(comptime fork: Spec) type {
         ) Result {
             if (gas < fork.ecmul_gas) return out_of_gas;
 
-            var padded: [96]u8 align(8) = [_]u8{0} ** 96;
+            var padded: [96]u8 align(8) = @splat(0);
             @memcpy(padded[0..@min(calldata.len, 96)], calldata[0..@min(calldata.len, 96)]);
 
             if (build_options.platform == .zkvm) {

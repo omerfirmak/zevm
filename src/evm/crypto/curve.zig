@@ -31,7 +31,7 @@ pub fn ecrecover(
     }
 
     curve_once.call();
-    var sig: secp256k1.Signature = [_]u8{0} ** 65;
+    var sig: secp256k1.Signature = @splat(0);
     std.mem.writeInt(u256, sig[0..32], r, .big);
     std.mem.writeInt(u256, sig[32..64], s, .big);
     sig[64] = @intCast(v & 1);

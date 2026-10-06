@@ -154,7 +154,7 @@ pub fn buildCommittedState(alloc: std.mem.Allocator, pre: std.json.ArrayHashMap(
             .nonce = pre_acct.nonce.value,
             .balance = pre_acct.balance.value,
             .code_hash = code_hash,
-            .storage_hash = if (has_storage) [_]u8{1} ** 32 else types.empty_root_hash,
+            .storage_hash = if (has_storage) @as([32]u8, @splat(1)) else types.empty_root_hash,
         });
     }
 

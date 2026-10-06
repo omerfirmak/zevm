@@ -370,7 +370,7 @@ pub fn validateBlock(comptime spec: Spec, p_block: *const PreprocessedBlock, par
     }
     if (block.header.blob_gas_used.? != expected_blob_gas_used) return Errors.MismatchedBlobGasUsed;
     if (block.header.difficulty != 0) return Errors.InvalidDifficulty;
-    if (!std.mem.eql(u8, &block.header.nonce, &[_]u8{0} ** 8)) return Errors.InvalidNonce;
+    if (!std.mem.eql(u8, &block.header.nonce, &@as([8]u8, @splat(0)))) return Errors.InvalidNonce;
     if (block.uncles.len != 0) return Errors.InvalidUncles;
 
     const max_delta = parent.gas_limit / spec.gas_limit_adjustment_factor;
@@ -540,7 +540,7 @@ pub fn recoverTxSender(allocator: std.mem.Allocator, tx: *const types.Transactio
 }
 
 pub fn computeLogsBloom(logs: *const std.DoublyLinkedList) [256]u8 {
-    var bloom = [_]u8{0} ** 256;
+    var bloom = @as([256]u8, @splat(0));
     var node = logs.first;
     while (node) |n| {
         const ln: *const evm.EVM.LogNode = @alignCast(@fieldParentPtr("node", n));

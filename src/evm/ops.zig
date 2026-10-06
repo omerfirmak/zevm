@@ -163,8 +163,8 @@ pub fn Ops(comptime cfg: Config) type {
                 switch (size) {
                     inline 0...30 => |bytes| {
                         const bit_size = (@as(u16, bytes) + 1) * 8;
-                        const truncated: std.meta.Int(.unsigned, bit_size) = @truncate(args[0]);
-                        const truncated_signed: std.meta.Int(.signed, bit_size) = @bitCast(truncated);
+                        const truncated: @Int(.unsigned, bit_size) = @truncate(args[0]);
+                        const truncated_signed: @Int(.signed, bit_size) = @bitCast(truncated);
                         const extended_signed: i256 = @intCast(truncated_signed);
                         args[0] = @bitCast(extended_signed);
                     },
@@ -1270,7 +1270,7 @@ pub fn readBeSliceToU256(bytes: []const u8, comptime total_size: usize, value: *
     comptime std.debug.assert(total_size <= 32);
     if (bytes.len >= total_size) {
         @branchHint(.likely);
-        value.* = std.mem.readInt(std.meta.Int(.unsigned, total_size * 8), bytes[0..total_size], .big);
+        value.* = std.mem.readInt(@Int(.unsigned, total_size * 8), bytes[0..total_size], .big);
     } else {
         @branchHint(.unlikely);
         value.* = 0;

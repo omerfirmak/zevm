@@ -1210,7 +1210,7 @@ test "ecies encrypt/decrypt round-trip" {
     defer threaded.deinit();
     const io = threaded.io();
 
-    const remote = try Ecdsa.KeyPair.generateDeterministic([_]u8{7} ** 32);
+    const remote = try Ecdsa.KeyPair.generateDeterministic(@as([32]u8, @splat(7)));
     const remote_pub = remote.public_key.toUncompressedSec1()[1..65].*;
     const prefix = [_]u8{ 0x00, 0x8f };
     const m = "super secret message";
@@ -1230,7 +1230,7 @@ test "ecies rejects a tampered ciphertext" {
     defer threaded.deinit();
     const io = threaded.io();
 
-    const remote = try Ecdsa.KeyPair.generateDeterministic([_]u8{9} ** 32);
+    const remote = try Ecdsa.KeyPair.generateDeterministic(@as([32]u8, @splat(9)));
     const remote_pub = remote.public_key.toUncompressedSec1()[1..65].*;
     const prefix = [_]u8{ 0x00, 0x40 };
 
@@ -1247,7 +1247,7 @@ test "ecies authenticates the prefix (s2)" {
     defer threaded.deinit();
     const io = threaded.io();
 
-    const remote = try Ecdsa.KeyPair.generateDeterministic([_]u8{3} ** 32);
+    const remote = try Ecdsa.KeyPair.generateDeterministic(@as([32]u8, @splat(3)));
     const remote_pub = remote.public_key.toUncompressedSec1()[1..65].*;
 
     var out: [256]u8 = undefined;

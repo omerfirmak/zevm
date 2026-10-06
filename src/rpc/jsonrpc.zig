@@ -197,12 +197,7 @@ pub const RawJson = struct {
 };
 
 fn ExtractSubTuple(comptime FullTuple: type, comptime start_idx: usize) type {
-    const fields = @typeInfo(FullTuple).@"struct".fields;
-    var sub_types: [fields.len - start_idx]type = undefined;
-    inline for (start_idx..fields.len) |i| {
-        sub_types[i - start_idx] = fields[i].type;
-    }
-    return @Tuple(&sub_types);
+    return @Tuple(@typeInfo(FullTuple).@"struct".field_types[start_idx..]);
 }
 
 test "server" {

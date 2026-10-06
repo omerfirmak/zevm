@@ -51,8 +51,8 @@ pub const Osaka: Spec = .{
 
 fn override(base: anytype, changes: anytype) @TypeOf(base) {
     var result = base;
-    inline for (std.meta.fields(@TypeOf(changes))) |f| {
-        @field(result, f.name) = @field(changes, f.name);
+    inline for (@typeInfo(@TypeOf(changes)).@"struct".field_names) |name| {
+        @field(result, name) = @field(changes, name);
     }
     return result;
 }

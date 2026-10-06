@@ -116,7 +116,7 @@ fn runBenchmark(io: std.Io, allocator: std.mem.Allocator, bench_def: BenchmarkDe
         .gas_limit = @intCast(bench_def.gas_limit),
         .blob_base_fee = 0,
         .max_blobs_per_block = 9,
-        .ancestors = [_]u256{0} ** 256,
+        .ancestors = @splat(0),
     };
 
     const calldata_buf = try allocator.dupe(u8, bench_def.calldata);

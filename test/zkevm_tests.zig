@@ -59,7 +59,7 @@ fn runInZiskemu(io: std.Io, allocator: std.mem.Allocator, guest_path: []const u8
         try f.writeStreamingAll(io, payload);
         const need_pad = (8 - ((8 + payload.len) % 8)) % 8;
         if (need_pad != 0) {
-            const zeros = [_]u8{0} ** 7;
+            const zeros = @as([7]u8, @splat(0));
             try f.writeStreamingAll(io, zeros[0..need_pad]);
         }
     }

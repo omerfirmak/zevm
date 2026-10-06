@@ -196,7 +196,7 @@ fn makeBlock(
         .timestamp = payload.timestamp,
         .extra_data = extra_data,
         .mix_hash = payload.prev_randao,
-        .nonce = [_]u8{0} ** 8, // post-merge: always zero
+        .nonce = @splat(0), // post-merge: always zero
         .base_fee_per_gas = @intCast(payload.base_fee_per_gas),
         .withdrawals_root = try zevm.processor.computeRoot(zevm.types.Withdrawal, allocator, withdrawals),
         .blob_gas_used = payload.blob_gas_used,

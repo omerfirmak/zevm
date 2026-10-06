@@ -24,7 +24,7 @@ pub const SlabAllocator = struct {
     pub fn init(parent: std.mem.Allocator) Self {
         return .{
             .parent = parent,
-            .frees = [_]std.atomic.Value(Head){std.atomic.Value(Head).init(.{})} ** NUM_BUCKET,
+            .frees = @splat(std.atomic.Value(Head).init(.{})),
         };
     }
 

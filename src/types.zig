@@ -117,21 +117,22 @@ pub const BlockHeader = struct {
         defer allocator.free(items);
 
         var i: usize = 0;
-        inline for (@typeInfo(BlockHeader).@"struct".fields) |field| {
-            switch (@typeInfo(field.type)) {
+        const info = @typeInfo(BlockHeader).@"struct";
+        inline for (info.field_names, info.field_types) |field_name, field_type| {
+            switch (@typeInfo(field_type)) {
                 .optional => |opt| {
                     if (i < items.len) {
                         var value: opt.child = undefined;
                         _ = try rlp.deserialize(opt.child, allocator, items[i].value, &value);
-                        @field(self.*, field.name) = value;
+                        @field(self.*, field_name) = value;
                         i += 1;
                     } else {
-                        @field(self.*, field.name) = null;
+                        @field(self.*, field_name) = null;
                     }
                 },
                 else => {
                     if (i >= items.len) return error.RlpPayloadTooShort;
-                    _ = try rlp.deserialize(field.type, allocator, items[i].value, &@field(self.*, field.name));
+                    _ = try rlp.deserialize(field_type, allocator, items[i].value, &@field(self.*, field_name));
                     i += 1;
                 },
             }
@@ -170,7 +171,7 @@ test "header decode encode" {
     try std.testing.expectEqualStrings(&std.fmt.bytesToHex(header.state_root, .lower), "f62f562b9be5b076ad074beee3d34e25ecda5ad7e0a615067dba4c37174a8afb");
     try std.testing.expectEqualStrings(&std.fmt.bytesToHex(header.transactions_root, .lower), "56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421");
     try std.testing.expectEqualStrings(&std.fmt.bytesToHex(header.receipts_root, .lower), "56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421");
-    try std.testing.expectEqualStrings(&std.fmt.bytesToHex(header.logs_bloom, .lower), "00" ** 256);
+    try std.testing.expectEqualStrings(&std.fmt.bytesToHex(header.logs_bloom, .lower), &@as([512]u8, @splat('0')));
     try std.testing.expectEqual(header.difficulty, 0);
     try std.testing.expectEqual(header.number, 0);
     try std.testing.expectEqual(header.gas_limit, 0x07270e00);
@@ -391,40 +392,33 @@ pub const Transaction = union(enum) {
 
 fn StripLast(comptime T: type, comptime n: usize) type {
     const src = @typeInfo(T).@"struct";
-    const count = src.fields.len - n;
+    const count = src.field_names.len - n;
     var field_names: [count][]const u8 = undefined;
-    var field_types: [count]type = undefined;
-    var field_attrs: [count]std.builtin.Type.StructField.Attributes = undefined;
-    for (0..count) |i| {
-        field_names[i] = src.fields[i].name;
-        field_types[i] = src.fields[i].type;
-        field_attrs[i] = .{ .@"comptime" = src.fields[i].is_comptime, .@"align" = src.fields[i].alignment, .default_value_ptr = src.fields[i].default_value_ptr };
-    }
+    for (&field_names, src.field_names[0..count]) |*dst, name| dst.* = name;
     return @Struct(
         .auto,
         null,
         &field_names,
-        &field_types,
-        &field_attrs,
+        src.field_types[0..count],
+        src.field_attrs[0..count],
     );
 }
 
 fn stripLast(comptime T: type, comptime n: usize, src: T) StripLast(T, n) {
     var out: StripLast(T, n) = undefined;
-    inline for (@typeInfo(StripLast(T, n)).@"struct".fields) |f|
-        @field(out, f.name) = @field(src, f.name);
+    inline for (@typeInfo(StripLast(T, n)).@"struct".field_names) |name|
+        @field(out, name) = @field(src, name);
     return out;
 }
 
 fn trailingNullCount(comptime T: type, self: T) usize {
-    const fields = @typeInfo(T).@"struct".fields;
+    const info = @typeInfo(T).@"struct";
     var n: usize = 0;
-    comptime var i: usize = fields.len;
+    comptime var i: usize = info.field_names.len;
     inline while (i > 0) {
         i -= 1;
-        const field = fields[i];
-        if (@typeInfo(field.type) != .optional) break;
-        if (@field(self, field.name) != null) break;
+        if (@typeInfo(info.field_types[i]) != .optional) break;
+        if (@field(self, info.field_names[i]) != null) break;
         n += 1;
     }
     return n;
@@ -477,7 +471,7 @@ test "access list tx decode" {
     try std.testing.expectEqual(1, al.access_list.len);
     try std.testing.expectEqualSlices(u8, &al.access_list[0].address, &[20]u8{ 0x39, 0x85, 0xd8, 0xb9, 0xed, 0xa3, 0x11, 0xb8, 0x4b, 0x1e, 0x2f, 0xbf, 0x91, 0xf0, 0x4e, 0x7a, 0x64, 0x54, 0xbf, 0x63 });
     try std.testing.expectEqual(1, al.access_list[0].storage_keys.len);
-    try std.testing.expectEqual([_]u8{0} ** 32, al.access_list[0].storage_keys[0]);
+    try std.testing.expectEqual(@as([32]u8, @splat(0)), al.access_list[0].storage_keys[0]);
     try std.testing.expectEqual(0x01, al.v);
     try std.testing.expectEqual(0x05ee32c650fc04868b37df068031089e862bc0544bbbce0f54d5320b764453e8, al.r);
     try std.testing.expectEqual(0x21700a8028a27f20f344c19cbca030b47c66c011707c889b5808997002202155, al.s);
@@ -580,7 +574,7 @@ test "set code tx decode" {
     try std.testing.expectEqual([32]u8{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x20, 0x0b }, sc.access_list[0].storage_keys[1]);
     try std.testing.expectEqual(1, sc.auth_list.len);
     try std.testing.expectEqual(0, sc.auth_list[0].chain_id);
-    try std.testing.expectEqualSlices(u8, &sc.auth_list[0].address, &[_]u8{0} ** 20);
+    try std.testing.expectEqualSlices(u8, &sc.auth_list[0].address, &@as([20]u8, @splat(0)));
     try std.testing.expectEqual(0, sc.auth_list[0].nonce);
     try std.testing.expectEqual(0, sc.auth_list[0].v);
     try std.testing.expectEqual(0x8af6634a4c93d4597b27318d46501d4ff47915770c20ba0901de5b261418e195, sc.auth_list[0].r);

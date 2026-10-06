@@ -24,7 +24,7 @@ pub const Store = struct {
     dbis: [table_count]lmdbx.Database.DBI,
 
     pub fn init(allocator: std.mem.Allocator, path: []const u8) !Store {
-        const init_path = try allocator.dupeZ(u8, path);
+        const init_path = try allocator.dupeSentinel(u8, path, 0);
         defer allocator.free(init_path);
 
         const env = try lmdbx.Environment.init(init_path, .{

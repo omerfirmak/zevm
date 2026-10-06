@@ -104,8 +104,8 @@ fn parseSegment(comptime T: type, allocator: std.mem.Allocator, segment: []const
 
 test "verify" {
     const allocator = std.testing.allocator;
-    const secret = try parseSecret("0x" ++ "11" ** 32 ++ "\n");
-    const other = try parseSecret("22" ** 32);
+    const secret = try parseSecret("0x" ++ @as([64]u8, @splat('1')) ++ "\n");
+    const other = try parseSecret(&@as([64]u8, @splat('2')));
     const now = 1_700_000_000;
 
     // {"alg":"HS256","typ":"JWT"}.{"iat":1700000030,"id":"cl"}
@@ -146,5 +146,5 @@ test "verify" {
 
 test "parseSecret" {
     try std.testing.expectError(error.InvalidSecretLength, parseSecret("11"));
-    try std.testing.expectError(error.InvalidCharacter, parseSecret("zz" ** 32));
+    try std.testing.expectError(error.InvalidCharacter, parseSecret(&@as([64]u8, @splat('z'))));
 }

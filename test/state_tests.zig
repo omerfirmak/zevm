@@ -158,7 +158,7 @@ fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []con
 
         const arena_allocator = arena.allocator();
 
-        var ancestors = [_]u256{0} ** 256;
+        var ancestors = @as([256]u256, @splat(0));
         if (test_case.env.previousHash) |h| ancestors[0] = h.value;
         var context = evm.Context{
             .chainid = 1,

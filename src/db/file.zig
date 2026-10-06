@@ -32,6 +32,8 @@ const PooledFile = struct {
     }
 };
 
+const FilePool = cache.StringCache(PooledFile);
+
 const FileOpener = struct {
     io: std.Io,
     datadir: std.Io.Dir,
@@ -58,7 +60,7 @@ pub const Storage = struct {
 
     next_indexes: [std.enums.values(Table).len]IndexEntry,
     ranges: [std.enums.values(Table).len]?struct { tail: u64, head: u64 },
-    file_pool: cache.Cache(PooledFile),
+    file_pool: FilePool,
 
     lock: std.Io.RwLock,
 
@@ -147,12 +149,12 @@ pub const Storage = struct {
         return .{ .file_no = 0, .offset = 0 };
     }
 
-    pub fn openFile(self: *Self, io: std.Io, file_name: []const u8) !*cache.Entry(PooledFile) {
+    pub fn openFile(self: *Self, io: std.Io, file_name: []const u8) !*FilePool.Entry {
         const opener = FileOpener{ .io = io, .datadir = self.datadir };
         return try self.file_pool.fetch(FileOpener, file_name, FileOpener.open, opener, .{}) orelse return error.OpenFailed;
     }
 
-    pub fn openIndexFile(self: *Self, io: std.Io, table: Table) !*cache.Entry(PooledFile) {
+    pub fn openIndexFile(self: *Self, io: std.Io, table: Table) !*FilePool.Entry {
         const table_name = @tagName(table);
 
         var buf: [1024]u8 = undefined;
@@ -160,7 +162,7 @@ pub const Storage = struct {
         return self.openFile(io, index_file);
     }
 
-    pub fn openDataFile(self: *Self, io: std.Io, table: Table, file_no: u16) !*cache.Entry(PooledFile) {
+    pub fn openDataFile(self: *Self, io: std.Io, table: Table, file_no: u16) !*FilePool.Entry {
         const table_name = @tagName(table);
 
         var buf: [1024]u8 = undefined;
@@ -199,7 +201,7 @@ pub const Storage = struct {
         var index_writer = index_file.value.file.writer(io, index_buffer);
         index_writer.pos = index_file_length;
 
-        var data_file: ?*cache.Entry(PooledFile) = null;
+        var data_file: ?*FilePool.Entry = null;
         defer if (data_file) |entry| entry.release();
 
         const data_buffer = try allocator.alloc(u8, 1024 * 1024);

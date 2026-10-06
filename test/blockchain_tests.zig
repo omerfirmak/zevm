@@ -168,7 +168,7 @@ fn runBlockchainTest(gpa: std.mem.Allocator, test_case: *const BlockchainTest, c
 
         const validate_err: ?anyerror, const prepared: ?zevm.processor.PreprocessedBlock = blk: {
             var p = parse_result catch |e| break :blk .{ e, null };
-            var ancestors = [_]u256{0} ** 256;
+            var ancestors = @as([256]u256, @splat(0));
             ancestors[0] = std.mem.readInt(u256, &p.block.header.parent_hash, .big);
             for (0..@min(ancestor_chain_len, 255)) |k| {
                 ancestors[k + 1] = std.mem.readInt(u256, &ancestor_chain[k], .big);

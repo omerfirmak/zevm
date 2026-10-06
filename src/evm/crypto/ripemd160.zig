@@ -198,8 +198,8 @@ test "test vectors" {
         "abcdefghijklmnopqrstuvwxyz",
         "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq",
         "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789",
-        "1234567890" ** 8,
-        "a" ** 1000000,
+        "12345678901234567890123456789012345678901234567890123456789012345678901234567890",
+        &@as([1000000]u8, @splat('a')),
     };
     const output = [_][]const u8{
         "9c1185a5c5e9fc54612808977ee8f548b2258d31",

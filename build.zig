@@ -427,7 +427,7 @@ pub fn build(b: *std.Build) void {
         "profile.release.lto=\"fat\"",
     });
     ziskos_build.setCwd(zisk_dep.path(""));
-    ziskos_build.setEnvironmentVariable("CARGO_TARGET_DIR", b.pathFromRoot(".zig-cache/ziskos-cargo-target"));
+    ziskos_build.addDirectoryArg2(b.path(".zig-cache/ziskos-cargo-target"), .{ .prefix = "--target-dir=", .make_absolute = true });
     ziskos_step.dependOn(&ziskos_build.step);
 
     const guest_target = b.resolveTargetQuery(.{

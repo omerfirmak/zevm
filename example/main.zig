@@ -29,7 +29,7 @@ pub fn main() !void {
         .gas_limit = 30_000_000,
         .max_blobs_per_block = 9,
         .blob_base_fee = 0,
-        .ancestors = [_]u256{0} ** 256,
+        .ancestors = @splat(0),
         .slotnum = 0,
     };
 

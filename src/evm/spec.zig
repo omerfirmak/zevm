@@ -475,13 +475,13 @@ pub const Osaka = Spec{
 
 fn override(base: anytype, changes: anytype) @TypeOf(base) {
     var result = base;
-    inline for (std.meta.fields(@TypeOf(changes))) |f| {
-        if (comptime std.mem.eql(u8, f.name, "gas_table")) {
-            inline for (std.meta.fields(@TypeOf(@field(changes, f.name)))) |g| {
-                result.gas_table[@field(Opcode, g.name).byte()] = @field(@field(changes, f.name), g.name);
+    inline for (@typeInfo(@TypeOf(changes)).@"struct".field_names) |name| {
+        if (comptime std.mem.eql(u8, name, "gas_table")) {
+            inline for (@typeInfo(@TypeOf(changes.gas_table)).@"struct".field_names) |op| {
+                result.gas_table[@field(Opcode, op).byte()] = @field(changes.gas_table, op);
             }
         } else {
-            @field(result, f.name) = @field(changes, f.name);
+            @field(result, name) = @field(changes, name);
         }
     }
     return result;

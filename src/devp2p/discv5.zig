@@ -85,7 +85,7 @@ pub const Server = struct {
     pending: []Pending,
     seen: []u8,
     seen_salt: [32]u8 = undefined,
-    sessions: cache.Cache(Session),
+    sessions: cache.StringCache(Session),
     table: Table,
 
     dialer: *const Dialer,

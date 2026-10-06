@@ -16,7 +16,10 @@ jobs:
 
       - uses: mlugg/setup-zig@v2
         with:
-          version: 0.16.0
+          version: 0.17.0
+
+      - name: Build node
+        run: zig build zevm
 
       - name: Build and run example
         run: zig build example
@@ -40,7 +43,7 @@ jobs:
 
       - uses: mlugg/setup-zig@v2
         with:
-          version: 0.16.0
+          version: 0.17.0
 
       - name: Download and extract state test fixtures
         run: curl -L https://github.com/ethereum/execution-specs/releases/download/tests%40v21.0.0/fixtures.tar.gz | tar -xz
@@ -61,7 +64,7 @@ jobs:
 
       - uses: mlugg/setup-zig@v2
         with:
-          version: 0.16.0
+          version: 0.17.0
 
       - name: Download and extract state test fixtures
         run: curl -L https://github.com/ethereum/execution-specs/releases/download/tests%40v21.0.0/fixtures.tar.gz | tar -xz
@@ -82,7 +85,7 @@ jobs:
 
       - uses: mlugg/setup-zig@v2
         with:
-          version: 0.16.0
+          version: 0.17.0
 
       - name: Download and extract zkEVM test fixtures
         run: |
@@ -115,7 +118,7 @@ jobs:
 
       - uses: mlugg/setup-zig@v2
         with:
-          version: 0.16.0
+          version: 0.17.0
 
       - name: Build guest
         run: zig build zisk -Doptimize=ReleaseFast

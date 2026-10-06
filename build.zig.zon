@@ -28,7 +28,7 @@
 
     // Tracks the earliest Zig version that the package considers to be a
     // supported use case.
-    .minimum_zig_version = "0.16.0",
+    .minimum_zig_version = "0.17.0",
 
     // This field is optional.
     // Each dependency must either provide a `url` and `hash`, or a `path`.
@@ -37,48 +37,48 @@
     // internet connectivity.
     .dependencies = .{
         .zig_eth_secp256k1 = .{
-            .url = "git+https://github.com/jsign/zig-eth-secp256k1.git#01f8df8a1633a40f958ee06640e886424a85106f",
-            .hash = "zig_eth_secp256k1-0.1.0-_U97sAbrDAAB9Q-p2ik2QqpECd08t0meJdb11Rh-HnGo",
+            .url = "git+https://github.com/jsign/zig-eth-secp256k1.git#decd141842235c582777dbf617825eb4ec06cc48",
+            .hash = "zig_eth_secp256k1-0.1.0-_U97sOfqDAAm4RPT73VOaJv341nIvioLaaUGgaArWc-N",
         },
         .blst = .{
             .url = "git+https://github.com/supranational/blst.git#f41f71513e0e55707595672c218d4f8961b7d756",
             .hash = "blst-0.3.16-fvxk1cQ7MADXoMijmUkSjmt0wXV-piV7weQEgHI-K_ts",
         },
         .ckzg_4844 = .{
-            .url = "git+https://github.com/ethereum/c-kzg-4844.git?ref=v2.1.8#e125905e5e01186e6ccb7a0ced4845bf7eddbcfe",
-            .hash = "ckzg_4844-0.0.0-I7LPWMw0EQBnqYagHE3VRwTrTAYpH0u6ZBPtfAeJsuDa",
+            .url = "git+https://github.com/omerfirmak/c-kzg-4844.git#68b445e8fccef5c1ff06c9b14b5d7fe83639623c",
+            .hash = "ckzg_4844-0.0.0-I7LPWAM3EQCiMdXQ8r65-BJAfGXcIe2y3JbBDSPieyyf",
         },
         .mcl = .{
             .url = "git+https://github.com/herumi/mcl.git#877aa82ecc55dc111922492ad600e177d78dfc29",
             .hash = "N-V-__8AAJ5LOwAk0_668msKUyA4IArprUwIQCesqghjucYS",
         },
         .clap = .{
-            .url = "git+https://github.com/Hejsil/zig-clap?ref=0.12.0#8d97efa1ee1e575443c7888d5c38e1c3fc145cf5",
-            .hash = "clap-0.12.0-oBajB7foAQDqlSwaSG5g0yq7xGbQARUsBk5T64gAOqP5",
+            .url = "git+https://github.com/Hejsil/zig-clap#05faf3905e8548f5cc269a8836e154065e70128d",
+            .hash = "clap-0.12.0-oBajB4XpAQCF1WRKnD5KOKPsnwwT_NNdAJ7Ww3irYJac",
         },
         .rlp = .{
-            .url = "git+https://github.com/gballet/zig-rlp.git#6c645faf7ac423eed4addf016a6f6d8f428e0006",
-            .hash = "rlp-0.1.0-7i0JtH06AQBdU6PoGJ6V9HGdhn6uPirq6G6Y3yHSa8gH",
+            .url = "git+https://github.com/gballet/zig-rlp.git#133352905de96e21e56366f1b09552683199cb23",
+            .hash = "rlp-0.1.0-7i0JtIZOAQDsrbKZFe1BHInPdhFqiKRIV2-DNnuRGbMp",
         },
         .ssz = .{
-            .url = "git+https://github.com/omerfirmak/ssz.zig.git#32aadce1122174dbb185129c62133ef2f88156a4",
-            .hash = "ssz-0.0.9-Lfwd6-Y0BACPYd7ifVKUb8au6F9NphMMhzlJdq5f4Cvc",
+            .url = "git+https://github.com/omerfirmak/ssz.zig.git#614e40cb5a532f911057bb887db28b768bed1537",
+            .hash = "ssz-0.0.9-Lfwd6_s1BAC_I_Ynhg1B3diXN-H_vVn5EFLStuss6uR-",
         },
         .zisk = .{
             .url = "git+https://github.com/0xPolygonHermez/zisk?ref=v1.1.0-alpha#9a5a1ac594b9b6e527fc6f54ff4313f75c4acf93",
             .hash = "N-V-__8AAIkYtQIMQC4kxIrlhpHv17X0EDM5DkUUuiagXTax",
         },
         .snappy = .{
-            .url = "git+https://github.com/ChainSafe/snappy.zig#713942410426051da6107a955b29f3f152815622",
-            .hash = "snappy-0.1.0-n4AaquQ4AADQScvw9-i6SJvZTTagvxmGgGKnat4T_a4e",
+            .url = "git+https://github.com/omerfirmak/snappy.zig#39b80a5740babbd6aea1fa322393e9d83ed5d8ad",
+            .hash = "snappy-0.1.0-n4AaqkQ6AABuaVkH9d6MXv_wwFxQ92FQ8mrePXuDPE6u",
         },
         .cache = .{
-            .url = "git+https://github.com/karlseguin/cache.zig.git#51b9d77bec8d9f3717349e9a007ff689959f3479",
-            .hash = "cache-0.0.0-winRwJu4AAD4Kf1LLubro_8Pf66vN8U4ARd0U4imAOI5",
+            .url = "git+https://github.com/karlseguin/cache.zig.git#b0bc7913a4b428e1b09d26bef0684ac77dc7af3a",
+            .hash = "cache-0.0.0-winRwI3VAACl4n1O_tjPtxGWxyfdWUJnOcGqkyFoO6De",
         },
         .lmdbx = .{
-            .url = "git+https://github.com/omerfirmak/lmdbx-zig?ref=pin-moving-deps#45b8a52ff83df72368b77270ea6f1e867453bbf6",
-            .hash = "lmdbx-0.4.0-WlIvzjQYBAAb_O-BneJhMNVJyplu6TVyg3C7GJh7YeIe",
+            .url = "git+https://github.com/omerfirmak/lmdbx-zig#e0de12e111c948cced824c8e9f3a4a37e784506b",
+            .hash = "lmdbx-0.4.0-WlIvzjIRBACiwUJgyjkqzubUmJst-uU-TXP2RK0EQC6N",
         },
     },
     .paths = .{

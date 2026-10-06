@@ -11,7 +11,7 @@ pub const empty_root_hash: [32]u8 = .{
 
 pub const Node = union(enum) {
     pub const Branch = struct {
-        children: [16]?*Node = [_]?*Node{null} ** 16,
+        children: [16]?*Node = @splat(null),
         hash: ?*[32]u8 = null,
 
         pub fn init() Node {

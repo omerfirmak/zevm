@@ -16,7 +16,7 @@ pub const CommittedState = struct {
         0x60, 0x20, 0x60, 0x00, 0xa1, // PUSH1 32, PUSH1 0, LOG1
         0x60, 0x20, 0x60, 0x00, 0xf3, // PUSH1 32, PUSH1 0, RETURN
     };
-    const code_hash: [32]u8 = [_]u8{ 0x13, 0x37 } ++ [_]u8{0x00} ** 30;
+    const code_hash: [32]u8 = [_]u8{ 0x13, 0x37 } ++ @as([30]u8, @splat(0x00));
 
     pub fn account(_: *const @This(), addr: u160) !types.Account {
         if (addr == sender) {
