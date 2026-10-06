@@ -171,7 +171,19 @@ pub fn main(init: std.process.Init) !void {
     var discv_thread = try init.io.concurrent(discv5.Server.run, .{&server});
     defer discv_thread.cancel(init.io) catch {};
 
-    var eth_api: EthApi = .init(&bc);
+    var store = try kv.Store.init(slabs.allocator(), mdbx_path);
+    var eth_db = EthDb.init(&store);
+
+    var downloader = try Downloader.init(
+        init.io,
+        slabs.allocator(),
+        &bc,
+        &eth_db,
+        &ethproto,
+        &snapproto,
+    );
+
+    var eth_api: EthApi = .init(&bc, &downloader);
     var jsonrpc_server: RpcServer = .{};
     try eth_api.register(init.arena.allocator(), &jsonrpc_server);
 
@@ -187,18 +199,6 @@ pub fn main(init: std.process.Init) !void {
         .with_auth(jwt_secret);
     var authrpc_thread = try init.io.concurrent(RpcHttpServer.run, .{&authrpc_http});
     defer authrpc_thread.cancel(init.io) catch {};
-
-    var store = try kv.Store.init(slabs.allocator(), mdbx_path);
-    var eth_db = EthDb.init(&store);
-
-    var downloader = try Downloader.init(
-        init.io,
-        slabs.allocator(),
-        &bc,
-        &eth_db,
-        &ethproto,
-        &snapproto,
-    );
 
     try downloader.run();
 }
