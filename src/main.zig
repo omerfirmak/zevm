@@ -22,6 +22,7 @@ const EngineApi = @import("rpc/engine.zig").Engine;
 const RpcServer = @import("rpc/jsonrpc.zig").Server;
 const RpcHttpServer = @import("rpc/http.zig").HttpServer;
 const jwt = @import("rpc/jwt.zig");
+const metrics = @import("metrics.zig");
 
 pub const std_options: std.Options = .{
     .log_level = .info,
@@ -42,6 +43,8 @@ const params = clap.parseParamsComptime(
     \\    --authrpc-addr <str>  Authenticated (Engine API) RPC listening address (default: 127.0.0.1).
     \\    --authrpc-port <u16>  Authenticated (Engine API) RPC listening port (default: 8551).
     \\    --authrpc-jwtsecret <str> Path to the hex-encoded JWT secret; created if missing (default: <datadir>/jwt.hex).
+    \\    --metrics-addr <str>  Prometheus metrics HTTP listening address (default: 127.0.0.1).
+    \\    --metrics-port <u16>  Prometheus metrics HTTP listening port (default: 6060).
     \\
 );
 
@@ -60,6 +63,7 @@ const Options = struct {
     http_addr: std.Io.net.IpAddress,
     authrpc_addr: std.Io.net.IpAddress,
     authrpc_jwtsecret: ?[]const u8,
+    metrics_addr: std.Io.net.IpAddress,
 
     fn parse(init: std.process.Init) !?Options {
         var diag = clap.Diagnostic{};
@@ -81,6 +85,8 @@ const Options = struct {
         const http_port = res.args.@"http-port" orelse 8545;
         const authrpc_addr = res.args.@"authrpc-addr" orelse "127.0.0.1";
         const authrpc_port = res.args.@"authrpc-port" orelse 8551;
+        const metrics_addr = res.args.@"metrics-addr" orelse "127.0.0.1";
+        const metrics_port = res.args.@"metrics-port" orelse 6060;
         return .{
             .config = switch (network) {
                 .glamsterdam_devnet8 => blockchain.glamsterdam_devnet8_config,
@@ -104,6 +110,10 @@ const Options = struct {
                 std.process.exit(1);
             },
             .authrpc_jwtsecret = res.args.@"authrpc-jwtsecret",
+            .metrics_addr = std.Io.net.IpAddress.parse(metrics_addr, metrics_port) catch |e| {
+                std.log.err("invalid --metrics-addr {s}: {}", .{ metrics_addr, e });
+                std.process.exit(1);
+            },
         };
     }
 };
@@ -158,6 +168,11 @@ pub fn main(init: std.process.Init) !void {
 
     var rlpx_thread = try init.io.concurrent(rlpx.Server.run, .{&rlpx_server});
     defer rlpx_thread.cancel(init.io) catch {};
+
+    const metrics_sources = [_]metrics.Source{.from(rlpx.Server, &rlpx_server)};
+    var metrics_http: metrics.HttpServer = try .init(init.io, slabs.allocator(), &metrics_sources, opts.metrics_addr);
+    var metrics_thread = try init.io.concurrent(metrics.HttpServer.run, .{&metrics_http});
+    defer metrics_thread.cancel(init.io) catch {};
 
     const dialer = Dialer.init(&rlpx_server, &id_filter, &bc);
 
