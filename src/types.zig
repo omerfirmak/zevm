@@ -740,7 +740,7 @@ pub const NonceChange = struct {
 
 pub const CodeChange = struct {
     index: u32,
-    code: []u8,
+    code: []const u8,
 };
 
 pub const SlotChanges = struct {

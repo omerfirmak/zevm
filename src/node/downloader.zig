@@ -821,6 +821,7 @@ pub const Downloader = struct {
                         state_heal.target_pivot.number - state_heal.start_number,
                         state_heal.started_at.durationTo(std.Io.Clock.now(.real, self.io)).toSeconds(),
                     });
+                    bal.arena.deinit();
                     self.state_heal = null;
                     self.popSnapRequests();
                     return;
@@ -1000,12 +1001,14 @@ pub const Downloader = struct {
                     if (rlp.deserialize(types.BlockAccessLists, self.eth_arena.allocator(), access_lists.rlps[0].value, &bal)) |_| {
                         std.debug.assert(state_heal.bal == null);
 
+                        // the raw rlp points into the message payload, which is freed after this handler
+                        const bal_rlp = try self.eth_arena.allocator().dupe(u8, access_lists.rlps[0].value);
                         // the parsed bal outlives this message, take ownership of the eth arena it lives in
                         const arena = self.eth_arena;
                         self.eth_arena = .init(self.allocator);
                         state_heal.bal = .{
                             .arena = arena,
-                            .rlp = access_lists.rlps[0],
+                            .rlp = .{ .value = bal_rlp },
                             .parsed = bal,
                         };
                         self.free_eth_requests.push(req);
