@@ -28,10 +28,13 @@ pub const Eth = struct {
     }
 
     pub fn syncing(self: *Self, _: std.Io, _: std.mem.Allocator) !Syncing {
-        const target = self.downloader.syncTarget() orelse return .not_syncing;
+        const target = self.downloader.syncTarget();
+        const head = try self.bc.head();
+        if (target.number <= head.number) return .not_syncing;
+
         return .{ .syncing = .{
             .startingBlock = .init(target.cutoff_number),
-            .currentBlock = .init((try self.bc.head()).number),
+            .currentBlock = .init(head.number),
             .highestBlock = .init(target.number),
         } };
     }

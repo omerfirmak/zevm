@@ -66,7 +66,7 @@ pub const Downloader = struct {
     pending_snap_requests: List(Request(snap.Message)) = .{},
     stashed_snap_requests: []Request(snap.Message),
 
-    sync_target: ?SyncTarget = null,
+    sync_target: SyncTarget,
     sync_target_mutex: std.Io.Mutex = .init,
     header: ?struct {
         requested_header_head: u64,
@@ -115,6 +115,9 @@ pub const Downloader = struct {
 
         var stashed_snap_requests = try allocator.alloc(Request(snap.Message), max_inflight_requests);
         stashed_snap_requests.len = 0;
+
+        const head = try bc.head();
+
         return .{
             .io = io,
             .allocator = allocator,
@@ -128,6 +131,12 @@ pub const Downloader = struct {
             .free_snap_requests = try .init(allocator, max_inflight_requests),
             .stashed_snap_requests = stashed_snap_requests,
             .peer_ranges = peer_ranges,
+            .sync_target = .{
+                .number = head.number,
+                .hash = head.hash,
+                .cutoff_number = head.number,
+                .cutoff_hash = head.hash,
+            },
         };
     }
 
@@ -262,13 +271,13 @@ pub const Downloader = struct {
         self.drainPendingEthRequests();
     }
 
-    pub fn syncTarget(self: *Self) ?SyncTarget {
+    pub fn syncTarget(self: *Self) SyncTarget {
         self.sync_target_mutex.lockUncancelable(self.io);
         defer self.sync_target_mutex.unlock(self.io);
         return self.sync_target;
     }
 
-    pub fn setSyncTarget(self: *Self, target: ?SyncTarget) void {
+    pub fn setSyncTarget(self: *Self, target: SyncTarget) void {
         self.sync_target_mutex.lockUncancelable(self.io);
         defer self.sync_target_mutex.unlock(self.io);
         self.sync_target = target;
@@ -278,9 +287,7 @@ pub const Downloader = struct {
         const head = try self.bc.head();
         if (head.number >= number) return;
         const cur_target = self.syncTarget();
-        if (cur_target) |target| {
-            if (target.number >= number) return;
-        }
+        if (cur_target.number >= number) return;
 
         if (head.number == 0 and self.header == null) {
             self.header = .{
@@ -289,7 +296,7 @@ pub const Downloader = struct {
             };
             self.state = .{ .pivot = try self.bc.readHeader(0) orelse unreachable };
         }
-        if (cur_target == null) self.progress.headers = 0;
+        if (cur_target.number <= head.number) self.progress.headers = 0;
         self.setSyncTarget(.{
             .hash = hash,
             .number = number,
@@ -305,7 +312,7 @@ pub const Downloader = struct {
             .get_block_headers => |header_req| {
                 const height = switch (header_req.range.origin) {
                     .number => |number| number,
-                    .hash => self.syncTarget().?.number,
+                    .hash => self.syncTarget().number,
                 };
                 return self.eth_provider.pickRandomPeer(PeerFilter(eth.Message).init(self, &self.inflight_eth_requests, height));
             },
@@ -354,7 +361,7 @@ pub const Downloader = struct {
     }
 
     fn advanceHeaderDownload(self: *Self) !void {
-        const target = self.syncTarget() orelse return;
+        const target = self.syncTarget();
 
         var status = &self.header.?;
         if (status.requested_header_tail != std.math.maxInt(u64) and status.requested_header_head < target.number) {
@@ -562,7 +569,7 @@ pub const Downloader = struct {
     }
 
     fn checkHeaderDownloadComplete(self: *Self) !void {
-        const target = self.syncTarget().?;
+        const target = self.syncTarget();
         if (self.header.?.requested_header_head < target.number or
             self.header.?.requested_header_tail > target.cutoff_number)
             return;
@@ -594,13 +601,12 @@ pub const Downloader = struct {
         }
 
         try self.clearDownloadedHeaders();
-        self.setSyncTarget(null);
     }
 
     fn updatePivot(self: *Self) !void {
         if (self.state == null) return;
 
-        const head_height = if (self.syncTarget()) |sync_target| sync_target.number else (try self.bc.head()).number;
+        const head_height = self.syncTarget().number;
         const new_pivot_height = if (head_height > 32) head_height - 32 else 0;
 
         const cur_pivot = self.state.?.pivot;
@@ -1240,7 +1246,9 @@ pub const Downloader = struct {
             });
         }
 
-        if (self.syncTarget()) |target| {
+        const target = self.syncTarget();
+        const head_number = if (self.bc.head()) |head| head.number else |_| target.number;
+        if (target.number > head_number) {
             const total_headers = target.number - target.cutoff_number + 1;
             log.info("header download: {d:.2}% ({}/{} headers), target {}, inflight requests {}", .{
                 @as(f64, @floatFromInt(self.progress.headers)) / @as(f64, @floatFromInt(total_headers)) * 100,
@@ -1323,12 +1331,8 @@ pub const Downloader = struct {
 
     fn headerIsInTargetChain(self: *Self, header: types.BlockHeader) !bool {
         const target = self.syncTarget();
-        const head = if (target) |sync_target|
-            try self.readHeader(sync_target.number) orelse return error.Maybe
-        else
-            try self.bc.headHeader();
-        if (target) |sync_target|
-            if (!std.mem.eql(u8, &sync_target.hash, &head.hash())) return error.Maybe;
+        const head = try self.readHeader(target.number) orelse return error.Maybe;
+        if (!std.mem.eql(u8, &target.hash, &head.hash())) return error.Maybe;
 
         const stored_header = try self.readHeader(header.number) orelse return false;
         if (!std.mem.eql(u8, &stored_header.hash(), &header.hash())) return false;
