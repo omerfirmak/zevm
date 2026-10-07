@@ -35,6 +35,8 @@ fn Request(comptime msg: type) type {
 pub const Downloader = struct {
     const Self = @This();
     pub const SyncTarget = struct {
+        paused: bool = false,
+
         number: u64,
         hash: [32]u8,
 
@@ -277,17 +279,25 @@ pub const Downloader = struct {
         return self.sync_target;
     }
 
-    pub fn setSyncTarget(self: *Self, target: SyncTarget) void {
-        self.sync_target_mutex.lockUncancelable(self.io);
-        defer self.sync_target_mutex.unlock(self.io);
-        self.sync_target = target;
-    }
-
     fn updateTarget(self: *Self, number: u64, hash: [32]u8) !void {
         const head = try self.bc.head();
         if (head.number >= number) return;
-        const cur_target = self.syncTarget();
-        if (cur_target.number >= number) return;
+
+        {
+            self.sync_target_mutex.lockUncancelable(self.io);
+            defer self.sync_target_mutex.unlock(self.io);
+
+            if (self.sync_target.paused) return;
+            if (self.sync_target.number >= number) return;
+            if (self.sync_target.number <= head.number) self.progress.headers = 0;
+
+            self.sync_target = .{
+                .hash = hash,
+                .number = number,
+                .cutoff_number = head.number,
+                .cutoff_hash = head.hash,
+            };
+        }
 
         if (head.number == 0 and self.header == null) {
             self.header = .{
@@ -296,13 +306,6 @@ pub const Downloader = struct {
             };
             self.state = .{ .pivot = try self.bc.readHeader(0) orelse unreachable };
         }
-        if (cur_target.number <= head.number) self.progress.headers = 0;
-        self.setSyncTarget(.{
-            .hash = hash,
-            .number = number,
-            .cutoff_number = head.number,
-            .cutoff_hash = head.hash,
-        });
 
         try self.updatePivot();
     }
