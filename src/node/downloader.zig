@@ -227,7 +227,7 @@ pub const Downloader = struct {
 
             if (request.elem.deadline.toMilliseconds() < now.toMilliseconds()) {
                 if (!std.meta.eql(request.elem.peer, invalid_peer)) {
-                    log.warn("{t} request {} to {} timed out after {}ms (timeout {}ms)", .{
+                    log.debug("{t} request {} to {} timed out after {}ms (timeout {}ms)", .{
                         std.meta.activeTag(request.elem.msg),
                         request.elem.id,
                         request.elem.peer,

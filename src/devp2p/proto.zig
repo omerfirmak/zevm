@@ -2,6 +2,8 @@ const std = @import("std");
 const rlpx = @import("rlpx.zig");
 const rlp = @import("rlp");
 
+const log = std.log.scoped(.proto);
+
 pub const Config = struct {
     name: []const u8,
     version: u64,
@@ -184,6 +186,12 @@ pub fn Provider(comptime cfg: Config) type {
             const rtt = self.peers[peer_id.peer_index].rtt.getPtr(id);
             rtt.nanoseconds = @divTrunc(8 * rtt.nanoseconds + 2 * delay.nanoseconds, 10);
             if (rtt.nanoseconds > max_rtt.nanoseconds) {
+                log.warn("dropping {s} peer {} for slow {t} responses (rtt {}ms)", .{
+                    cfg.name,
+                    peer_id,
+                    id,
+                    rtt.toMilliseconds(),
+                });
                 rtt.* = default_rtt;
                 self.disconnect(peer_id, error.SlowPeer);
             }
