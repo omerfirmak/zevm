@@ -161,6 +161,7 @@ pub fn build(b: *std.Build) void {
     const snappy_dep = b.dependency("snappy", .{ .target = target, .optimize = optimize });
     const cache_dep = b.dependency("cache", .{ .target = target, .optimize = optimize });
     const mdbx_dep = b.dependency("lmdbx", .{ .target = target, .optimize = optimize });
+    const metrics_dep = b.dependency("metrics", .{ .target = target, .optimize = optimize });
 
     const mcl_lib = buildMcl(b, mcl_dep, target);
     const mcl = b.addTranslateC(.{
@@ -234,6 +235,7 @@ pub fn build(b: *std.Build) void {
     unit_tests.root_module.addImport("cache", cache_dep.module("cache"));
     unit_tests.root_module.addImport("snappy", snappy_dep.module("snappy"));
     unit_tests.root_module.addImport("lmdbx", mdbx_dep.module("lmdbx"));
+    unit_tests.root_module.addImport("metrics", metrics_dep.module("metrics"));
     test_step.dependOn(&b.addRunArtifact(unit_tests).step);
 
     // Example user
@@ -482,6 +484,7 @@ pub fn build(b: *std.Build) void {
     main_exe.root_module.addImport("cache", cache_dep.module("cache"));
     main_exe.root_module.addImport("lmdbx", mdbx_dep.module("lmdbx"));
     main_exe.root_module.addImport("clap", clap_dep.module("clap"));
+    main_exe.root_module.addImport("metrics", metrics_dep.module("metrics"));
     main_exe.root_module.addOptions("build_options", native_opts);
     const main_step = b.step("zevm", "");
     const main_install = b.addInstallArtifact(main_exe, .{});

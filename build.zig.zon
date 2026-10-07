@@ -80,6 +80,10 @@
             .url = "git+https://github.com/omerfirmak/lmdbx-zig#e0de12e111c948cced824c8e9f3a4a37e784506b",
             .hash = "lmdbx-0.4.0-WlIvzjIRBACiwUJgyjkqzubUmJst-uU-TXP2RK0EQC6N",
         },
+        .metrics = .{
+            .url = "git+https://github.com/karlseguin/metrics.zig#ac167295b6a8fd84ca7af852c1032e6b246101f0",
+            .hash = "metrics-0.0.0-W7G4eGWhAQC-C6tpIW3uxJp-vl6rLyfJvoqJRLzF1SuS",
+        },
     },
     .paths = .{
         "build.zig",

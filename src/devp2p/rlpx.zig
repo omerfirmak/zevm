@@ -11,6 +11,7 @@ const Keccak256 = std.crypto.hash.sha3.Keccak256;
 const Aes128 = std.crypto.core.aes.Aes128;
 const Aes256 = std.crypto.core.aes.Aes256;
 const modes = std.crypto.core.modes;
+const prom = @import("metrics");
 
 const p2p_version = 5;
 const max_frame_size = 1 << 24;
@@ -19,6 +20,68 @@ const ecies_overhead = 65 + 16 + 32; // ephemeral pubkey + IV + HMAC-SHA256 tag
 const max_inflight_writes_per_peer = 24;
 
 const log = std.log.scoped(.rlpx);
+
+const Metrics = struct {
+    connections: prom.Gauge(i64),
+    peers: prom.Gauge(i64),
+    inbound: prom.Counter(u64),
+    dials: prom.Counter(u64),
+    failed_dials: prom.Counter(u64),
+    handshakes: prom.CounterVec(u64, struct { direction: []const u8 }),
+    disconnects: prom.CounterVec(u64, DisconnectLabels),
+    frames_received: prom.Counter(u64),
+    frames_sent: prom.Counter(u64),
+    bytes_received: prom.Counter(u64),
+    bytes_sent: prom.Counter(u64),
+    messages_received: prom.CounterVec(u64, CapLabels),
+    messages_dropped: prom.CounterVec(u64, CapLabels),
+    loop_wait_seconds: prom.Counter(f64),
+    loop_busy_seconds: prom.Counter(f64),
+
+    const DisconnectLabels = struct { stage: []const u8, side: []const u8, reason: []const u8 };
+    const CapLabels = struct { cap: []const u8 };
+
+    fn init(allocator: std.mem.Allocator, io: std.Io) !Metrics {
+        const opts: prom.RegistryOpts = .{};
+        var handshakes: @FieldType(Metrics, "handshakes") = try .init(allocator, io, "rlpx_handshakes_total", .{ .help = "Completed hello exchanges" }, opts);
+        errdefer handshakes.deinit();
+        var disconnects: @FieldType(Metrics, "disconnects") = try .init(allocator, io, "rlpx_disconnects_total", .{ .help = "Peer disconnects by stage, initiating side and reason" }, opts);
+        errdefer disconnects.deinit();
+        var messages_received: @FieldType(Metrics, "messages_received") = try .init(allocator, io, "rlpx_messages_received_total", .{ .help = "Subprotocol messages received" }, opts);
+        errdefer messages_received.deinit();
+        const messages_dropped: @FieldType(Metrics, "messages_dropped") = try .init(allocator, io, "rlpx_messages_dropped_total", .{ .help = "Subprotocol messages dropped due to a full handler queue" }, opts);
+
+        return .{
+            .connections = .init("rlpx_connections", .{ .help = "Open RLPx connections, including ones still handshaking" }, opts),
+            .peers = .init("rlpx_peers", .{ .help = "Peers that completed the hello exchange" }, opts),
+            .inbound = .init("rlpx_inbound_total", .{ .help = "Accepted inbound connections" }, opts),
+            .dials = .init("rlpx_dials_total", .{ .help = "Outbound dial attempts" }, opts),
+            .failed_dials = .init("rlpx_failed_dials_total", .{ .help = "Outbound dials that failed before a connection was established" }, opts),
+            .handshakes = handshakes,
+            .disconnects = disconnects,
+            .frames_received = .init("rlpx_frames_received_total", .{}, opts),
+            .frames_sent = .init("rlpx_frames_sent_total", .{}, opts),
+            .bytes_received = .init("rlpx_bytes_received_total", .{}, opts),
+            .bytes_sent = .init("rlpx_bytes_sent_total", .{}, opts),
+            .messages_received = messages_received,
+            .messages_dropped = messages_dropped,
+            .loop_wait_seconds = .init("rlpx_loop_wait_seconds_total", .{ .help = "Time the peer loop spent waiting on the IO batch" }, opts),
+            .loop_busy_seconds = .init("rlpx_loop_busy_seconds_total", .{ .help = "Time the peer loop spent processing" }, opts),
+        };
+    }
+
+    fn deinit(self: *Metrics) void {
+        self.handshakes.deinit();
+        self.disconnects.deinit();
+        self.messages_received.deinit();
+        self.messages_dropped.deinit();
+    }
+};
+
+fn secondsSince(io: std.Io, start: std.Io.Timestamp) f64 {
+    const ns = start.durationTo(std.Io.Timestamp.now(io, .awake)).toNanoseconds();
+    return @as(f64, @floatFromInt(ns)) / std.time.ns_per_s;
+}
 
 const DisconnectReason = enum(u8) {
     requested = 0x00,
@@ -181,6 +244,7 @@ pub const Server = struct {
     batch: std.Io.Batch,
 
     stats: Stats = .{},
+    metrics: Metrics,
 
     pub fn init(allocator: std.mem.Allocator, io: std.Io, identity: Ecdsa.KeyPair, port: u16, proto_handlers: []RegisteredCapability) !Self {
         const addr: std.Io.net.IpAddress = .{ .ip4 = .unspecified(port) };
@@ -194,6 +258,8 @@ pub const Server = struct {
         const batch = std.Io.Batch.init(batch_storage);
         const free_write_queue_slots = try allocator.alloc(std.atomic.Value(usize), max_peers);
         for (free_write_queue_slots) |*s| s.* = .init(max_inflight_writes_per_peer);
+        var metrics: Metrics = try .init(allocator, io);
+        errdefer metrics.deinit();
 
         return .{
             .allocator = allocator,
@@ -215,12 +281,18 @@ pub const Server = struct {
             .free_write_queue_slots = free_write_queue_slots,
             .batch_op_storage = batch_storage,
             .batch = batch,
+            .metrics = metrics,
         };
     }
 
     pub fn deinit(self: *Self) void {
         self.allocator.free(self.slots);
         self.tcp_listener.deinit(self.io);
+        self.metrics.deinit();
+    }
+
+    pub fn writeMetrics(self: *Self, writer: *std.Io.Writer) !void {
+        return prom.write(&self.metrics, writer);
     }
 
     fn sharedCaps(self: *const Self, allocator: std.mem.Allocator, peer_caps: []const Capability) ![]SharedCap {
@@ -301,18 +373,26 @@ pub const Server = struct {
         slot.peer = try .init(self.allocator, stream, self);
         slot.status.store(.Ready, .release);
         _ = self.stats.inbound.fetchAdd(1, .monotonic);
+        self.metrics.inbound.incr();
+        self.metrics.connections.incr();
     }
 
     fn listenPeers(self: *Self) !void {
+        var busy_start = std.Io.Timestamp.now(self.io, .awake);
         while (true) {
             self.checkPeerStatus();
             try self.drainWriteQueue();
 
             self.io.checkCancel() catch break;
-            self.batch.awaitConcurrent(self.io, .{ .duration = .{
+            const wait_start = std.Io.Timestamp.now(self.io, .awake);
+            self.metrics.loop_busy_seconds.incrBy(secondsSince(self.io, busy_start));
+            const awaited = self.batch.awaitConcurrent(self.io, .{ .duration = .{
                 .clock = .real,
                 .raw = .fromMilliseconds(250),
-            } }) catch |e| switch (e) {
+            } });
+            busy_start = std.Io.Timestamp.now(self.io, .awake);
+            self.metrics.loop_wait_seconds.incrBy(secondsSince(self.io, wait_start));
+            awaited catch |e| switch (e) {
                 std.Io.Cancelable.Canceled => return e,
                 else => continue,
             };
@@ -336,8 +416,8 @@ pub const Server = struct {
                     self.scheduleWrite(index, null);
             } else {
                 if (slot.peer.status == .dialed) {
-                    slot.peer.sendHandshake() catch {
-                        _ = self.markPeerExiting(index);
+                    slot.peer.sendHandshake() catch |e| {
+                        _ = self.markPeerExiting(index, e);
                         self.clearSlot(slot);
                         continue;
                     };
@@ -358,15 +438,20 @@ pub const Server = struct {
     }
 
     fn onReadCompletion(self: *Self, completed: std.Io.Batch.Completion) !void {
-        const slot = &self.slots[completed.index];
-        const peer = &slot.peer;
-        errdefer {
-            _ = self.markPeerExiting(completed.index);
-            if (peer.armed_iov == null) self.clearSlot(slot);
-        }
+        self.processRead(completed) catch |e| {
+            const slot = &self.slots[completed.index];
+            _ = self.markPeerExiting(completed.index, e);
+            if (slot.peer.armed_iov == null) self.clearSlot(slot);
+            return e;
+        };
+    }
+
+    fn processRead(self: *Self, completed: std.Io.Batch.Completion) !void {
+        const peer = &self.slots[completed.index].peer;
 
         if (completed.result.file_read_streaming) |size| {
             if (size != 0) {
+                self.metrics.bytes_received.incrBy(size);
                 peer.handle(self.io, self.allocator, size) catch |e| {
                     if (e != error.NotEnoughData) return e;
                 };
@@ -395,12 +480,13 @@ pub const Server = struct {
         var written: usize = 0;
         if (completed.result.file_write_streaming) |size| {
             written = size;
+            self.metrics.bytes_sent.incrBy(size);
         } else |e| {
             if (e != std.Io.Operation.FileWriteStreaming.Error.WouldBlock or
                 peer_slot.status.load(.acquire) == .Exiting)
             {
                 peer.armed_iov = null;
-                if (!self.markPeerExiting(peer_index)) self.clearSlot(peer_slot);
+                if (!self.markPeerExiting(peer_index, e)) self.clearSlot(peer_slot);
                 return e;
             }
         }
@@ -440,15 +526,32 @@ pub const Server = struct {
         slot.peer.armed_iov = writes;
     }
 
-    fn markPeerExiting(self: *Self, index: usize) bool {
+    fn markPeerExiting(self: *Self, index: usize, reason: anyerror) bool {
         const slot = &self.slots[index];
         if (slot.status.cmpxchgStrong(.Active, .Exiting, .acq_rel, .acquire) != null) return false;
         slot.peer.stream.shutdown(self.io, .both) catch {};
+        self.recordDisconnect(&slot.peer, reason);
         return true;
     }
 
+    fn recordDisconnect(self: *Self, peer: *const Peer, reason: anyerror) void {
+        const stage = if (peer.status == .active) "active" else "handshake";
+        const labels: Metrics.DisconnectLabels = if (peer.remote_disconnect) |r| .{
+            .stage = stage,
+            .side = "remote",
+            .reason = std.enums.tagName(DisconnectReason, r) orelse "unknown",
+        } else .{
+            .stage = stage,
+            .side = "local",
+            .reason = @errorName(reason),
+        };
+        self.metrics.disconnects.incr(labels) catch {};
+    }
+
     fn clearSlot(self: *Self, slot: *PeerSlot) void {
+        self.metrics.connections.incrBy(-1);
         if (slot.peer.status == .active) {
+            self.metrics.peers.incrBy(-1);
             for (slot.peer.status.active.caps) |c| {
                 const handler = &self.proto_handlers[c.registered_cap_index];
                 handler.onDisconnected(handler.ctx, self.peerId(&slot.peer));
@@ -495,7 +598,11 @@ pub const Server = struct {
         const remote_addr = record.tcpAddr().?;
         log.debug("dialing peer {any}", .{record.tcpAddr()});
         _ = self.stats.dials.fetchAdd(1, .monotonic);
-        errdefer _ = self.stats.failed_dials.fetchAdd(1, .monotonic);
+        self.metrics.dials.incr();
+        errdefer {
+            _ = self.stats.failed_dials.fetchAdd(1, .monotonic);
+            self.metrics.failed_dials.incr();
+        }
 
         const slot = try self.allocateSlot();
         errdefer slot.status.store(.Empty, .release);
@@ -509,6 +616,7 @@ pub const Server = struct {
         slot.peer.record = record;
         slot.peer.status = .{ .dialed = {} };
         slot.status.store(.Ready, .release); // todo: notify main worker
+        self.metrics.connections.incr();
     }
 
     pub fn reserveWriteQueueSlot(self: *Self, peer_index: usize, floor: usize) !void {
@@ -566,6 +674,7 @@ pub const Server = struct {
                 sec,
                 queued_write.payload[0..queued_write.payload_len],
             ) catch continue);
+            self.metrics.frames_sent.incr();
             queued = true;
         }
     }
@@ -613,6 +722,7 @@ const Peer = struct {
 
     record: ?enr.Record = null,
     remote_pubkey: ?[64]u8 = null,
+    remote_disconnect: ?DisconnectReason = null,
 
     fn init(allocator: std.mem.Allocator, stream: std.Io.net.Stream, server: *Server) !Peer {
         return .{
@@ -733,6 +843,8 @@ const Peer = struct {
                             const caps = try self.server.sharedCaps(allocator, hello.caps);
                             log.debug("received hello from {} id {s}", .{ self.server.peerId(self), hello.client_id });
                             _ = self.server.stats.handshakes.fetchAdd(1, .monotonic);
+                            self.server.metrics.peers.incr();
+                            self.server.metrics.handshakes.incr(.{ .direction = if (self.record != null) "outbound" else "inbound" }) catch {};
                             self.status = .{ .active = .{ .session = session.*, .caps = caps } };
                             for (caps) |c| {
                                 const handler = &self.server.proto_handlers[c.registered_cap_index];
@@ -741,6 +853,7 @@ const Peer = struct {
                         },
                         .disconnect => |e| {
                             log.debug("received disconnect from {} reason {}", .{ self.server.peerId(self), e });
+                            self.remote_disconnect = e;
                             return error.Disconnected;
                         },
                         else => return error.UnexpectedBeforeHello,
@@ -759,6 +872,7 @@ const Peer = struct {
                         switch (try Message.decode(allocator, f.id, payload)) {
                             .disconnect => |e| {
                                 log.debug("received disconnect from {} reason {}", .{ self.server.peerId(self), e });
+                                self.remote_disconnect = e;
                                 return error.Disconnected;
                             },
                             .ping => try self.queueMsg(&state.session.secrets, @intFromEnum(MessageId.pong), struct {}{}),
@@ -768,12 +882,14 @@ const Peer = struct {
                         allocator.free(payload);
                     } else {
                         const matched = self.server.matchCap(state.caps, f.id) orelse return error.UnknownMessage;
+                        self.server.metrics.messages_received.incr(.{ .cap = matched.reg.cap.name }) catch {};
                         const queued = matched.reg.queue.put(io, &.{.{
                             .peer = self.server.peerId(self),
                             .id = f.id - matched.offset,
                             .payload = payload,
                         }}, 0) catch 0;
                         if (queued == 0) {
+                            self.server.metrics.messages_dropped.incr(.{ .cap = matched.reg.cap.name }) catch {};
                             allocator.free(payload);
                         }
                     }
@@ -802,6 +918,7 @@ const Peer = struct {
             return error.BadFrameMac;
         s.secrets.ingressDecrypt(body[0..padded], body[0..padded]); // in place
         s.pending_frame = null;
+        self.server.metrics.frames_received.incr();
 
         const message = body[0..size];
         var id: u64 = undefined;
@@ -910,6 +1027,7 @@ const Peer = struct {
         defer server.allocator.free(encoded);
         const hello_frame = try encryptFrame(server.allocator, &session.secrets, encoded[0..len]);
         defer server.allocator.free(hello_frame);
+        server.metrics.frames_sent.incr();
 
         const out = try server.allocator.alloc(u8, ack.len + hello_frame.len);
         errdefer server.allocator.free(out);
@@ -941,6 +1059,7 @@ const Peer = struct {
         errdefer allocator.free(encrypted);
 
         self.queueWrite(encrypted);
+        self.server.metrics.frames_sent.incr();
     }
 
     fn queueRawMsg(self: *Peer, raw: []const u8) !void {
