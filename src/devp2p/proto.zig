@@ -20,6 +20,7 @@ pub fn Provider(comptime cfg: Config) type {
         pub const MessageIds = std.meta.Tag(cfg.Message);
         const default_rtt: std.Io.Duration = .fromSeconds(5);
         const min_timeout: std.Io.Duration = .fromSeconds(3);
+        const max_rtt: std.Io.Duration = .fromSeconds(30);
         const PeerSlot = struct {
             info: std.atomic.Value(Peer),
             rtt: std.enums.EnumArray(MessageIds, std.Io.Duration) = .initFill(default_rtt),
@@ -182,6 +183,10 @@ pub fn Provider(comptime cfg: Config) type {
             _ = self.timeoutFor(peer_id, id) catch return;
             const rtt = self.peers[peer_id.peer_index].rtt.getPtr(id);
             rtt.nanoseconds = @divTrunc(8 * rtt.nanoseconds + 2 * delay.nanoseconds, 10);
+            if (rtt.nanoseconds > max_rtt.nanoseconds) {
+                rtt.* = default_rtt;
+                self.disconnect(peer_id, error.SlowPeer);
+            }
         }
     };
 }
