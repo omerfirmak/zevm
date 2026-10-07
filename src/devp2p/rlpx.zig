@@ -136,18 +136,18 @@ const Message = union(MessageId) {
 
     fn decode(allocator: std.mem.Allocator, id: u64, payload: []const u8) !Message {
         switch (id) {
-            @intFromEnum(MessageId.hello) => {
+            @backingInt(MessageId.hello) => {
                 var hello: HelloMessage = undefined;
                 _ = try rlp.deserialize(HelloMessage, allocator, payload, &hello);
                 return .{ .hello = hello };
             },
-            @intFromEnum(MessageId.disconnect) => {
+            @backingInt(MessageId.disconnect) => {
                 var reason: u8 = 0xff;
                 _ = try rlp.deserialize(u8, undefined, payload, &reason);
-                return .{ .disconnect = @enumFromInt(reason) };
+                return .{ .disconnect = @fromBackingInt(@intCast(reason)) };
             },
-            @intFromEnum(MessageId.ping) => return .ping,
-            @intFromEnum(MessageId.pong) => return .pong,
+            @backingInt(MessageId.ping) => return .ping,
+            @backingInt(MessageId.pong) => return .pong,
             else => return error.UnknownMessage,
         }
     }
@@ -204,6 +204,8 @@ pub const Server = struct {
         }) = .init(.Empty),
         epoch: usize = 0,
         peer: Peer = undefined,
+        disconnect_epoch: std.atomic.Value(usize) = .init(0),
+        disconnect_reason: std.atomic.Value(@Int(.unsigned, @bitSizeOf(anyerror))) = .init(0),
     };
     pub const PeerId = struct {
         peer_index: usize,
@@ -412,6 +414,12 @@ pub const Server = struct {
         for (self.slots, 0..) |*slot, index| {
             const slot_status = slot.status.cmpxchgStrong(.Ready, .Active, .acq_rel, .acquire);
             if (slot_status) |ss| {
+                if (ss == .Active and slot.disconnect_epoch.load(.acquire) == slot.epoch + 1) {
+                    slot.disconnect_epoch.store(0, .monotonic);
+                    const reason = @errorFromInt(slot.disconnect_reason.load(.monotonic));
+                    _ = self.markPeerExiting(index, reason);
+                    continue;
+                }
                 if (ss == .Active and slot.peer.armed_iov == null)
                     self.scheduleWrite(index, null);
             } else {
@@ -524,6 +532,12 @@ pub const Server = struct {
             .flags = .{ .nonblocking = true },
         }, .data = writes } });
         slot.peer.armed_iov = writes;
+    }
+
+    pub fn requestDisconnect(self: *Self, peer_id: PeerId, reason: anyerror) void {
+        const slot = &self.slots[peer_id.peer_index];
+        slot.disconnect_reason.store(@intFromError(reason), .monotonic);
+        slot.disconnect_epoch.store(peer_id.peer_epoch + 1, .release);
     }
 
     fn markPeerExiting(self: *Self, index: usize, reason: anyerror) bool {
@@ -830,7 +844,7 @@ const Peer = struct {
                     );
 
                     var session: Session = .{ .secrets = sec };
-                    try self.queueMsg(&session.secrets, @intFromEnum(MessageId.hello), self.server.hello);
+                    try self.queueMsg(&session.secrets, @backingInt(MessageId.hello), self.server.hello);
                     allocator.free(state.handshake.msg);
                     self.status = .{ .hello = session };
                 },
@@ -875,7 +889,7 @@ const Peer = struct {
                                 self.remote_disconnect = e;
                                 return error.Disconnected;
                             },
-                            .ping => try self.queueMsg(&state.session.secrets, @intFromEnum(MessageId.pong), struct {}{}),
+                            .ping => try self.queueMsg(&state.session.secrets, @backingInt(MessageId.pong), struct {}{}),
                             .pong => {},
                             else => {},
                         }
@@ -1023,7 +1037,7 @@ const Peer = struct {
             .recipient,
         ) };
 
-        const encoded, const len = try encodeMsg(server.allocator, @intFromEnum(MessageId.hello), server.hello, false);
+        const encoded, const len = try encodeMsg(server.allocator, @backingInt(MessageId.hello), server.hello, false);
         defer server.allocator.free(encoded);
         const hello_frame = try encryptFrame(server.allocator, &session.secrets, encoded[0..len]);
         defer server.allocator.free(hello_frame);

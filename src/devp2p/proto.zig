@@ -96,6 +96,14 @@ pub fn Provider(comptime cfg: Config) type {
             self.peers[peer.peer_index].info.store(std.mem.zeroes(Peer), .release);
         }
 
+        pub fn disconnect(self: *Self, peer_id: rlpx.Server.PeerId, reason: anyerror) void {
+            const info = &self.peers[peer_id.peer_index].info;
+            const peer = info.load(.acquire);
+            if (peer.offset == 0 or peer.epoch != peer_id.peer_epoch) return;
+            if (info.cmpxchgStrong(peer, std.mem.zeroes(Peer), .acq_rel, .acquire) != null) return;
+            self.server.?.requestDisconnect(peer_id, reason);
+        }
+
         pub fn nextRequestId(self: *Self) u64 {
             return self.req_id.fetchAdd(1, .monotonic);
         }
@@ -106,7 +114,7 @@ pub fn Provider(comptime cfg: Config) type {
 
             switch (msg) {
                 inline else => |typed_msg, msg_id| {
-                    try self.server.?.queueMsg(peer_id, @intFromEnum(msg_id) + peer.offset, typed_msg);
+                    try self.server.?.queueMsg(peer_id, @backingInt(msg_id) + peer.offset, typed_msg);
                 },
             }
         }
