@@ -8,6 +8,7 @@ const rlp = @import("rlp");
 const trie = @import("../trie/trie.zig");
 const kv = @import("../db/kv.zig");
 const lmdbx = @import("lmdbx");
+const prom = @import("metrics");
 
 const verifyRangeProof = @import("../trie/range_proof.zig").verifyRangeProof;
 const EthDb = @import("../db/eth.zig").Eth;
@@ -20,6 +21,78 @@ const progress_log_interval: std.Io.Duration = .fromSeconds(8);
 const arena_retain_limit = (32 << 20) - 64;
 
 const log = std.log.scoped(.downloader);
+
+const Metrics = struct {
+    const duration_buckets: []const f64 = &.{ 0.001, 0.005, 0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30 };
+    const MsgLabels = struct { msg: []const u8 };
+    const RequestLabels = struct { proto: []const u8, state: []const u8 };
+    const KindLabels = struct { kind: []const u8 };
+    const OpLabels = struct { op: []const u8 };
+
+    loop_busy_seconds: prom.Counter(f64),
+    loop_wait_seconds: prom.Counter(f64),
+    handle_seconds: prom.HistogramVec(f64, MsgLabels, duration_buckets),
+    requests_sent: prom.CounterVec(u64, MsgLabels),
+    request_timeouts: prom.CounterVec(u64, MsgLabels),
+    response_seconds: prom.HistogramVec(f64, MsgLabels, duration_buckets),
+    requests: prom.GaugeVec(u64, RequestLabels),
+    sync_target: prom.Gauge(u64),
+    chain_head: prom.Gauge(u64),
+    headers_downloaded: prom.Gauge(u64),
+    pivot: prom.Gauge(u64),
+    state_progress: prom.GaugeVec(f64, KindLabels),
+    heal_blocks_remaining: prom.Gauge(u64),
+    db_txn_seconds: prom.HistogramVec(f64, OpLabels, duration_buckets),
+    db_commit_seconds: prom.HistogramVec(f64, OpLabels, duration_buckets),
+    db_size_bytes: prom.Gauge(u64),
+    batch_build_seconds: prom.Histogram(f64, duration_buckets),
+    batch_accounts_scanned: prom.Counter(u64),
+
+    fn init(allocator: std.mem.Allocator, io: std.Io) !Metrics {
+        const opts: prom.RegistryOpts = .{};
+        var handle_seconds: @FieldType(Metrics, "handle_seconds") = try .init(allocator, io, "downloader_handle_seconds", .{ .help = "Time the downloader loop spent handling a message or tick" }, opts);
+        errdefer handle_seconds.deinit();
+        var requests_sent: @FieldType(Metrics, "requests_sent") = try .init(allocator, io, "downloader_requests_sent_total", .{ .help = "Requests sent to peers" }, opts);
+        errdefer requests_sent.deinit();
+        var request_timeouts: @FieldType(Metrics, "request_timeouts") = try .init(allocator, io, "downloader_request_timeouts_total", .{ .help = "Requests that timed out" }, opts);
+        errdefer request_timeouts.deinit();
+        var response_seconds: @FieldType(Metrics, "response_seconds") = try .init(allocator, io, "downloader_response_seconds", .{ .help = "Time from sending a request to matching its response" }, opts);
+        errdefer response_seconds.deinit();
+        var requests: @FieldType(Metrics, "requests") = try .init(allocator, io, "downloader_requests", .{ .help = "Requests by protocol and state" }, opts);
+        errdefer requests.deinit();
+        var state_progress: @FieldType(Metrics, "state_progress") = try .init(allocator, io, "downloader_state_progress", .{ .help = "State download progress in percent of the keyspace" }, opts);
+        errdefer state_progress.deinit();
+        var db_txn_seconds: @FieldType(Metrics, "db_txn_seconds") = try .init(allocator, io, "downloader_db_txn_seconds", .{ .help = "Write transaction duration from begin to commit, by operation" }, opts);
+        errdefer db_txn_seconds.deinit();
+        const db_commit_seconds: @FieldType(Metrics, "db_commit_seconds") = try .init(allocator, io, "downloader_db_commit_seconds", .{ .help = "Write transaction commit duration, by operation" }, opts);
+
+        return .{
+            .loop_busy_seconds = .init("downloader_loop_busy_seconds_total", .{ .help = "Time the downloader loop spent processing" }, opts),
+            .loop_wait_seconds = .init("downloader_loop_wait_seconds_total", .{ .help = "Time the downloader loop spent waiting for messages" }, opts),
+            .handle_seconds = handle_seconds,
+            .requests_sent = requests_sent,
+            .request_timeouts = request_timeouts,
+            .response_seconds = response_seconds,
+            .requests = requests,
+            .sync_target = .init("downloader_sync_target", .{ .help = "Block number the downloader is syncing towards" }, opts),
+            .chain_head = .init("downloader_chain_head", .{ .help = "Last header persisted in the chain" }, opts),
+            .headers_downloaded = .init("downloader_headers_downloaded", .{ .help = "Headers downloaded towards the current target" }, opts),
+            .pivot = .init("downloader_pivot", .{ .help = "State download pivot block" }, opts),
+            .state_progress = state_progress,
+            .heal_blocks_remaining = .init("downloader_heal_blocks_remaining", .{ .help = "Blocks left to heal, 0 when not healing" }, opts),
+            .db_txn_seconds = db_txn_seconds,
+            .db_commit_seconds = db_commit_seconds,
+            .db_size_bytes = .init("downloader_db_size_bytes", .{ .help = "Current size of the state database file" }, opts),
+            .batch_build_seconds = .init("downloader_batch_build_seconds", .{ .help = "Time spent building storage and code request batches" }, opts),
+            .batch_accounts_scanned = .init("downloader_batch_accounts_scanned_total", .{ .help = "Accounts scanned while building storage and code request batches" }, opts),
+        };
+    }
+};
+
+fn secondsSince(io: std.Io, start: std.Io.Timestamp) f64 {
+    const ns = start.durationTo(std.Io.Timestamp.now(io, .awake)).toNanoseconds();
+    return @as(f64, @floatFromInt(ns)) / std.time.ns_per_s;
+}
 
 fn Request(comptime msg: type) type {
     return struct {
@@ -96,6 +169,7 @@ pub const Downloader = struct {
         } = null,
         pivot_hash_buf: [1][32]u8 = undefined,
     } = null,
+    metrics: Metrics,
     progress: struct {
         headers: u64 = 0,
         account_keyspace: u256 = 0,
@@ -133,6 +207,7 @@ pub const Downloader = struct {
             .free_snap_requests = try .init(allocator, max_inflight_requests),
             .stashed_snap_requests = stashed_snap_requests,
             .peer_ranges = peer_ranges,
+            .metrics = try .init(allocator, io),
             .sync_target = .{
                 .number = head.number,
                 .hash = head.hash,
@@ -157,8 +232,15 @@ pub const Downloader = struct {
         try select.concurrent(.snap, snap.Provider.next, .{ self.snap_provider, self.io, self.snap_arena.allocator(), self.allocator });
         try select.concurrent(.tick, std.Io.sleep, .{ self.io, .fromSeconds(1), .real });
 
+        var busy_start = std.Io.Timestamp.now(self.io, .awake);
         while (true) {
-            switch (select.await() catch |e| return e) {
+            const wait_start = std.Io.Timestamp.now(self.io, .awake);
+            self.metrics.loop_busy_seconds.incrBy(secondsSince(self.io, busy_start));
+            const event = select.await() catch |e| return e;
+            busy_start = std.Io.Timestamp.now(self.io, .awake);
+            self.metrics.loop_wait_seconds.incrBy(secondsSince(self.io, wait_start));
+
+            switch (event) {
                 .eth => |res| {
                     defer {
                         _ = self.eth_arena.reset(.{ .retain_with_limit = arena_retain_limit });
@@ -167,6 +249,7 @@ pub const Downloader = struct {
                     const received_message = res catch continue;
                     defer self.allocator.free(received_message.read.payload);
                     try self.handleEth(received_message.msg, received_message.read.peer);
+                    self.observeHandle(@tagName(received_message.msg), busy_start);
                 },
                 .snap => |res| {
                     defer {
@@ -176,16 +259,56 @@ pub const Downloader = struct {
                     const received_message = res catch continue;
                     defer self.allocator.free(received_message.read.payload);
                     try self.handleSnap(received_message.msg, received_message.read.peer);
+                    self.observeHandle(@tagName(received_message.msg), busy_start);
                 },
                 .tick => {
                     defer select.concurrent(.tick, std.Io.sleep, .{ self.io, .fromSeconds(1), .real }) catch |e| std.debug.panic("downloader: failed to spawn task: {}", .{e});
                     try self.handleTick();
+                    self.observeHandle("tick", busy_start);
                 },
             }
         }
     }
 
+    fn commitTxn(self: *Self, txn: kv.Transaction, op: []const u8, started_at: std.Io.Timestamp) !void {
+        const commit_start = std.Io.Timestamp.now(self.io, .awake);
+        try txn.commit();
+        self.metrics.db_commit_seconds.observe(.{ .op = op }, secondsSince(self.io, commit_start)) catch {};
+        self.metrics.db_txn_seconds.observe(.{ .op = op }, secondsSince(self.io, started_at)) catch {};
+    }
+
+    fn observeHandle(self: *Self, msg: []const u8, started_at: std.Io.Timestamp) void {
+        self.metrics.handle_seconds.observe(.{ .msg = msg }, secondsSince(self.io, started_at)) catch {};
+    }
+
+    pub fn writeMetrics(self: *Self, writer: *std.Io.Writer) !void {
+        return prom.write(&self.metrics, writer);
+    }
+
+    fn updateMetrics(self: *Self) void {
+        const m = &self.metrics;
+        const request_counts = [_]struct { []const u8, []const u8, usize }{
+            .{ "eth", "inflight", self.inflight_eth_requests.inner.len() },
+            .{ "eth", "pending", self.pending_eth_requests.inner.len() },
+            .{ "snap", "inflight", self.inflight_snap_requests.inner.len() },
+            .{ "snap", "pending", self.pending_snap_requests.inner.len() },
+            .{ "snap", "stashed", self.stashed_snap_requests.len },
+        };
+        for (request_counts) |c| m.requests.set(.{ .proto = c[0], .state = c[1] }, c[2]) catch {};
+
+        m.sync_target.set(self.syncTarget().number);
+        if (self.bc.head()) |head| m.chain_head.set(head.number) else |_| {}
+        m.headers_downloaded.set(self.progress.headers);
+        if (self.state) |state| m.pivot.set(state.pivot.number);
+        m.state_progress.set(.{ .kind = "accounts" }, keyspacePercent(self.progress.account_keyspace)) catch {};
+        m.state_progress.set(.{ .kind = "storage" }, keyspacePercent(self.progress.storage_keyspace)) catch {};
+        m.state_progress.set(.{ .kind = "codes" }, keyspacePercent(self.progress.code_keyspace)) catch {};
+        if (self.eth_db.kv_store.env.info()) |info| m.db_size_bytes.set(info.geo.current) else |_| {}
+        m.heal_blocks_remaining.set(if (self.state_heal) |heal| heal.target_pivot.number -| (heal.next_pivot.number - 1) else 0);
+    }
+
     fn handleTick(self: *Self) !void {
+        self.updateMetrics();
         self.logProgress();
         if (self.header != null) {
             try self.advanceHeaderDownload();
@@ -227,6 +350,7 @@ pub const Downloader = struct {
 
             if (request.elem.deadline.toMilliseconds() < now.toMilliseconds()) {
                 if (!std.meta.eql(request.elem.peer, invalid_peer)) {
+                    self.metrics.request_timeouts.incr(.{ .msg = @tagName(request.elem.msg) }) catch {};
                     log.debug("{t} request {} to {} timed out after {}ms (timeout {}ms)", .{
                         std.meta.activeTag(request.elem.msg),
                         request.elem.id,
@@ -340,6 +464,7 @@ pub const Downloader = struct {
         req.sent_at = sent_at;
         req.peer = try pick_peer_fn(self, req.msg);
         try provider.send(req.peer, req.msg);
+        self.metrics.requests_sent.incr(.{ .msg = @tagName(req.msg) }) catch {};
         req.deadline = sent_at.addDuration(try provider.timeoutFor(req.peer, std.meta.activeTag(req.msg)));
     }
 
@@ -681,6 +806,13 @@ pub const Downloader = struct {
 
         if (self.free_snap_requests.empty()) return;
 
+        const build_start = std.Io.Timestamp.now(self.io, .awake);
+        var scanned: u64 = 0;
+        defer if (scanned > 0) {
+            self.metrics.batch_build_seconds.observe(secondsSince(self.io, build_start));
+            self.metrics.batch_accounts_scanned.incrBy(scanned);
+        };
+
         const txn = try self.eth_db.kv_store.transaction_ro();
         defer txn.abort() catch unreachable;
         const accounts_table = self.eth_db.kv_store.table(txn, .accounts);
@@ -723,6 +855,7 @@ pub const Downloader = struct {
 
             const batch_start = std.mem.readInt(u256, &state.storage_fetch_head, .big);
             const accounts_exhausted = while (true) {
+                scanned += 1;
                 const cur = try account_iterator.getCurrentEntry();
                 state.storage_fetch_head = cur.key[0..32].*;
 
@@ -983,6 +1116,7 @@ pub const Downloader = struct {
     }
 
     fn persistAccounts(self: *Self, request: snap.GetAccountRange, hashes: [][32]u8, response: *const snap.AccountRange) !void {
+        const txn_start = std.Io.Timestamp.now(self.io, .awake);
         const txn = try self.eth_db.kv_store.transaction_rw();
         errdefer _ = txn.abort() catch |e| {
             log.err("failed to abort txn {}", .{e});
@@ -997,7 +1131,7 @@ pub const Downloader = struct {
             try self.eth_db.deleteAccount(txn, request.origin);
         }
 
-        try txn.commit();
+        try self.commitTxn(txn, "accounts", txn_start);
     }
 
     fn handleBals(self: *Self, req: *Request(eth.Message), access_lists: eth.BlockAccessLists) !void {
@@ -1031,8 +1165,9 @@ pub const Downloader = struct {
     }
 
     fn applyBal(self: *Self, bal: types.BlockAccessLists, resume_index: usize) !usize {
+        const txn_start = std.Io.Timestamp.now(self.io, .awake);
         const txn = try self.eth_db.kv_store.transaction_rw();
-        defer txn.commit() catch unreachable;
+        defer self.commitTxn(txn, "bal", txn_start) catch unreachable;
         const codes = self.eth_db.kv_store.table(txn, .codes);
 
         for (resume_index..bal.len) |account_index| {
@@ -1124,6 +1259,7 @@ pub const Downloader = struct {
             }
         }
 
+        const txn_start = std.Io.Timestamp.now(self.io, .awake);
         const txn = try self.eth_db.kv_store.transaction_rw();
         errdefer _ = txn.abort() catch |e| {
             log.err("failed to abort txn {}", .{e});
@@ -1167,7 +1303,7 @@ pub const Downloader = struct {
                 break;
             }
         }
-        try txn.commit();
+        try self.commitTxn(txn, "storage", txn_start);
 
         var remaining: usize = 0;
         var next_start: [32]u8 = if (verified == 0) request.starting_hash else @splat(0);
@@ -1192,8 +1328,9 @@ pub const Downloader = struct {
     }
 
     fn handleCodes(self: *Self, req: *Request(snap.Message), codes: snap.ByteCodes) !void {
+        const txn_start = std.Io.Timestamp.now(self.io, .awake);
         const txn = try self.eth_db.kv_store.transaction_rw();
-        defer txn.commit() catch unreachable;
+        defer self.commitTxn(txn, "codes", txn_start) catch unreachable;
         const table = self.eth_db.kv_store.table(txn, .codes);
 
         const requested_hashes = req.msg.get_byte_codes.hashes;
@@ -1316,7 +1453,12 @@ pub const Downloader = struct {
             const request: *List(Request(Message)).Node = @alignCast(@fieldParentPtr("node", node));
 
             if (request.elem.id == id and std.meta.eql(peer, request.elem.peer) and std.meta.eql(request_tag, request.elem.msg)) {
-                provider.observeDelay(peer, request_tag, request.elem.sent_at.untilNow(self.io, .real));
+                const delay = request.elem.sent_at.untilNow(self.io, .real);
+                provider.observeDelay(peer, request_tag, delay);
+                self.metrics.response_seconds.observe(
+                    .{ .msg = @tagName(request_tag) },
+                    @as(f64, @floatFromInt(delay.toNanoseconds())) / std.time.ns_per_s,
+                ) catch {};
                 list.inner.remove(node);
                 node.next = null;
                 node.prev = null;

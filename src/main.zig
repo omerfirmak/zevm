@@ -169,11 +169,6 @@ pub fn main(init: std.process.Init) !void {
     var rlpx_thread = try init.io.concurrent(rlpx.Server.run, .{&rlpx_server});
     defer rlpx_thread.cancel(init.io) catch {};
 
-    const metrics_sources = [_]metrics.Source{.from(rlpx.Server, &rlpx_server)};
-    var metrics_http: metrics.HttpServer = try .init(init.io, slabs.allocator(), &metrics_sources, opts.metrics_addr);
-    var metrics_thread = try init.io.concurrent(metrics.HttpServer.run, .{&metrics_http});
-    defer metrics_thread.cancel(init.io) catch {};
-
     const dialer = Dialer.init(&rlpx_server, &id_filter, &bc);
 
     var server = try discv5.Server.init(
@@ -198,6 +193,14 @@ pub fn main(init: std.process.Init) !void {
         &ethproto,
         &snapproto,
     );
+
+    const metrics_sources = [_]metrics.Source{
+        .from(rlpx.Server, &rlpx_server),
+        .from(Downloader, &downloader),
+    };
+    var metrics_http: metrics.HttpServer = try .init(init.io, slabs.allocator(), &metrics_sources, opts.metrics_addr);
+    var metrics_thread = try init.io.concurrent(metrics.HttpServer.run, .{&metrics_http});
+    defer metrics_thread.cancel(init.io) catch {};
 
     var eth_api: EthApi = .init(&bc, &downloader);
     var jsonrpc_server: RpcServer = .{};
