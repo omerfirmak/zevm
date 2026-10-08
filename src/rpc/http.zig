@@ -24,7 +24,7 @@ pub const HttpServer = struct {
             .io = io,
             .arena = .init(allocator),
             .rpc = rpc,
-            .listener = try addr.listen(io, .{}),
+            .listener = try addr.listen(io, .{ .reuse_address = true }),
         };
     }
 

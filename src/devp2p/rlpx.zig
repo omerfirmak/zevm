@@ -269,7 +269,7 @@ pub const Server = struct {
             .slots = slots,
             .keypair = identity,
             .secp = try secp256k1.Secp256k1.init(),
-            .tcp_listener = try std.Io.net.IpAddress.listen(&addr, io, .{}),
+            .tcp_listener = try std.Io.net.IpAddress.listen(&addr, io, .{ .reuse_address = true }),
             .proto_handlers = proto_handlers,
             .hello = .{
                 .version = p2p_version,
