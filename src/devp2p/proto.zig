@@ -10,6 +10,13 @@ pub const Config = struct {
     required: bool,
     message_count: usize,
     Message: type,
+
+    // round-trip estimate for a peer before any response has been measured
+    default_rtt: std.Io.Duration,
+    // requests never time out sooner than this, regardless of the measured round trip
+    min_timeout: std.Io.Duration,
+    // peers whose round trip for any message type exceeds this get dropped
+    max_rtt: std.Io.Duration,
 };
 
 pub fn Provider(comptime cfg: Config) type {
@@ -20,9 +27,9 @@ pub fn Provider(comptime cfg: Config) type {
             offset: usize,
         };
         pub const MessageIds = std.meta.Tag(cfg.Message);
-        const default_rtt: std.Io.Duration = .fromSeconds(5);
-        const min_timeout: std.Io.Duration = .fromSeconds(3);
-        const max_rtt: std.Io.Duration = .fromSeconds(30);
+        const default_rtt = cfg.default_rtt;
+        const min_timeout = cfg.min_timeout;
+        const max_rtt = cfg.max_rtt;
         const PeerSlot = struct {
             info: std.atomic.Value(Peer),
             rtt: std.enums.EnumArray(MessageIds, std.Io.Duration) = .initFill(default_rtt),

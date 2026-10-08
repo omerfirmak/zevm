@@ -115,6 +115,9 @@ pub const Config: proto.Config = .{
     .message_count = 0x14,
     .required = false,
     .Message = Message,
+    .default_rtt = .fromSeconds(5),
+    .min_timeout = .fromSeconds(3),
+    .max_rtt = .fromSeconds(30),
 };
 
 pub const Provider = proto.Provider(Config);
