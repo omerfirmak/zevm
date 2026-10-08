@@ -13,20 +13,15 @@ pub const Eth = struct {
         return .{ .kv_store = kv_store };
     }
 
-    pub fn readAccount(self: *Self, allocator: std.mem.Allocator, txn: kv.Transaction, hash: [32]u8) !?types.Account {
+    pub fn readAccount(self: *Self, txn: kv.Transaction, hash: [32]u8) !?types.Account {
         const table = self.kv_store.table(txn, .accounts);
-
         const bytes = try table.get(&hash) orelse return null;
-
-        var acc: SlimAccount = undefined;
-        _ = try rlp.deserialize(SlimAccount, allocator, bytes, &acc);
-
-        return try decodeAccount(allocator, bytes);
+        return try decodeAccount(bytes);
     }
 
-    pub fn decodeAccount(allocator: std.mem.Allocator, rlp_bytes: []const u8) !types.Account {
+    pub fn decodeAccount(rlp_bytes: []const u8) !types.Account {
         var acc: SlimAccount = undefined;
-        _ = try rlp.deserialize(SlimAccount, allocator, rlp_bytes, &acc);
+        _ = try rlp.deserialize(SlimAccount, undefined, rlp_bytes, &acc);
 
         return .{
             .nonce = acc.nonce,
@@ -137,7 +132,7 @@ test "empty dir" {
     const txn = try store.transaction_rw();
 
     const hash: [32]u8 = @splat(0x44);
-    try std.testing.expect(try eth.readAccount(std.testing.allocator, txn, hash) == null);
+    try std.testing.expect(try eth.readAccount(txn, hash) == null);
 
     const accs = [_]types.Account{
         .{
@@ -168,10 +163,10 @@ test "empty dir" {
 
     for (accs) |acc| {
         try eth.writeAccount(std.testing.allocator, txn, hash, acc);
-        const read_acc = try eth.readAccount(std.testing.allocator, txn, hash);
+        const read_acc = try eth.readAccount(txn, hash);
         try std.testing.expectEqual(acc, read_acc);
     }
 
     try txn.commit();
-    try std.testing.expect(try eth.readAccount(std.testing.allocator, try store.transaction_ro(), hash) != null);
+    try std.testing.expect(try eth.readAccount(try store.transaction_ro(), hash) != null);
 }
