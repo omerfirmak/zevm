@@ -35,6 +35,7 @@ const Metrics = struct {
     requests_sent: prom.CounterVec(u64, MsgLabels),
     request_timeouts: prom.CounterVec(u64, MsgLabels),
     response_seconds: prom.HistogramVec(f64, MsgLabels, duration_buckets),
+    verify_seconds: prom.HistogramVec(f64, MsgLabels, duration_buckets),
     requests: prom.GaugeVec(u64, RequestLabels),
     sync_target: prom.Gauge(u64),
     chain_head: prom.Gauge(u64),
@@ -58,6 +59,8 @@ const Metrics = struct {
         errdefer request_timeouts.deinit();
         var response_seconds: @FieldType(Metrics, "response_seconds") = try .init(allocator, io, "downloader_response_seconds", .{ .help = "Time from sending a request to matching its response" }, opts);
         errdefer response_seconds.deinit();
+        var verify_seconds: @FieldType(Metrics, "verify_seconds") = try .init(allocator, io, "downloader_verify_seconds", .{ .help = "Time spent verifying a snap response off the downloader loop" }, opts);
+        errdefer verify_seconds.deinit();
         var requests: @FieldType(Metrics, "requests") = try .init(allocator, io, "downloader_requests", .{ .help = "Requests by protocol and state" }, opts);
         errdefer requests.deinit();
         var state_progress: @FieldType(Metrics, "state_progress") = try .init(allocator, io, "downloader_state_progress", .{ .help = "State download progress in percent of the keyspace" }, opts);
@@ -73,6 +76,7 @@ const Metrics = struct {
             .requests_sent = requests_sent,
             .request_timeouts = request_timeouts,
             .response_seconds = response_seconds,
+            .verify_seconds = verify_seconds,
             .requests = requests,
             .sync_target = .init("downloader_sync_target", .{ .help = "Block number the downloader is syncing towards" }, opts),
             .chain_head = .init("downloader_chain_head", .{ .help = "Last header persisted in the chain" }, opts),
@@ -121,6 +125,37 @@ pub const Downloader = struct {
         id: rlpx.Server.PeerId,
         range: eth.BlockRangeUpdate,
     };
+    const ValidatedResponse = struct {
+        arena: std.heap.ArenaAllocator,
+        resp: union(enum) {
+            eth: struct { msg: eth.Provider.ParsedMessage, req: *Request(eth.Message) },
+            snap: struct { msg: snap.Provider.ParsedMessage, req: *Request(snap.Message) },
+        },
+        verify_seconds: f64 = 0,
+        outcome: anyerror!Outcome = error.NotValidated,
+
+        fn msgName(self: *const ValidatedResponse) []const u8 {
+            return switch (self.resp) {
+                inline else => |resp| @tagName(resp.msg.msg),
+            };
+        }
+    };
+    const Outcome = union(enum) {
+        headers: struct { hashes: [][32]u8, headers: []types.BlockHeader },
+        bal: struct { hash: [32]u8, rlp: []const u8, parsed: types.BlockAccessLists },
+        accounts: VerifiedAccounts,
+        storage: VerifiedStorage,
+        codes: [][32]u8,
+    };
+    const VerifiedAccounts = struct {
+        hashes: [][32]u8,
+        has_more: bool,
+    };
+    const VerifiedStorage = struct {
+        keys: [][][32]u8 = &.{},
+        values: [][][]const u8 = &.{},
+        continue_from_slot: ?[32]u8 = null,
+    };
 
     io: std.Io,
     allocator: std.mem.Allocator,
@@ -134,6 +169,7 @@ pub const Downloader = struct {
     free_eth_requests: List(Request(eth.Message)),
     inflight_eth_requests: List(Request(eth.Message)) = .{},
     pending_eth_requests: List(Request(eth.Message)) = .{},
+    validating_eth_requests: List(Request(eth.Message)) = .{},
 
     snap_arena: std.heap.ArenaAllocator,
     snap_provider: *snap.Provider,
@@ -141,6 +177,10 @@ pub const Downloader = struct {
     inflight_snap_requests: List(Request(snap.Message)) = .{},
     pending_snap_requests: List(Request(snap.Message)) = .{},
     stashed_snap_requests: []Request(snap.Message),
+    validating_snap_requests: List(Request(snap.Message)) = .{},
+
+    validated_responses: std.Io.Queue(*ValidatedResponse),
+    validation_group: std.Io.Group = .init,
 
     sync_target: SyncTarget,
     sync_target_mutex: std.Io.Mutex = .init,
@@ -215,22 +255,26 @@ pub const Downloader = struct {
                 .cutoff_number = head.number,
                 .cutoff_hash = head.hash,
             },
+            .validated_responses = .init(try allocator.alloc(*ValidatedResponse, 2 * max_inflight_requests)),
         };
     }
 
     pub fn run(self: *Self) !void {
-        const tag = enum(u8) { eth, snap, tick };
+        const tag = enum(u8) { eth, snap, validated, tick };
         const msg = union(tag) {
             eth: @typeInfo(@TypeOf(eth.Provider.next)).@"fn".return_type.?,
             snap: @typeInfo(@TypeOf(snap.Provider.next)).@"fn".return_type.?,
+            validated: @typeInfo(@TypeOf(std.Io.Queue(*ValidatedResponse).getOne)).@"fn".return_type.?,
             tick: @typeInfo(@TypeOf(std.Io.sleep)).@"fn".return_type.?,
         };
 
-        var buf: [3]msg = undefined;
+        var buf: [4]msg = undefined;
         var select: std.Io.Select(msg) = .init(self.io, &buf);
+        defer self.validation_group.cancel(self.io);
 
         try select.concurrent(.eth, eth.Provider.next, .{ self.eth_provider, self.io, self.eth_arena.allocator(), self.allocator });
         try select.concurrent(.snap, snap.Provider.next, .{ self.snap_provider, self.io, self.snap_arena.allocator(), self.allocator });
+        try select.concurrent(.validated, std.Io.Queue(*ValidatedResponse).getOne, .{ &self.validated_responses, self.io });
         try select.concurrent(.tick, std.Io.sleep, .{ self.io, .fromSeconds(1), .real });
 
         var busy_start = std.Io.Timestamp.now(self.io, .awake);
@@ -243,24 +287,35 @@ pub const Downloader = struct {
 
             switch (event) {
                 .eth => |res| {
-                    defer {
+                    defer select.concurrent(.eth, eth.Provider.next, .{ self.eth_provider, self.io, self.eth_arena.allocator(), self.allocator }) catch |e| std.debug.panic("downloader: failed to spawn task: {}", .{e});
+                    const received_message = res catch {
                         _ = self.eth_arena.reset(.{ .retain_with_limit = arena_retain_limit });
-                        select.concurrent(.eth, eth.Provider.next, .{ self.eth_provider, self.io, self.eth_arena.allocator(), self.allocator }) catch |e| std.debug.panic("downloader: failed to spawn task: {}", .{e});
+                        continue;
+                    };
+                    if (!try self.handleEth(received_message)) {
+                        self.allocator.free(received_message.read.payload);
+                        _ = self.eth_arena.reset(.{ .retain_with_limit = arena_retain_limit });
                     }
-                    const received_message = res catch continue;
-                    defer self.allocator.free(received_message.read.payload);
-                    try self.handleEth(received_message.msg, received_message.read.peer);
                     self.observeHandle(@tagName(received_message.msg), busy_start);
                 },
                 .snap => |res| {
-                    defer {
+                    defer select.concurrent(.snap, snap.Provider.next, .{ self.snap_provider, self.io, self.snap_arena.allocator(), self.allocator }) catch |e| std.debug.panic("downloader: failed to spawn task: {}", .{e});
+                    const received_message = res catch {
                         _ = self.snap_arena.reset(.{ .retain_with_limit = arena_retain_limit });
-                        select.concurrent(.snap, snap.Provider.next, .{ self.snap_provider, self.io, self.snap_arena.allocator(), self.allocator }) catch |e| std.debug.panic("downloader: failed to spawn task: {}", .{e});
+                        continue;
+                    };
+                    if (!try self.handleSnap(received_message)) {
+                        self.allocator.free(received_message.read.payload);
+                        _ = self.snap_arena.reset(.{ .retain_with_limit = arena_retain_limit });
                     }
-                    const received_message = res catch continue;
-                    defer self.allocator.free(received_message.read.payload);
-                    try self.handleSnap(received_message.msg, received_message.read.peer);
                     self.observeHandle(@tagName(received_message.msg), busy_start);
+                },
+                .validated => |res| {
+                    defer select.concurrent(.validated, std.Io.Queue(*ValidatedResponse).getOne, .{ &self.validated_responses, self.io }) catch |e| std.debug.panic("downloader: failed to spawn task: {}", .{e});
+                    const validated = try res;
+                    const msg_name = validated.msgName();
+                    try self.handleValidated(validated);
+                    self.observeHandle(msg_name, busy_start);
                 },
                 .tick => {
                     defer select.concurrent(.tick, std.Io.sleep, .{ self.io, .fromSeconds(1), .real }) catch |e| std.debug.panic("downloader: failed to spawn task: {}", .{e});
@@ -291,8 +346,10 @@ pub const Downloader = struct {
         const request_counts = [_]struct { []const u8, []const u8, usize }{
             .{ "eth", "inflight", self.inflight_eth_requests.inner.len() },
             .{ "eth", "pending", self.pending_eth_requests.inner.len() },
+            .{ "eth", "validating", self.validating_eth_requests.inner.len() },
             .{ "snap", "inflight", self.inflight_snap_requests.inner.len() },
             .{ "snap", "pending", self.pending_snap_requests.inner.len() },
+            .{ "snap", "validating", self.validating_snap_requests.inner.len() },
             .{ "snap", "stashed", self.stashed_snap_requests.len },
         };
         for (request_counts) |c| m.requests.set(.{ .proto = c[0], .state = c[1] }, c[2]) catch {};
@@ -370,8 +427,10 @@ pub const Downloader = struct {
         }
     }
 
-    fn handleEth(self: *Self, msg: eth.Message, peer: rlpx.Server.PeerId) !void {
-        switch (msg) {
+    fn handleEth(self: *Self, received: eth.Provider.ParsedMessage) !bool {
+        const peer = received.read.peer;
+        var matched: ?*Request(eth.Message) = null;
+        switch (received.msg) {
             .status => |status| {
                 try self.updateTarget(status.latest_block, status.latest_block_hash);
                 self.peer_ranges[peer.peer_index] = .{ .id = peer, .range = .{
@@ -384,18 +443,16 @@ pub const Downloader = struct {
                 try self.updateTarget(update.latest_block, update.latest_block_hash);
                 self.peer_ranges[peer.peer_index] = .{ .id = peer, .range = update };
             },
-            .block_headers => |headers| {
-                if (self.matchRequest(eth.Message, self.eth_provider, &self.inflight_eth_requests, peer, headers.request_id, .get_block_headers)) |req|
-                    try self.handleHeaders(req, headers);
-            },
-            .block_access_list => |access_lists| {
-                if (self.matchRequest(eth.Message, self.eth_provider, &self.inflight_eth_requests, peer, access_lists.request_id, .get_block_access_list)) |req| {
-                    try self.handleBals(req, access_lists);
-                }
-            },
+            .block_headers => |headers| matched = self.matchRequest(eth.Message, self.eth_provider, &self.inflight_eth_requests, peer, headers.request_id, .get_block_headers),
+            .block_access_list => |access_lists| matched = self.matchRequest(eth.Message, self.eth_provider, &self.inflight_eth_requests, peer, access_lists.request_id, .get_block_access_list),
             else => {},
         }
+        if (matched) |req| {
+            self.validating_eth_requests.push(req);
+            try self.startValidation(&self.eth_arena, .{ .eth = .{ .msg = received, .req = req } });
+        }
         self.drainPendingEthRequests();
+        return matched != null;
     }
 
     pub fn syncTarget(self: *Self) SyncTarget {
@@ -533,10 +590,10 @@ pub const Downloader = struct {
         log.debug("requesting headers origin {} amount {}", .{ origin, amount });
     }
 
-    fn handleHeaders(self: *Self, matched_request: *Request(eth.Message), response: eth.BlockHeaders) !void {
+    fn handleHeaders(self: *Self, matched_request: *Request(eth.Message), outcome: anyerror!Outcome) !void {
         const headers_request = matched_request.msg.get_block_headers;
 
-        const hashes, const headers = self.validateHeadersResponse(headers_request, response) catch |e| {
+        const hashes, const headers = if (outcome) |result| .{ result.headers.hashes, result.headers.headers } else |e| {
             log.debug("header validation failed for origin {} amount {}: {t}", .{ headers_request.range.origin, headers_request.range.amount, e });
             self.requestHeaders(matched_request, headers_request.range.origin, headers_request.range.amount);
             return;
@@ -574,14 +631,9 @@ pub const Downloader = struct {
         try self.checkHeaderDownloadComplete();
     }
 
-    fn validateHeadersResponse(
-        self: *Self,
-        request: eth.GetBlockHeaders,
-        response: eth.BlockHeaders,
-    ) !struct { [][32]u8, []types.BlockHeader } {
-        if (response.rlps.len == 0) return .{ &[_][32]u8{}, &[_]types.BlockHeader{} };
+    fn validateHeaders(allocator: std.mem.Allocator, request: eth.GetBlockHeaders, response: eth.BlockHeaders) !Outcome {
+        if (response.rlps.len == 0) return .{ .headers = .{ .hashes = &.{}, .headers = &.{} } };
 
-        const allocator = self.eth_arena.allocator();
         var headers: []types.BlockHeader = try allocator.alloc(types.BlockHeader, response.rlps.len);
         var hashes: [][32]u8 = try allocator.alloc([32]u8, response.rlps.len);
         for (response.rlps, 0..) |header_rlp, index| {
@@ -605,7 +657,18 @@ pub const Downloader = struct {
             },
         }
 
-        return .{ hashes, headers };
+        return .{ .headers = .{ .hashes = hashes, .headers = headers } };
+    }
+
+    fn validateBal(allocator: std.mem.Allocator, response: eth.BlockAccessLists) !Outcome {
+        if (response.rlps.len == 0) return error.EmptyResponse;
+        // decode from a copy, the parsed lists point into it and outlive the frame
+        const bal_rlp = try allocator.dupe(u8, response.rlps[0].value);
+        var hash: [32]u8 = undefined;
+        std.crypto.hash.sha3.Keccak256.hash(bal_rlp, &hash, .{});
+        var parsed: types.BlockAccessLists = undefined;
+        _ = try rlp.deserialize(types.BlockAccessLists, allocator, bal_rlp, &parsed);
+        return .{ .bal = .{ .hash = hash, .rlp = bal_rlp, .parsed = parsed } };
     }
 
     fn persistDownloadedHeaderChain(
@@ -697,6 +760,15 @@ pub const Downloader = struct {
         try file.value.file.setLength(self.io, 0);
     }
 
+    fn hasHeaderRequest(list: *List(Request(eth.Message))) bool {
+        var current_node = list.inner.first;
+        while (current_node) |node| : (current_node = node.next) {
+            const request: *List(Request(eth.Message)).Node = @alignCast(@fieldParentPtr("node", node));
+            if (request.elem.msg == .get_block_headers) return true;
+        }
+        return false;
+    }
+
     fn checkHeaderDownloadComplete(self: *Self) !void {
         const target = self.syncTarget();
         if (self.header.?.requested_header_head < target.number or
@@ -704,13 +776,7 @@ pub const Downloader = struct {
             return;
 
         if (!self.pending_eth_requests.empty()) return;
-        var current_node = self.inflight_eth_requests.inner.first;
-        while (current_node) |node| {
-            const next_node = node.next;
-            const request: *List(Request(eth.Message)).Node = @alignCast(@fieldParentPtr("node", node));
-            if (request.elem.msg == .get_block_headers) return;
-            current_node = next_node;
-        }
+        if (hasHeaderRequest(&self.inflight_eth_requests) or hasHeaderRequest(&self.validating_eth_requests)) return;
 
         const head = try self.bc.head();
         log.debug("persisting headers start {} end {}", .{
@@ -753,18 +819,16 @@ pub const Downloader = struct {
                     state_heal.target_pivot = try self.readHeader(new_pivot_height) orelse unreachable;
                     log.info("state heal: target moved to {}", .{new_pivot_height});
                 } else {
-                    self.stashSnapRequests();
                     self.state_heal = .{
                         .target_pivot = try self.readHeader(new_pivot_height) orelse unreachable,
                         .next_pivot = try self.readHeader(cur_pivot.number + 1) orelse unreachable,
                         .start_number = cur_pivot.number,
                         .started_at = std.Io.Clock.now(.real, self.io),
                     };
-                    log.info("state heal: started, pivot {} -> {} ({} blocks, {} snap requests stashed)", .{
+                    log.info("state heal: started, pivot {} -> {} ({} blocks)", .{
                         cur_pivot.number,
                         new_pivot_height,
                         new_pivot_height - cur_pivot.number,
-                        self.stashed_snap_requests.len,
                     });
                 }
             } else {
@@ -790,7 +854,8 @@ pub const Downloader = struct {
             try self.advanceStorageAndCodeDownload();
 
         if (self.state.?.pivot.number > 0 and self.inflight_snap_requests.empty() and
-            self.pending_snap_requests.empty() and self.stashed_snap_requests.len == 0)
+            self.pending_snap_requests.empty() and self.validating_snap_requests.empty() and
+            self.stashed_snap_requests.len == 0)
         {
             if (state.accounts_done and state.storage_and_fetch_initiated) {
                 self.state = null;
@@ -976,7 +1041,9 @@ pub const Downloader = struct {
             if (bal.resume_index < bal.parsed.len) {
                 bal.resume_index = try self.applyBal(bal.parsed, bal.resume_index);
             }
-            if (bal.resume_index == bal.parsed.len and self.inflight_snap_requests.empty() and self.pending_snap_requests.empty()) {
+            if (bal.resume_index == bal.parsed.len and self.inflight_snap_requests.empty() and
+                self.pending_snap_requests.empty() and self.validating_snap_requests.empty())
+            {
                 if (state_heal.next_pivot.number + 1 > state_heal.target_pivot.number) {
                     log.info("state heal: done, healed {} blocks in {}s", .{
                         state_heal.target_pivot.number - state_heal.start_number,
@@ -999,6 +1066,8 @@ pub const Downloader = struct {
         }
 
         if (state_heal.bal_requested == false) {
+            if (!self.validating_snap_requests.empty()) return;
+            self.stashSnapRequests();
             const bal_req = self.free_eth_requests.pop() orelse return;
 
             state_heal.pivot_hash_buf[0] = state_heal.next_pivot.hash();
@@ -1021,6 +1090,8 @@ pub const Downloader = struct {
     }
 
     fn drainPendingSnapRequests(self: *Self) void {
+        // until the heal requests an access list, pending requests are download follow ups to be stashed
+        if (self.state_heal) |state_heal| if (!state_heal.bal_requested) return;
         drainPendingRequests(self, &self.pending_snap_requests, &self.inflight_snap_requests, Self.reissueSnapRequest);
     }
 
@@ -1034,39 +1105,90 @@ pub const Downloader = struct {
         self.sendSnapRequest(req) catch {};
     }
 
-    fn handleSnap(self: *Self, msg: snap.Message, peer: rlpx.Server.PeerId) !void {
-        switch (msg) {
-            .account_range => |account_range| {
-                if (self.matchRequest(snap.Message, self.snap_provider, &self.inflight_snap_requests, peer, account_range.id, .get_account_range)) |request| {
-                    try self.handleAccounts(request, &account_range);
-                }
-            },
-            .storage_ranges => |storage_ranges| {
-                if (self.matchRequest(snap.Message, self.snap_provider, &self.inflight_snap_requests, peer, storage_ranges.id, .get_storage_ranges)) |req| {
-                    try self.handleStorage(req, &storage_ranges);
-                }
-            },
-            .byte_codes => |byte_codes| {
-                if (self.matchRequest(snap.Message, self.snap_provider, &self.inflight_snap_requests, peer, byte_codes.id, .get_byte_codes)) |req| {
-                    try self.handleCodes(req, byte_codes);
-                }
-            },
-            else => {},
+    fn handleSnap(self: *Self, received: snap.Provider.ParsedMessage) !bool {
+        const peer = received.read.peer;
+        const matched = switch (received.msg) {
+            .account_range => |account_range| self.matchRequest(snap.Message, self.snap_provider, &self.inflight_snap_requests, peer, account_range.id, .get_account_range),
+            .storage_ranges => |storage_ranges| self.matchRequest(snap.Message, self.snap_provider, &self.inflight_snap_requests, peer, storage_ranges.id, .get_storage_ranges),
+            .byte_codes => |byte_codes| self.matchRequest(snap.Message, self.snap_provider, &self.inflight_snap_requests, peer, byte_codes.id, .get_byte_codes),
+            else => null,
+        };
+        if (matched) |req| {
+            self.validating_snap_requests.push(req);
+            try self.startValidation(&self.snap_arena, .{ .snap = .{ .msg = received, .req = req } });
         }
         self.drainPendingSnapRequests();
-        if (self.state != null)
-            try self.advanceStateDownload();
-        if (self.state_heal != null)
-            try self.advanceStateHeal();
+        return matched != null;
     }
 
-    fn handleAccounts(self: *Self, request: *Request(snap.Message), response: *const snap.AccountRange) !void {
-        const allocator = self.snap_arena.allocator();
+    fn startValidation(self: *Self, arena: *std.heap.ArenaAllocator, resp: @FieldType(ValidatedResponse, "resp")) !void {
+        var owned = arena.*;
+        const validated = try owned.allocator().create(ValidatedResponse);
+        validated.* = .{ .arena = owned, .resp = resp };
+        arena.* = .init(self.allocator);
+        self.validation_group.concurrent(self.io, validate, .{ self, validated }) catch validate(self, validated);
+    }
 
-        const get_accounts_range = request.msg.get_account_range;
+    fn validate(self: *Self, validated: *ValidatedResponse) void {
+        const start = std.Io.Timestamp.now(self.io, .awake);
+        const allocator = validated.arena.allocator();
+        validated.outcome = switch (validated.resp) {
+            .eth => |*resp| switch (resp.msg.msg) {
+                .block_headers => |headers| validateHeaders(allocator, resp.req.msg.get_block_headers, headers),
+                .block_access_list => |access_lists| validateBal(allocator, access_lists),
+                else => unreachable,
+            },
+            .snap => |*resp| switch (resp.msg.msg) {
+                .account_range => |*account_range| verifyAccounts(allocator, resp.req.msg.get_account_range, account_range),
+                .storage_ranges => |*storage_ranges| verifyStorage(allocator, resp.req.msg.get_storage_ranges, resp.req.storage_roots, storage_ranges),
+                .byte_codes => |byte_codes| hashCodes(allocator, byte_codes),
+                else => unreachable,
+            },
+        };
+        validated.verify_seconds = secondsSince(self.io, start);
+        self.validated_responses.putOneUncancelable(self.io, validated) catch unreachable;
+    }
 
-        var hashes: [][32]u8 = try allocator.alloc([32]u8, response.accounts.len);
-        var accounts: [][]const u8 = try allocator.alloc([]const u8, response.accounts.len);
+    fn handleValidated(self: *Self, validated: *ValidatedResponse) !void {
+        defer {
+            switch (validated.resp) {
+                inline else => |resp| self.allocator.free(resp.msg.read.payload),
+            }
+            var arena = validated.arena;
+            arena.deinit();
+        }
+        self.metrics.verify_seconds.observe(.{ .msg = validated.msgName() }, validated.verify_seconds) catch {};
+
+        switch (validated.resp) {
+            .eth => |*resp| {
+                self.validating_eth_requests.remove(resp.req);
+                switch (resp.msg.msg) {
+                    .block_headers => try self.handleHeaders(resp.req, validated.outcome),
+                    .block_access_list => try self.handleBals(resp.req, validated.outcome, &validated.arena),
+                    else => unreachable,
+                }
+                self.drainPendingEthRequests();
+            },
+            .snap => |*resp| {
+                self.validating_snap_requests.remove(resp.req);
+                switch (resp.msg.msg) {
+                    .account_range => |*account_range| try self.handleAccounts(resp.req, account_range, validated.outcome),
+                    .storage_ranges => try self.handleStorage(resp.req, validated.outcome),
+                    .byte_codes => |byte_codes| try self.handleCodes(resp.req, byte_codes, validated.outcome),
+                    else => unreachable,
+                }
+                self.drainPendingSnapRequests();
+                if (self.state != null)
+                    try self.advanceStateDownload();
+                if (self.state_heal != null)
+                    try self.advanceStateHeal();
+            },
+        }
+    }
+
+    fn verifyAccounts(allocator: std.mem.Allocator, request: snap.GetAccountRange, response: *const snap.AccountRange) !Outcome {
+        const hashes = try allocator.alloc([32]u8, response.accounts.len);
+        const accounts = try allocator.alloc([]const u8, response.accounts.len);
         for (response.accounts, 0..) |elem, index| {
             hashes[index] = elem.hash;
 
@@ -1078,34 +1200,107 @@ pub const Downloader = struct {
             accounts[index] = try list.toOwnedSlice();
         }
 
-        var proof: trie.NodesHashMap = .empty;
-        if (response.proof.len > 0) {
-            try proof.ensureTotalCapacity(allocator, @intCast(response.proof.len));
+        const proof = try proofNodes(allocator, response.proof);
+        const has_more = try verifyRangeProof(
+            allocator,
+            request.root,
+            request.origin,
+            hashes,
+            accounts,
+            if (response.proof.len > 0) &proof else null,
+        );
+        return .{ .accounts = .{ .hashes = hashes, .has_more = has_more } };
+    }
 
-            for (response.proof) |node| {
+    fn verifyStorage(
+        allocator: std.mem.Allocator,
+        request: snap.GetStorageRanges,
+        storage_roots: []const [32]u8,
+        response: *const snap.StorageRanges,
+    ) !Outcome {
+        const proof = try proofNodes(allocator, response.proof);
+
+        const served = response.slots[0..@min(response.slots.len, request.account_hashes.len)];
+        var result: VerifiedStorage = .{
+            .keys = try allocator.alloc([][32]u8, served.len),
+            .values = try allocator.alloc([][]const u8, served.len),
+        };
+        var verified: usize = 0;
+        for (served, 0..) |slots, index| {
+            const origin: [32]u8 = if (index == 0) request.starting_hash else @splat(0);
+            const is_last = index + 1 == response.slots.len;
+
+            const keys = try allocator.alloc([32]u8, slots.len);
+            const values = try allocator.alloc([]const u8, slots.len);
+            for (slots, 0..) |slot, slot_index| {
+                keys[slot_index] = slot.hash;
+                values[slot_index] = slot.data;
+            }
+
+            const has_more = verifyRangeProof(
+                allocator,
+                storage_roots[index],
+                origin,
+                keys,
+                values,
+                if (is_last and response.proof.len > 0) &proof else null,
+            ) catch break;
+
+            result.keys[index] = keys;
+            result.values[index] = values;
+            verified = index + 1;
+            if (has_more) {
+                result.continue_from_slot = origin;
+                if (keys.len > 0)
+                    std.mem.writeInt(
+                        u256,
+                        &result.continue_from_slot.?,
+                        std.mem.readInt(u256, &keys[keys.len - 1], .big) + 1,
+                        .big,
+                    );
+                break;
+            }
+        }
+        result.keys = result.keys[0..verified];
+        result.values = result.values[0..verified];
+        return .{ .storage = result };
+    }
+
+    fn hashCodes(allocator: std.mem.Allocator, response: snap.ByteCodes) !Outcome {
+        const hashes = try allocator.alloc([32]u8, response.bytecodes.len);
+        for (response.bytecodes, hashes) |code, *hash|
+            std.crypto.hash.sha3.Keccak256.hash(code, hash, .{});
+        return .{ .codes = hashes };
+    }
+
+    fn proofNodes(allocator: std.mem.Allocator, nodes: []const []const u8) !trie.NodesHashMap {
+        var proof: trie.NodesHashMap = .empty;
+        if (nodes.len > 0) {
+            try proof.ensureTotalCapacity(allocator, @intCast(nodes.len));
+            for (nodes) |node| {
                 var h: [32]u8 align(8) = undefined;
                 std.crypto.hash.sha3.Keccak256.hash(node, &h, .{});
                 try proof.put(allocator, h, node);
             }
         }
+        return proof;
+    }
+
+    fn handleAccounts(self: *Self, request: *Request(snap.Message), response: *const snap.AccountRange, outcome: anyerror!Outcome) !void {
+        const get_accounts_range = request.msg.get_account_range;
+        const verified: ?VerifiedAccounts = if (outcome) |result| result.accounts else |_| null;
 
         var remaining: ?struct { [32]u8, [32]u8 } = null;
-        if (verifyRangeProof(
-            allocator,
-            get_accounts_range.root,
-            get_accounts_range.origin,
-            hashes,
-            accounts,
-            if (response.proof.len > 0) &proof else null,
-        )) |has_more| {
+        if (verified) |accounts| {
+            const hashes = accounts.hashes;
             const last = if (hashes.len > 0) hashes[hashes.len - 1] else get_accounts_range.limit;
             log.debug("verified account range {x}-{x}", .{ get_accounts_range.origin, last });
-            if (has_more and std.mem.order(u8, &last, &get_accounts_range.limit) == .lt)
+            if (accounts.has_more and std.mem.order(u8, &last, &get_accounts_range.limit) == .lt)
                 remaining = .{ last, get_accounts_range.limit };
             try self.persistAccounts(get_accounts_range, hashes, response);
-            const covered_until = if (has_more) last else get_accounts_range.limit;
+            const covered_until = if (accounts.has_more) last else get_accounts_range.limit;
             self.progress.account_keyspace +|= std.mem.readInt(u256, &covered_until, .big) - std.mem.readInt(u256, &get_accounts_range.origin, .big);
-        } else |_| {
+        } else {
             remaining = .{ get_accounts_range.origin, get_accounts_range.limit };
         }
 
@@ -1153,32 +1348,23 @@ pub const Downloader = struct {
         try self.commitTxn(txn, "accounts", txn_start);
     }
 
-    fn handleBals(self: *Self, req: *Request(eth.Message), access_lists: eth.BlockAccessLists) !void {
+    fn handleBals(self: *Self, req: *Request(eth.Message), outcome: anyerror!Outcome, arena: *std.heap.ArenaAllocator) !void {
         if (self.state_heal) |*state_heal| {
-            if (access_lists.rlps.len >= 1) {
-                var calculated_hash: [32]u8 = undefined;
-                std.crypto.hash.sha3.Keccak256.hash(access_lists.rlps[0].value, &calculated_hash, .{});
-                if (std.meta.eql(calculated_hash, state_heal.next_pivot.block_access_list_hash.?)) {
-                    var bal: types.BlockAccessLists = undefined;
-                    if (rlp.deserialize(types.BlockAccessLists, self.eth_arena.allocator(), access_lists.rlps[0].value, &bal)) |_| {
-                        std.debug.assert(state_heal.bal == null);
-
-                        // the raw rlp points into the message payload, which is freed after this handler
-                        const bal_rlp = try self.eth_arena.allocator().dupe(u8, access_lists.rlps[0].value);
-                        // the parsed bal outlives this message, take ownership of the eth arena it lives in
-                        const arena = self.eth_arena;
-                        self.eth_arena = .init(self.allocator);
-                        state_heal.bal = .{
-                            .arena = arena,
-                            .rlp = .{ .value = bal_rlp },
-                            .parsed = bal,
-                        };
-                        self.free_eth_requests.push(req);
-                        try self.advanceStateHeal();
-                        return;
-                    } else |_| {}
+            if (outcome) |result| {
+                if (std.meta.eql(result.bal.hash, state_heal.next_pivot.block_access_list_hash.?)) {
+                    std.debug.assert(state_heal.bal == null);
+                    // the parsed bal outlives this response, take ownership of the arena it lives in
+                    state_heal.bal = .{
+                        .arena = arena.*,
+                        .rlp = .{ .value = result.bal.rlp },
+                        .parsed = result.bal.parsed,
+                    };
+                    arena.* = .init(self.allocator);
+                    self.free_eth_requests.push(req);
+                    try self.advanceStateHeal();
+                    return;
                 }
-            }
+            } else |_| {}
             self.requestBals(req, state_heal.pivot_hash_buf[0..1]);
         } else unreachable;
     }
@@ -1263,76 +1449,26 @@ pub const Downloader = struct {
         return true;
     }
 
-    fn handleStorage(self: *Self, req: *Request(snap.Message), response: *const snap.StorageRanges) !void {
-        const allocator = self.snap_arena.allocator();
+    fn handleStorage(self: *Self, req: *Request(snap.Message), outcome: anyerror!Outcome) !void {
+        const result: VerifiedStorage = if (outcome) |verified| verified.storage else |_| .{};
         const request = &req.msg.get_storage_ranges;
         const requested_accounts = request.account_hashes;
         const storage_roots = req.storage_roots;
-
-        var proof: trie.NodesHashMap = .empty;
-        if (response.proof.len > 0) {
-            try proof.ensureTotalCapacity(allocator, @intCast(response.proof.len));
-            for (response.proof) |node| {
-                var h: [32]u8 align(8) = undefined;
-                std.crypto.hash.sha3.Keccak256.hash(node, &h, .{});
-                try proof.put(allocator, h, node);
-            }
-        }
-
-        const served = response.slots[0..@min(response.slots.len, requested_accounts.len)];
-        const verified_keys = try allocator.alloc([][32]u8, served.len);
-        const verified_values = try allocator.alloc([][]const u8, served.len);
-
-        var verified: usize = 0;
-        var continue_from: ?[32]u8 = null;
-        for (served, 0..) |slots, index| {
-            const origin: [32]u8 = if (index == 0) request.starting_hash else @splat(0);
-            const is_last = index + 1 == response.slots.len;
-
-            const keys = try allocator.alloc([32]u8, slots.len);
-            const values = try allocator.alloc([]const u8, slots.len);
-            for (slots, 0..) |slot, slot_index| {
-                keys[slot_index] = slot.hash;
-                values[slot_index] = slot.data;
-            }
-
-            const has_more = verifyRangeProof(
-                allocator,
-                storage_roots[index],
-                origin,
-                keys,
-                values,
-                if (is_last and response.proof.len > 0) &proof else null,
-            ) catch break;
-
-            verified_keys[index] = keys;
-            verified_values[index] = values;
-            verified += 1;
-            if (has_more) {
-                continue_from = origin;
-                if (keys.len > 0)
-                    std.mem.writeInt(
-                        u256,
-                        &continue_from.?,
-                        std.mem.readInt(u256, &keys[keys.len - 1], .big) + 1,
-                        .big,
-                    );
-                break;
-            }
-        }
+        const verified = result.keys.len;
+        const continue_from_slot = result.continue_from_slot;
 
         const txn_start = std.Io.Timestamp.now(self.io, .awake);
         const txn = try self.eth_db.kv_store.transaction_rw();
         errdefer _ = txn.abort() catch |e| {
             log.err("failed to abort txn {}", .{e});
         };
-        for (requested_accounts[0..verified], verified_keys[0..verified], verified_values[0..verified]) |account_hash, keys, values|
+        for (requested_accounts[0..verified], result.keys, result.values) |account_hash, keys, values|
             try self.eth_db.insertStorage(txn, account_hash, keys, values);
         try self.commitTxn(txn, "storage", txn_start);
 
         var remaining: usize = 0;
         var next_start: [32]u8 = if (verified == 0) request.starting_hash else @splat(0);
-        if (continue_from) |slot| {
+        if (continue_from_slot) |slot| {
             requested_accounts[0] = requested_accounts[verified - 1];
             storage_roots[0] = storage_roots[verified - 1];
             next_start = slot;
@@ -1356,7 +1492,8 @@ pub const Downloader = struct {
         }
     }
 
-    fn handleCodes(self: *Self, req: *Request(snap.Message), codes: snap.ByteCodes) !void {
+    fn handleCodes(self: *Self, req: *Request(snap.Message), codes: snap.ByteCodes, outcome: anyerror!Outcome) !void {
+        const code_hashes: ?[][32]u8 = if (outcome) |result| result.codes else |_| null;
         const txn_start = std.Io.Timestamp.now(self.io, .awake);
         const txn = try self.eth_db.kv_store.transaction_rw();
         defer self.commitTxn(txn, "codes", txn_start) catch unreachable;
@@ -1366,10 +1503,8 @@ pub const Downloader = struct {
 
         var retry_count: usize = 0;
         var next_hash_index: usize = 0;
-        for (codes.bytecodes) |code| {
-            var code_hash: [32]u8 = undefined;
-            std.crypto.hash.sha3.Keccak256.hash(code, &code_hash, .{});
-
+        const served_codes = if (code_hashes != null) codes.bytecodes else &.{};
+        for (served_codes, code_hashes orelse &.{}) |code, code_hash| {
             while (next_hash_index < requested_hashes.len and !std.meta.eql(requested_hashes[next_hash_index], code_hash)) : (next_hash_index += 1) {
                 requested_hashes[retry_count] = requested_hashes[next_hash_index];
                 retry_count += 1;

@@ -27,6 +27,10 @@ pub fn Provider(comptime cfg: Config) type {
             offset: usize,
         };
         pub const MessageIds = std.meta.Tag(cfg.Message);
+        pub const ParsedMessage = struct {
+            msg: cfg.Message,
+            read: rlpx.QueuedRead,
+        };
         const default_rtt = cfg.default_rtt;
         const min_timeout = cfg.min_timeout;
         const max_rtt = cfg.max_rtt;
@@ -71,10 +75,7 @@ pub fn Provider(comptime cfg: Config) type {
             };
         }
 
-        pub fn next(self: *Self, io: std.Io, allocator: std.mem.Allocator, frame_allocator: std.mem.Allocator) !struct {
-            msg: cfg.Message,
-            read: rlpx.QueuedRead,
-        } {
+        pub fn next(self: *Self, io: std.Io, allocator: std.mem.Allocator, frame_allocator: std.mem.Allocator) !ParsedMessage {
             const read = try self.queue.getOne(io);
             errdefer frame_allocator.free(read.payload);
 
