@@ -355,6 +355,14 @@ pub const Downloader = struct {
         }
         self.metrics.verify_seconds.observe(.{ .msg = validated.msgName() }, validated.verify_seconds) catch {};
 
+        if (validated.outcome) |_| {} else |err| switch (validated.resp) {
+            inline else => |resp, proto| {
+                log.debug("dropping peer {} for an invalid {s}: {}", .{ resp.req.peer.peer_index, validated.msgName(), err });
+                const provider = if (proto == .eth) self.eth_provider else self.snap_provider;
+                provider.disconnect(resp.req.peer, err);
+            },
+        }
+
         switch (validated.resp) {
             .eth => |*resp| {
                 self.validating_eth_requests.remove(resp.req);
@@ -423,6 +431,7 @@ pub const Downloader = struct {
     }
 
     fn verifyAccounts(allocator: std.mem.Allocator, request: snap.GetAccountRange, response: *const snap.AccountRange) !Outcome {
+        if (response.accounts.len == 0 and response.proof.len == 0) return error.EmptyAccountRange;
         const hashes = try allocator.alloc([32]u8, response.accounts.len);
         const accounts = try allocator.alloc([]const u8, response.accounts.len);
         for (response.accounts, 0..) |elem, index| {
@@ -454,6 +463,7 @@ pub const Downloader = struct {
         storage_roots: []const [32]u8,
         response: *const snap.StorageRanges,
     ) !Outcome {
+        if (response.slots.len == 0) return error.EmptyStorageRanges;
         const proof = try proofNodes(allocator, response.proof);
 
         const served = response.slots[0..@min(response.slots.len, request.account_hashes.len)];
