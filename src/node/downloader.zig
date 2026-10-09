@@ -17,6 +17,7 @@ const max_inflight_requests = 100;
 const max_inflight_requests_per_peer = 2;
 const header_persist_chunk = 1024;
 const batch_storage_code_req_size = 256;
+const min_split_range = std.math.maxInt(u256) / (1 << 16);
 const progress_log_interval: std.Io.Duration = .fromSeconds(8);
 const arena_retain_limit = (32 << 20) - 64;
 
@@ -1311,10 +1312,8 @@ pub const Downloader = struct {
 
             const origin_numeric = std.mem.readInt(u256, &origin, .big);
             const limit_numeric = std.mem.readInt(u256, &limit, .big);
-            const min_range = (std.math.maxInt(u256) / (1 << 16));
-
             const pivot_state_root = self.state.?.pivot.state_root;
-            if (limit_numeric - origin_numeric < min_range) {
+            if (limit_numeric - origin_numeric < min_split_range) {
                 self.requestAccountRange(request, pivot_state_root, origin, limit);
             } else if (self.free_snap_requests.pop()) |new_req| {
                 var split_point: [32]u8 = undefined;
@@ -1442,8 +1441,10 @@ pub const Downloader = struct {
             if (request.msg != .get_storage_ranges) continue;
             const storage_request = request.msg.get_storage_ranges;
             for (storage_request.account_hashes, 0..) |requested_account, index| {
-                if (std.meta.eql(requested_account, account_hash))
-                    return index == 0 and std.mem.order(u8, &slot_hash, &storage_request.starting_hash) == .lt;
+                if (!std.meta.eql(requested_account, account_hash)) continue;
+                if (index > 0) return false;
+                if (std.mem.order(u8, &slot_hash, &storage_request.starting_hash) != .lt and
+                    std.mem.order(u8, &slot_hash, &storage_request.limit_hash) != .gt) return false;
             }
         }
         return true;
@@ -1455,7 +1456,6 @@ pub const Downloader = struct {
         const requested_accounts = request.account_hashes;
         const storage_roots = req.storage_roots;
         const verified = result.keys.len;
-        const continue_from_slot = result.continue_from_slot;
 
         const txn_start = std.Io.Timestamp.now(self.io, .awake);
         const txn = try self.eth_db.kv_store.transaction_rw();
@@ -1466,6 +1466,8 @@ pub const Downloader = struct {
             try self.eth_db.insertStorage(txn, account_hash, keys, values);
         try self.commitTxn(txn, "storage", txn_start);
 
+        const continue_from_slot = if (result.continue_from_slot) |from| try self.splitLargeAccount(req, verified, from) else null;
+        const unserved = requested_accounts[verified..];
         var remaining: usize = 0;
         var next_start: [32]u8 = if (verified == 0) request.starting_hash else @splat(0);
         if (continue_from_slot) |slot| {
@@ -1474,7 +1476,6 @@ pub const Downloader = struct {
             next_start = slot;
             remaining = 1;
         }
-        const unserved = requested_accounts[verified..];
         std.mem.copyForwards([32]u8, requested_accounts[remaining..][0..unserved.len], unserved);
         std.mem.copyForwards([32]u8, storage_roots[remaining..][0..unserved.len], storage_roots[verified..]);
         remaining += unserved.len;
@@ -1490,6 +1491,39 @@ pub const Downloader = struct {
             self.progress.storage_keyspace +|= req.keyspace[1] - req.keyspace[0];
             self.free_snap_requests.push(req);
         }
+    }
+
+    fn splitLargeAccount(self: *Self, req: *Request(snap.Message), verified: usize, from: [32]u8) !?[32]u8 {
+        const request = &req.msg.get_storage_ranges;
+        const only_account_left = verified == request.account_hashes.len;
+        const account_limit = if (only_account_left) request.limit_hash else @as([32]u8, @splat(0xff));
+        const origin = std.mem.readInt(u256, &from, .big);
+        const limit = std.mem.readInt(u256, &account_limit, .big);
+        if (limit < origin) return null;
+        if (only_account_left and limit - origin < min_split_range) return from;
+        const new_req = self.free_snap_requests.pop() orelse return from;
+
+        var new_origin = from;
+        if (only_account_left) {
+            std.mem.writeInt(u256, &request.limit_hash, origin / 2 + limit / 2, .big);
+            std.mem.writeInt(u256, &new_origin, origin / 2 + limit / 2 + 1, .big);
+        }
+
+        const hashes = try self.allocator.alloc([32]u8, batch_storage_code_req_size);
+        errdefer self.allocator.free(hashes);
+        const roots = try self.allocator.alloc([32]u8, batch_storage_code_req_size);
+        hashes[0] = request.account_hashes[verified - 1];
+        roots[0] = req.storage_roots[verified - 1];
+        new_req.keyspace = .{ 0, 0 };
+        new_req.storage_roots = roots[0..1];
+        new_req.msg = .{ .get_storage_ranges = .{
+            .account_hashes = hashes[0..1],
+            .root_hash = request.root_hash,
+            .starting_hash = new_origin,
+            .limit_hash = account_limit,
+        } };
+        self.sendSnapRequest(new_req) catch {};
+        return if (only_account_left) from else null;
     }
 
     fn handleCodes(self: *Self, req: *Request(snap.Message), codes: snap.ByteCodes, outcome: anyerror!Outcome) !void {
