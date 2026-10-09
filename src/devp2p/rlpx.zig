@@ -21,63 +21,6 @@ const max_inflight_writes_per_peer = 24;
 
 const log = std.log.scoped(.rlpx);
 
-const Metrics = struct {
-    connections: prom.Gauge(i64),
-    peers: prom.Gauge(i64),
-    inbound: prom.Counter(u64),
-    dials: prom.Counter(u64),
-    failed_dials: prom.Counter(u64),
-    handshakes: prom.CounterVec(u64, struct { direction: []const u8 }),
-    disconnects: prom.CounterVec(u64, DisconnectLabels),
-    frames_received: prom.Counter(u64),
-    frames_sent: prom.Counter(u64),
-    bytes_received: prom.Counter(u64),
-    bytes_sent: prom.Counter(u64),
-    messages_received: prom.CounterVec(u64, CapLabels),
-    messages_dropped: prom.CounterVec(u64, CapLabels),
-    loop_wait_seconds: prom.Counter(f64),
-    loop_busy_seconds: prom.Counter(f64),
-
-    const DisconnectLabels = struct { stage: []const u8, side: []const u8, reason: []const u8 };
-    const CapLabels = struct { cap: []const u8 };
-
-    fn init(allocator: std.mem.Allocator, io: std.Io) !Metrics {
-        const opts: prom.RegistryOpts = .{};
-        var handshakes: @FieldType(Metrics, "handshakes") = try .init(allocator, io, "rlpx_handshakes_total", .{ .help = "Completed hello exchanges" }, opts);
-        errdefer handshakes.deinit();
-        var disconnects: @FieldType(Metrics, "disconnects") = try .init(allocator, io, "rlpx_disconnects_total", .{ .help = "Peer disconnects by stage, initiating side and reason" }, opts);
-        errdefer disconnects.deinit();
-        var messages_received: @FieldType(Metrics, "messages_received") = try .init(allocator, io, "rlpx_messages_received_total", .{ .help = "Subprotocol messages received" }, opts);
-        errdefer messages_received.deinit();
-        const messages_dropped: @FieldType(Metrics, "messages_dropped") = try .init(allocator, io, "rlpx_messages_dropped_total", .{ .help = "Subprotocol messages dropped due to a full handler queue" }, opts);
-
-        return .{
-            .connections = .init("rlpx_connections", .{ .help = "Open RLPx connections, including ones still handshaking" }, opts),
-            .peers = .init("rlpx_peers", .{ .help = "Peers that completed the hello exchange" }, opts),
-            .inbound = .init("rlpx_inbound_total", .{ .help = "Accepted inbound connections" }, opts),
-            .dials = .init("rlpx_dials_total", .{ .help = "Outbound dial attempts" }, opts),
-            .failed_dials = .init("rlpx_failed_dials_total", .{ .help = "Outbound dials that failed before a connection was established" }, opts),
-            .handshakes = handshakes,
-            .disconnects = disconnects,
-            .frames_received = .init("rlpx_frames_received_total", .{}, opts),
-            .frames_sent = .init("rlpx_frames_sent_total", .{}, opts),
-            .bytes_received = .init("rlpx_bytes_received_total", .{}, opts),
-            .bytes_sent = .init("rlpx_bytes_sent_total", .{}, opts),
-            .messages_received = messages_received,
-            .messages_dropped = messages_dropped,
-            .loop_wait_seconds = .init("rlpx_loop_wait_seconds_total", .{ .help = "Time the peer loop spent waiting on the IO batch" }, opts),
-            .loop_busy_seconds = .init("rlpx_loop_busy_seconds_total", .{ .help = "Time the peer loop spent processing" }, opts),
-        };
-    }
-
-    fn deinit(self: *Metrics) void {
-        self.handshakes.deinit();
-        self.disconnects.deinit();
-        self.messages_received.deinit();
-        self.messages_dropped.deinit();
-    }
-};
-
 fn secondsSince(io: std.Io, start: std.Io.Timestamp) f64 {
     const ns = start.durationTo(std.Io.Timestamp.now(io, .awake)).toNanoseconds();
     return @as(f64, @floatFromInt(ns)) / std.time.ns_per_s;
@@ -293,55 +236,6 @@ pub const Server = struct {
         self.metrics.deinit();
     }
 
-    pub fn writeMetrics(self: *Self, writer: *std.Io.Writer) !void {
-        return prom.write(&self.metrics, writer);
-    }
-
-    fn sharedCaps(self: *const Self, allocator: std.mem.Allocator, peer_caps: []const Capability) ![]SharedCap {
-        const registered = self.proto_handlers;
-
-        const shared = try allocator.alloc(SharedCap, registered.len);
-        errdefer allocator.free(shared);
-
-        var len: usize = 0;
-        var offset: usize = 0x10;
-        var best: ?usize = null;
-
-        for (registered, 0..) |*r, i| {
-            if (r.cap.offeredBy(peer_caps)) {
-                best = i;
-            } else if (r.required) {
-                return error.MissingRequiredCapability;
-            }
-
-            const run_end = i + 1 == registered.len or
-                !std.mem.eql(u8, registered[i + 1].cap.name, r.cap.name);
-            if (!run_end) continue;
-
-            const m = best orelse continue;
-            best = null;
-            shared[len] = .{
-                .registered_cap_index = m,
-                .starting_offset = offset,
-            };
-            offset += registered[m].message_count;
-            len += 1;
-        }
-
-        return allocator.realloc(shared, len);
-    }
-
-    fn matchCap(self: *const Self, caps: []SharedCap, id: u64) ?struct {
-        reg: *const RegisteredCapability,
-        offset: u64,
-    } {
-        for (caps) |c| {
-            const reg = &self.proto_handlers[c.registered_cap_index];
-            if (id < c.starting_offset + reg.message_count) return .{ .reg = reg, .offset = c.starting_offset };
-        }
-        return null;
-    }
-
     pub fn run(self: *Self) !void {
         var peer_listener = try self.io.concurrent(Self.listenPeers, .{self});
         defer peer_listener.cancel(self.io) catch {};
@@ -359,24 +253,6 @@ pub const Server = struct {
                 continue;
             };
         }
-    }
-
-    fn peerId(self: *Self, peer: *Peer) PeerId {
-        const slot: *PeerSlot = @fieldParentPtr("peer", peer);
-        return .{
-            .peer_index = slot - self.slots.ptr,
-            .peer_epoch = slot.epoch,
-        };
-    }
-
-    fn acceptPeer(self: *Self, stream: std.Io.net.Stream) !void {
-        const slot = try self.allocateSlot();
-        errdefer slot.status.store(.Empty, .release);
-        slot.peer = try .init(self.allocator, stream, self);
-        slot.status.store(.Ready, .release);
-        _ = self.stats.inbound.fetchAdd(1, .monotonic);
-        self.metrics.inbound.incr();
-        self.metrics.connections.incr();
     }
 
     fn listenPeers(self: *Self) !void {
@@ -445,6 +321,124 @@ pub const Server = struct {
         }
     }
 
+    fn acceptPeer(self: *Self, stream: std.Io.net.Stream) !void {
+        const slot = try self.allocateSlot();
+        errdefer slot.status.store(.Empty, .release);
+        slot.peer = try .init(self.allocator, stream, self);
+        slot.status.store(.Ready, .release);
+        _ = self.stats.inbound.fetchAdd(1, .monotonic);
+        self.metrics.inbound.incr();
+        self.metrics.connections.incr();
+    }
+
+    pub fn dial(self: *Self, record: enr.Record) !void {
+        const remote_addr = record.tcpAddr().?;
+        log.debug("dialing peer {any}", .{record.tcpAddr()});
+        _ = self.stats.dials.fetchAdd(1, .monotonic);
+        self.metrics.dials.incr();
+        errdefer {
+            _ = self.stats.failed_dials.fetchAdd(1, .monotonic);
+            self.metrics.failed_dials.incr();
+        }
+
+        const slot = try self.allocateSlot();
+        errdefer slot.status.store(.Empty, .release);
+
+        const stream = try remote_addr.connect(self.io, .{
+            .mode = .stream,
+        }); //todo: add timeout when implemented by Io.Threaded
+        errdefer stream.close(self.io);
+
+        slot.peer = try .init(self.allocator, stream, self);
+        slot.peer.record = record;
+        slot.peer.status = .{ .dialed = {} };
+        slot.status.store(.Ready, .release); // todo: notify main worker
+        self.metrics.connections.incr();
+    }
+
+    pub fn candidatePeer(self: *Self, record: enr.Record) bool {
+        const new_pk = record.uncompressedPubkey() catch return false;
+        for (self.slots) |*slot| {
+            if (slot.status.load(.acquire) == .Active) {
+                if (slot.peer.remote_pubkey) |pk| {
+                    if (std.mem.eql(u8, &new_pk, &pk)) return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    fn allocateSlot(self: *Self) !*PeerSlot {
+        for (0..3) |_| {
+            for (self.slots) |*slot| {
+                if (slot.status.cmpxchgStrong(.Empty, .Occupied, .acq_rel, .acquire) == null)
+                    return slot;
+            }
+        }
+        return error.TooManyPeers;
+    }
+
+    fn peerId(self: *Self, peer: *Peer) PeerId {
+        const slot: *PeerSlot = @fieldParentPtr("peer", peer);
+        return .{
+            .peer_index = slot - self.slots.ptr,
+            .peer_epoch = slot.epoch,
+        };
+    }
+
+    pub fn connectionCount(self: *Self) usize {
+        var count: usize = 0;
+        for (self.slots) |*slot| {
+            if (slot.status.load(.acquire) == .Active) count += 1;
+        }
+        return count;
+    }
+
+    fn sharedCaps(self: *const Self, allocator: std.mem.Allocator, peer_caps: []const Capability) ![]SharedCap {
+        const registered = self.proto_handlers;
+
+        const shared = try allocator.alloc(SharedCap, registered.len);
+        errdefer allocator.free(shared);
+
+        var len: usize = 0;
+        var offset: usize = 0x10;
+        var best: ?usize = null;
+
+        for (registered, 0..) |*r, i| {
+            if (r.cap.offeredBy(peer_caps)) {
+                best = i;
+            } else if (r.required) {
+                return error.MissingRequiredCapability;
+            }
+
+            const run_end = i + 1 == registered.len or
+                !std.mem.eql(u8, registered[i + 1].cap.name, r.cap.name);
+            if (!run_end) continue;
+
+            const m = best orelse continue;
+            best = null;
+            shared[len] = .{
+                .registered_cap_index = m,
+                .starting_offset = offset,
+            };
+            offset += registered[m].message_count;
+            len += 1;
+        }
+
+        return allocator.realloc(shared, len);
+    }
+
+    fn matchCap(self: *const Self, caps: []SharedCap, id: u64) ?struct {
+        reg: *const RegisteredCapability,
+        offset: u64,
+    } {
+        for (caps) |c| {
+            const reg = &self.proto_handlers[c.registered_cap_index];
+            if (id < c.starting_offset + reg.message_count) return .{ .reg = reg, .offset = c.starting_offset };
+        }
+        return null;
+    }
+
     fn onReadCompletion(self: *Self, completed: std.Io.Batch.Completion) !void {
         self.processRead(completed) catch |e| {
             const slot = &self.slots[completed.index];
@@ -480,6 +474,86 @@ pub const Server = struct {
         });
     }
 
+    pub fn queueMsg(self: *Self, peer_id: PeerId, id: u64, msg: anytype) !void {
+        try self.reserveWriteQueueSlot(peer_id.peer_index, 8);
+        errdefer self.releaseWriteQueueSlot(peer_id.peer_index);
+
+        const encoded, const len = try encodeMsg(self.allocator, id, msg, true);
+        const wrote = try self.write_queue.put(self.io, &[_]QueuedWrite{.{
+            .peer_id = peer_id,
+            .payload = encoded,
+            .payload_len = len,
+        }}, 0); // todo: notify main worker
+        if (wrote == 0) {
+            self.allocator.free(encoded);
+            return error.WriteQueueFull;
+        }
+    }
+
+    pub fn reserveWriteQueueSlot(self: *Self, peer_index: usize, floor: usize) !void {
+        const free_slots = &self.free_write_queue_slots[peer_index];
+        var free_write_slots = free_slots.load(.acquire);
+        while (true) {
+            if (free_write_slots <= floor) return error.TooManyInflightWrites;
+            free_write_slots = free_slots.cmpxchgStrong(
+                free_write_slots,
+                free_write_slots - 1,
+                .acq_rel,
+                .acquire,
+            ) orelse return;
+        }
+    }
+
+    pub fn releaseWriteQueueSlot(self: *Self, peer_index: usize) void {
+        _ = self.free_write_queue_slots[peer_index].fetchAdd(1, .release);
+    }
+
+    fn drainWriteQueue(self: *Self) !void {
+        var queued_write: QueuedWrite = undefined;
+        while (true) {
+            const read = try self.write_queue.get(self.io, (&queued_write)[0..1], 0);
+            if (read == 0) break;
+            const peer_index = queued_write.peer_id.peer_index;
+            var queued = false;
+            defer {
+                self.allocator.free(queued_write.payload);
+                if (!queued) self.releaseWriteQueueSlot(peer_index);
+            }
+
+            const slot = &self.slots[peer_index];
+            if (slot.epoch != queued_write.peer_id.peer_epoch) continue;
+
+            const sec = slot.peer.sessionSecrets() catch continue;
+            slot.peer.queueWrite(encryptFrame(
+                self.allocator,
+                sec,
+                queued_write.payload[0..queued_write.payload_len],
+            ) catch continue);
+            self.metrics.frames_sent.incr();
+            queued = true;
+        }
+    }
+
+    fn scheduleWrite(self: *Self, index: usize, tail_length: ?usize) void {
+        const slot = &self.slots[index];
+        var writes = slot.peer.collectWrites() orelse {
+            slot.peer.armed_iov = null;
+            if (slot.status.load(.acquire) == .Exiting) self.clearSlot(slot);
+            return;
+        };
+        if (tail_length) |tail| {
+            const total = writes[0].len;
+            writes[0] = writes[0][total - tail ..];
+        }
+
+        const write_index = self.slots.len + index;
+        self.batch.addAt(@intCast(write_index), .{ .file_write_streaming = .{ .file = .{
+            .handle = slot.peer.stream.socket.handle,
+            .flags = .{ .nonblocking = true },
+        }, .data = writes } });
+        slot.peer.armed_iov = writes;
+    }
+
     fn onWriteCompletion(self: *Self, completed: std.Io.Batch.Completion) !void {
         const peer_index = completed.index - self.slots.len;
         const peer_slot = &self.slots[peer_index];
@@ -512,26 +586,6 @@ pub const Server = struct {
         }
 
         self.scheduleWrite(peer_index, tail_length);
-    }
-
-    fn scheduleWrite(self: *Self, index: usize, tail_length: ?usize) void {
-        const slot = &self.slots[index];
-        var writes = slot.peer.collectWrites() orelse {
-            slot.peer.armed_iov = null;
-            if (slot.status.load(.acquire) == .Exiting) self.clearSlot(slot);
-            return;
-        };
-        if (tail_length) |tail| {
-            const total = writes[0].len;
-            writes[0] = writes[0][total - tail ..];
-        }
-
-        const write_index = self.slots.len + index;
-        self.batch.addAt(@intCast(write_index), .{ .file_write_streaming = .{ .file = .{
-            .handle = slot.peer.stream.socket.handle,
-            .flags = .{ .nonblocking = true },
-        }, .data = writes } });
-        slot.peer.armed_iov = writes;
     }
 
     pub fn requestDisconnect(self: *Self, peer_id: PeerId, reason: anyerror) void {
@@ -578,119 +632,8 @@ pub const Server = struct {
         slot.status.store(.Empty, .release);
     }
 
-    pub fn connectionCount(self: *Self) usize {
-        var count: usize = 0;
-        for (self.slots) |*slot| {
-            if (slot.status.load(.acquire) == .Active) count += 1;
-        }
-        return count;
-    }
-
-    fn allocateSlot(self: *Self) !*PeerSlot {
-        for (0..3) |_| {
-            for (self.slots) |*slot| {
-                if (slot.status.cmpxchgStrong(.Empty, .Occupied, .acq_rel, .acquire) == null)
-                    return slot;
-            }
-        }
-        return error.TooManyPeers;
-    }
-
-    pub fn candidatePeer(self: *Self, record: enr.Record) bool {
-        const new_pk = record.uncompressedPubkey() catch return false;
-        for (self.slots) |*slot| {
-            if (slot.status.load(.acquire) == .Active) {
-                if (slot.peer.remote_pubkey) |pk| {
-                    if (std.mem.eql(u8, &new_pk, &pk)) return false;
-                }
-            }
-        }
-        return true;
-    }
-
-    pub fn dial(self: *Self, record: enr.Record) !void {
-        const remote_addr = record.tcpAddr().?;
-        log.debug("dialing peer {any}", .{record.tcpAddr()});
-        _ = self.stats.dials.fetchAdd(1, .monotonic);
-        self.metrics.dials.incr();
-        errdefer {
-            _ = self.stats.failed_dials.fetchAdd(1, .monotonic);
-            self.metrics.failed_dials.incr();
-        }
-
-        const slot = try self.allocateSlot();
-        errdefer slot.status.store(.Empty, .release);
-
-        const stream = try remote_addr.connect(self.io, .{
-            .mode = .stream,
-        }); //todo: add timeout when implemented by Io.Threaded
-        errdefer stream.close(self.io);
-
-        slot.peer = try .init(self.allocator, stream, self);
-        slot.peer.record = record;
-        slot.peer.status = .{ .dialed = {} };
-        slot.status.store(.Ready, .release); // todo: notify main worker
-        self.metrics.connections.incr();
-    }
-
-    pub fn reserveWriteQueueSlot(self: *Self, peer_index: usize, floor: usize) !void {
-        const free_slots = &self.free_write_queue_slots[peer_index];
-        var free_write_slots = free_slots.load(.acquire);
-        while (true) {
-            if (free_write_slots <= floor) return error.TooManyInflightWrites;
-            free_write_slots = free_slots.cmpxchgStrong(
-                free_write_slots,
-                free_write_slots - 1,
-                .acq_rel,
-                .acquire,
-            ) orelse return;
-        }
-    }
-
-    pub fn releaseWriteQueueSlot(self: *Self, peer_index: usize) void {
-        _ = self.free_write_queue_slots[peer_index].fetchAdd(1, .release);
-    }
-
-    pub fn queueMsg(self: *Self, peer_id: PeerId, id: u64, msg: anytype) !void {
-        try self.reserveWriteQueueSlot(peer_id.peer_index, 8);
-        errdefer self.releaseWriteQueueSlot(peer_id.peer_index);
-
-        const encoded, const len = try encodeMsg(self.allocator, id, msg, true);
-        const wrote = try self.write_queue.put(self.io, &[_]QueuedWrite{.{
-            .peer_id = peer_id,
-            .payload = encoded,
-            .payload_len = len,
-        }}, 0); // todo: notify main worker
-        if (wrote == 0) {
-            self.allocator.free(encoded);
-            return error.WriteQueueFull;
-        }
-    }
-
-    fn drainWriteQueue(self: *Self) !void {
-        var queued_write: QueuedWrite = undefined;
-        while (true) {
-            const read = try self.write_queue.get(self.io, (&queued_write)[0..1], 0);
-            if (read == 0) break;
-            const peer_index = queued_write.peer_id.peer_index;
-            var queued = false;
-            defer {
-                self.allocator.free(queued_write.payload);
-                if (!queued) self.releaseWriteQueueSlot(peer_index);
-            }
-
-            const slot = &self.slots[peer_index];
-            if (slot.epoch != queued_write.peer_id.peer_epoch) continue;
-
-            const sec = slot.peer.sessionSecrets() catch continue;
-            slot.peer.queueWrite(encryptFrame(
-                self.allocator,
-                sec,
-                queued_write.payload[0..queued_write.payload_len],
-            ) catch continue);
-            self.metrics.frames_sent.incr();
-            queued = true;
-        }
+    pub fn writeMetrics(self: *Self, writer: *std.Io.Writer) !void {
+        return prom.write(&self.metrics, writer);
     }
 };
 
@@ -764,31 +707,125 @@ const Peer = struct {
         self.free_writes.deinit(allocator);
     }
 
-    fn read(self: *Peer, n: usize) ![]u8 {
-        const space_left = self.rbuf.len - self.rbuf_tail;
-        const buffer_len = self.rbuf_tail - self.rbuf_head;
+    fn sendHandshake(self: *Peer) !void {
+        const record = self.record.?;
+        const server = self.server;
+        var init_nonce: [32]u8 = undefined;
+        server.io.random(&init_nonce);
 
-        if (buffer_len + space_left < n) {
-            // remaining of the rbuf doesn't have enough space to store the requested amount
-            @memmove(self.rbuf[0..buffer_len], self.rbuf[self.rbuf_head..self.rbuf_tail]);
-            self.rbuf_head = 0;
-            self.rbuf_tail = buffer_len;
-        }
+        const remote_pubkey = try record.uncompressedPubkey();
+        var secret = try sharedSecret(server.keypair.secret_key.toBytes(), remote_pubkey);
+        secret = xor32(secret, init_nonce);
 
-        if (buffer_len < n) return error.NotEnoughData;
+        const eph = Ecdsa.KeyPair.generate(server.io);
+        const sig = try server.secp.sign(secret, eph.secret_key.toBytes());
 
-        const buf = self.rbuf[self.rbuf_head .. self.rbuf_head + n];
-        self.rbuf_head += n;
+        const auth = AuthMessage{
+            .nonce = init_nonce,
+            .pubkey = server.keypair.public_key.toUncompressedSec1()[1..65].*,
+            .sig = sig,
+        };
 
-        if (self.rbuf_head == self.rbuf_tail) {
-            self.rbuf_head = 0;
-            self.rbuf_tail = 0;
-        }
-        return buf;
+        var rlp_buf: std.array_list.Managed(u8) = .init(server.allocator);
+        defer rlp_buf.deinit();
+        try rlp_buf.ensureTotalCapacity(2048);
+        try rlp.serialize(AuthMessage, server.allocator, auth, &rlp_buf);
+
+        var padSize: u8 = undefined;
+        server.io.random((&padSize)[0..1]);
+
+        try rlp_buf.appendNTimes(0, padSize % 100 + 100);
+
+        const total_len = rlp_buf.items.len + ecies_overhead + 2;
+        const encrypted_buf = try server.allocator.alloc(u8, total_len);
+        std.mem.writeInt(u16, encrypted_buf[0..2], @intCast(total_len - 2), .big);
+
+        _ = try eciesEncrypt(server.io, encrypted_buf[2..], remote_pubkey, rlp_buf.items, encrypted_buf[0..2]);
+        const handshake: Peer.HandshakeState = .{
+            .msg = encrypted_buf,
+            .init_nonce = init_nonce,
+            .eph_key = eph,
+        };
+        const msg = try server.allocator.dupe(u8, handshake.msg);
+        errdefer server.allocator.free(msg);
+        try self.queueRawMsg(msg);
+        self.remote_pubkey = remote_pubkey;
+        self.status = .{ .auth_sent = handshake };
     }
 
-    fn readBuffer(self: *Peer) []u8 {
-        return self.rbuf[self.rbuf_tail..];
+    fn recvHandshake(self: *Peer, prefix: [2]u8, blob: []const u8) !Peer.Session {
+        const server = self.server;
+
+        var plain_buf: [max_handshake_size]u8 = undefined;
+        const plain = try eciesDecrypt(server.keypair.secret_key.toBytes(), &plain_buf, blob, &prefix);
+
+        var auth: AuthMessage = undefined;
+        _ = try rlp.deserialize(AuthMessage, undefined, plain, &auth);
+        if (auth.version < 4) return error.IncompatibleVersion;
+        if (std.mem.eql(u8, &auth.pubkey, &server.hello.node_id)) return error.SelfIdentity;
+
+        const token = try sharedSecret(server.keypair.secret_key.toBytes(), auth.pubkey);
+        const remote_eph = try server.secp.recoverPubkey(xor32(token, auth.nonce), auth.sig);
+
+        var ack_nonce: [32]u8 = undefined;
+        server.io.random(&ack_nonce);
+        const eph = Ecdsa.KeyPair.generate(server.io);
+
+        const ack_msg = AuthRespMessage{
+            .eph_pub = eph.public_key.toUncompressedSec1()[1..65].*,
+            .nonce = ack_nonce,
+            .version = 4,
+        };
+
+        var rlp_buf: std.array_list.Managed(u8) = .init(server.allocator);
+        defer rlp_buf.deinit();
+        try rlp_buf.ensureTotalCapacity(max_handshake_size);
+        try rlp.serialize(AuthRespMessage, server.allocator, ack_msg, &rlp_buf);
+
+        var padSize: u8 = undefined;
+        server.io.random((&padSize)[0..1]);
+
+        try rlp_buf.appendNTimes(0, padSize % 100 + 100);
+
+        const total_len = rlp_buf.items.len + ecies_overhead + 2;
+        const ack = try server.allocator.alloc(u8, total_len);
+        defer server.allocator.free(ack);
+        std.mem.writeInt(u16, ack[0..2], @intCast(total_len - 2), .big);
+
+        _ = try eciesEncrypt(server.io, ack[2..], auth.pubkey, rlp_buf.items, ack[0..2]);
+
+        const ecdhe = try sharedSecret(eph.secret_key.toBytes(), remote_eph[1..65].*);
+        var session: Peer.Session = .{ .secrets = deriveSecrets(
+            ecdhe,
+            auth.nonce,
+            ack_nonce,
+            &.{ack},
+            &.{ &prefix, blob },
+            .recipient,
+        ) };
+
+        const encoded, const len = try encodeMsg(server.allocator, @backingInt(MessageId.hello), server.hello, false);
+        defer server.allocator.free(encoded);
+        const hello_frame = try encryptFrame(server.allocator, &session.secrets, encoded[0..len]);
+        defer server.allocator.free(hello_frame);
+        server.metrics.frames_sent.incr();
+
+        const out = try server.allocator.alloc(u8, ack.len + hello_frame.len);
+        errdefer server.allocator.free(out);
+        @memcpy(out[0..ack.len], ack);
+        @memcpy(out[ack.len..], hello_frame);
+
+        try self.queueRawMsg(out);
+        self.remote_pubkey = auth.pubkey;
+        return session;
+    }
+
+    fn sessionSecrets(self: *Peer) !*Secrets {
+        switch (self.status) {
+            .hello => |*session| return &session.secrets,
+            .active => |*state| return &state.session.secrets,
+            else => return error.NoActiveSession,
+        }
     }
 
     fn handle(self: *Peer, io: std.Io, allocator: std.mem.Allocator, new_bytes_buffered: usize) !void {
@@ -912,6 +949,33 @@ const Peer = struct {
         }
     }
 
+    fn read(self: *Peer, n: usize) ![]u8 {
+        const space_left = self.rbuf.len - self.rbuf_tail;
+        const buffer_len = self.rbuf_tail - self.rbuf_head;
+
+        if (buffer_len + space_left < n) {
+            // remaining of the rbuf doesn't have enough space to store the requested amount
+            @memmove(self.rbuf[0..buffer_len], self.rbuf[self.rbuf_head..self.rbuf_tail]);
+            self.rbuf_head = 0;
+            self.rbuf_tail = buffer_len;
+        }
+
+        if (buffer_len < n) return error.NotEnoughData;
+
+        const buf = self.rbuf[self.rbuf_head .. self.rbuf_head + n];
+        self.rbuf_head += n;
+
+        if (self.rbuf_head == self.rbuf_tail) {
+            self.rbuf_head = 0;
+            self.rbuf_tail = 0;
+        }
+        return buf;
+    }
+
+    fn readBuffer(self: *Peer) []u8 {
+        return self.rbuf[self.rbuf_tail..];
+    }
+
     fn readFrame(self: *Peer, s: *Session) !?struct { id: u64, payload: []u8 } {
         if (s.pending_frame == null) {
             const hdr = try self.read(32);
@@ -938,127 +1002,6 @@ const Peer = struct {
         var id: u64 = undefined;
         const off = try rlp.deserialize(u64, undefined, message, &id);
         return .{ .id = id, .payload = message[off..] };
-    }
-
-    fn sendHandshake(self: *Peer) !void {
-        const record = self.record.?;
-        const server = self.server;
-        var init_nonce: [32]u8 = undefined;
-        server.io.random(&init_nonce);
-
-        const remote_pubkey = try record.uncompressedPubkey();
-        var secret = try sharedSecret(server.keypair.secret_key.toBytes(), remote_pubkey);
-        secret = xor32(secret, init_nonce);
-
-        const eph = Ecdsa.KeyPair.generate(server.io);
-        const sig = try server.secp.sign(secret, eph.secret_key.toBytes());
-
-        const auth = AuthMessage{
-            .nonce = init_nonce,
-            .pubkey = server.keypair.public_key.toUncompressedSec1()[1..65].*,
-            .sig = sig,
-        };
-
-        var rlp_buf: std.array_list.Managed(u8) = .init(server.allocator);
-        defer rlp_buf.deinit();
-        try rlp_buf.ensureTotalCapacity(2048);
-        try rlp.serialize(AuthMessage, server.allocator, auth, &rlp_buf);
-
-        var padSize: u8 = undefined;
-        server.io.random((&padSize)[0..1]);
-
-        try rlp_buf.appendNTimes(0, padSize % 100 + 100);
-
-        const total_len = rlp_buf.items.len + ecies_overhead + 2;
-        const encrypted_buf = try server.allocator.alloc(u8, total_len);
-        std.mem.writeInt(u16, encrypted_buf[0..2], @intCast(total_len - 2), .big);
-
-        _ = try eciesEncrypt(server.io, encrypted_buf[2..], remote_pubkey, rlp_buf.items, encrypted_buf[0..2]);
-        const handshake: Peer.HandshakeState = .{
-            .msg = encrypted_buf,
-            .init_nonce = init_nonce,
-            .eph_key = eph,
-        };
-        const msg = try server.allocator.dupe(u8, handshake.msg);
-        errdefer server.allocator.free(msg);
-        try self.queueRawMsg(msg);
-        self.remote_pubkey = remote_pubkey;
-        self.status = .{ .auth_sent = handshake };
-    }
-
-    fn recvHandshake(self: *Peer, prefix: [2]u8, blob: []const u8) !Peer.Session {
-        const server = self.server;
-
-        var plain_buf: [max_handshake_size]u8 = undefined;
-        const plain = try eciesDecrypt(server.keypair.secret_key.toBytes(), &plain_buf, blob, &prefix);
-
-        var auth: AuthMessage = undefined;
-        _ = try rlp.deserialize(AuthMessage, undefined, plain, &auth);
-        if (auth.version < 4) return error.IncompatibleVersion;
-        if (std.mem.eql(u8, &auth.pubkey, &server.hello.node_id)) return error.SelfIdentity;
-
-        const token = try sharedSecret(server.keypair.secret_key.toBytes(), auth.pubkey);
-        const remote_eph = try server.secp.recoverPubkey(xor32(token, auth.nonce), auth.sig);
-
-        var ack_nonce: [32]u8 = undefined;
-        server.io.random(&ack_nonce);
-        const eph = Ecdsa.KeyPair.generate(server.io);
-
-        const ack_msg = AuthRespMessage{
-            .eph_pub = eph.public_key.toUncompressedSec1()[1..65].*,
-            .nonce = ack_nonce,
-            .version = 4,
-        };
-
-        var rlp_buf: std.array_list.Managed(u8) = .init(server.allocator);
-        defer rlp_buf.deinit();
-        try rlp_buf.ensureTotalCapacity(max_handshake_size);
-        try rlp.serialize(AuthRespMessage, server.allocator, ack_msg, &rlp_buf);
-
-        var padSize: u8 = undefined;
-        server.io.random((&padSize)[0..1]);
-
-        try rlp_buf.appendNTimes(0, padSize % 100 + 100);
-
-        const total_len = rlp_buf.items.len + ecies_overhead + 2;
-        const ack = try server.allocator.alloc(u8, total_len);
-        defer server.allocator.free(ack);
-        std.mem.writeInt(u16, ack[0..2], @intCast(total_len - 2), .big);
-
-        _ = try eciesEncrypt(server.io, ack[2..], auth.pubkey, rlp_buf.items, ack[0..2]);
-
-        const ecdhe = try sharedSecret(eph.secret_key.toBytes(), remote_eph[1..65].*);
-        var session: Peer.Session = .{ .secrets = deriveSecrets(
-            ecdhe,
-            auth.nonce,
-            ack_nonce,
-            &.{ack},
-            &.{ &prefix, blob },
-            .recipient,
-        ) };
-
-        const encoded, const len = try encodeMsg(server.allocator, @backingInt(MessageId.hello), server.hello, false);
-        defer server.allocator.free(encoded);
-        const hello_frame = try encryptFrame(server.allocator, &session.secrets, encoded[0..len]);
-        defer server.allocator.free(hello_frame);
-        server.metrics.frames_sent.incr();
-
-        const out = try server.allocator.alloc(u8, ack.len + hello_frame.len);
-        errdefer server.allocator.free(out);
-        @memcpy(out[0..ack.len], ack);
-        @memcpy(out[ack.len..], hello_frame);
-
-        try self.queueRawMsg(out);
-        self.remote_pubkey = auth.pubkey;
-        return session;
-    }
-
-    fn sessionSecrets(self: *Peer) !*Secrets {
-        switch (self.status) {
-            .hello => |*session| return &session.secrets,
-            .active => |*state| return &state.session.secrets,
-            else => return error.NoActiveSession,
-        }
     }
 
     fn queueMsg(self: *Peer, sec: *Secrets, id: u64, msg: anytype) !void {
@@ -1337,6 +1280,63 @@ fn eciesDecrypt(priv: [32]u8, out: []u8, c: []const u8, s2: []const u8) ![]u8 {
     modes.ctr(@TypeOf(ctx), ctx, out[0..body.len], body, iv, .big);
     return out[0..body.len];
 }
+
+const Metrics = struct {
+    connections: prom.Gauge(i64),
+    peers: prom.Gauge(i64),
+    inbound: prom.Counter(u64),
+    dials: prom.Counter(u64),
+    failed_dials: prom.Counter(u64),
+    handshakes: prom.CounterVec(u64, struct { direction: []const u8 }),
+    disconnects: prom.CounterVec(u64, DisconnectLabels),
+    frames_received: prom.Counter(u64),
+    frames_sent: prom.Counter(u64),
+    bytes_received: prom.Counter(u64),
+    bytes_sent: prom.Counter(u64),
+    messages_received: prom.CounterVec(u64, CapLabels),
+    messages_dropped: prom.CounterVec(u64, CapLabels),
+    loop_wait_seconds: prom.Counter(f64),
+    loop_busy_seconds: prom.Counter(f64),
+
+    const DisconnectLabels = struct { stage: []const u8, side: []const u8, reason: []const u8 };
+    const CapLabels = struct { cap: []const u8 };
+
+    fn init(allocator: std.mem.Allocator, io: std.Io) !Metrics {
+        const opts: prom.RegistryOpts = .{};
+        var handshakes: @FieldType(Metrics, "handshakes") = try .init(allocator, io, "rlpx_handshakes_total", .{ .help = "Completed hello exchanges" }, opts);
+        errdefer handshakes.deinit();
+        var disconnects: @FieldType(Metrics, "disconnects") = try .init(allocator, io, "rlpx_disconnects_total", .{ .help = "Peer disconnects by stage, initiating side and reason" }, opts);
+        errdefer disconnects.deinit();
+        var messages_received: @FieldType(Metrics, "messages_received") = try .init(allocator, io, "rlpx_messages_received_total", .{ .help = "Subprotocol messages received" }, opts);
+        errdefer messages_received.deinit();
+        const messages_dropped: @FieldType(Metrics, "messages_dropped") = try .init(allocator, io, "rlpx_messages_dropped_total", .{ .help = "Subprotocol messages dropped due to a full handler queue" }, opts);
+
+        return .{
+            .connections = .init("rlpx_connections", .{ .help = "Open RLPx connections, including ones still handshaking" }, opts),
+            .peers = .init("rlpx_peers", .{ .help = "Peers that completed the hello exchange" }, opts),
+            .inbound = .init("rlpx_inbound_total", .{ .help = "Accepted inbound connections" }, opts),
+            .dials = .init("rlpx_dials_total", .{ .help = "Outbound dial attempts" }, opts),
+            .failed_dials = .init("rlpx_failed_dials_total", .{ .help = "Outbound dials that failed before a connection was established" }, opts),
+            .handshakes = handshakes,
+            .disconnects = disconnects,
+            .frames_received = .init("rlpx_frames_received_total", .{}, opts),
+            .frames_sent = .init("rlpx_frames_sent_total", .{}, opts),
+            .bytes_received = .init("rlpx_bytes_received_total", .{}, opts),
+            .bytes_sent = .init("rlpx_bytes_sent_total", .{}, opts),
+            .messages_received = messages_received,
+            .messages_dropped = messages_dropped,
+            .loop_wait_seconds = .init("rlpx_loop_wait_seconds_total", .{ .help = "Time the peer loop spent waiting on the IO batch" }, opts),
+            .loop_busy_seconds = .init("rlpx_loop_busy_seconds_total", .{ .help = "Time the peer loop spent processing" }, opts),
+        };
+    }
+
+    fn deinit(self: *Metrics) void {
+        self.handshakes.deinit();
+        self.disconnects.deinit();
+        self.messages_received.deinit();
+        self.messages_dropped.deinit();
+    }
+};
 
 test "ecies encrypt/decrypt round-trip" {
     var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});

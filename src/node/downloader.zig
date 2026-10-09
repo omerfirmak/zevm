@@ -23,77 +23,6 @@ const arena_retain_limit = (32 << 20) - 64;
 
 const log = std.log.scoped(.downloader);
 
-const Metrics = struct {
-    const duration_buckets: []const f64 = &.{ 0.001, 0.005, 0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30 };
-    const MsgLabels = struct { msg: []const u8 };
-    const RequestLabels = struct { proto: []const u8, state: []const u8 };
-    const KindLabels = struct { kind: []const u8 };
-    const OpLabels = struct { op: []const u8 };
-
-    loop_busy_seconds: prom.Counter(f64),
-    loop_wait_seconds: prom.Counter(f64),
-    handle_seconds: prom.HistogramVec(f64, MsgLabels, duration_buckets),
-    requests_sent: prom.CounterVec(u64, MsgLabels),
-    request_timeouts: prom.CounterVec(u64, MsgLabels),
-    response_seconds: prom.HistogramVec(f64, MsgLabels, duration_buckets),
-    verify_seconds: prom.HistogramVec(f64, MsgLabels, duration_buckets),
-    requests: prom.GaugeVec(u64, RequestLabels),
-    sync_target: prom.Gauge(u64),
-    chain_head: prom.Gauge(u64),
-    headers_downloaded: prom.Gauge(u64),
-    pivot: prom.Gauge(u64),
-    state_progress: prom.GaugeVec(f64, KindLabels),
-    heal_blocks_remaining: prom.Gauge(u64),
-    db_txn_seconds: prom.HistogramVec(f64, OpLabels, duration_buckets),
-    db_commit_seconds: prom.HistogramVec(f64, OpLabels, duration_buckets),
-    db_size_bytes: prom.Gauge(u64),
-    batch_build_seconds: prom.Histogram(f64, duration_buckets),
-    batch_accounts_scanned: prom.Counter(u64),
-
-    fn init(allocator: std.mem.Allocator, io: std.Io) !Metrics {
-        const opts: prom.RegistryOpts = .{};
-        var handle_seconds: @FieldType(Metrics, "handle_seconds") = try .init(allocator, io, "downloader_handle_seconds", .{ .help = "Time the downloader loop spent handling a message or tick" }, opts);
-        errdefer handle_seconds.deinit();
-        var requests_sent: @FieldType(Metrics, "requests_sent") = try .init(allocator, io, "downloader_requests_sent_total", .{ .help = "Requests sent to peers" }, opts);
-        errdefer requests_sent.deinit();
-        var request_timeouts: @FieldType(Metrics, "request_timeouts") = try .init(allocator, io, "downloader_request_timeouts_total", .{ .help = "Requests that timed out" }, opts);
-        errdefer request_timeouts.deinit();
-        var response_seconds: @FieldType(Metrics, "response_seconds") = try .init(allocator, io, "downloader_response_seconds", .{ .help = "Time from sending a request to matching its response" }, opts);
-        errdefer response_seconds.deinit();
-        var verify_seconds: @FieldType(Metrics, "verify_seconds") = try .init(allocator, io, "downloader_verify_seconds", .{ .help = "Time spent verifying a snap response off the downloader loop" }, opts);
-        errdefer verify_seconds.deinit();
-        var requests: @FieldType(Metrics, "requests") = try .init(allocator, io, "downloader_requests", .{ .help = "Requests by protocol and state" }, opts);
-        errdefer requests.deinit();
-        var state_progress: @FieldType(Metrics, "state_progress") = try .init(allocator, io, "downloader_state_progress", .{ .help = "State download progress in percent of the keyspace" }, opts);
-        errdefer state_progress.deinit();
-        var db_txn_seconds: @FieldType(Metrics, "db_txn_seconds") = try .init(allocator, io, "downloader_db_txn_seconds", .{ .help = "Write transaction duration from begin to commit, by operation" }, opts);
-        errdefer db_txn_seconds.deinit();
-        const db_commit_seconds: @FieldType(Metrics, "db_commit_seconds") = try .init(allocator, io, "downloader_db_commit_seconds", .{ .help = "Write transaction commit duration, by operation" }, opts);
-
-        return .{
-            .loop_busy_seconds = .init("downloader_loop_busy_seconds_total", .{ .help = "Time the downloader loop spent processing" }, opts),
-            .loop_wait_seconds = .init("downloader_loop_wait_seconds_total", .{ .help = "Time the downloader loop spent waiting for messages" }, opts),
-            .handle_seconds = handle_seconds,
-            .requests_sent = requests_sent,
-            .request_timeouts = request_timeouts,
-            .response_seconds = response_seconds,
-            .verify_seconds = verify_seconds,
-            .requests = requests,
-            .sync_target = .init("downloader_sync_target", .{ .help = "Block number the downloader is syncing towards" }, opts),
-            .chain_head = .init("downloader_chain_head", .{ .help = "Last header persisted in the chain" }, opts),
-            .headers_downloaded = .init("downloader_headers_downloaded", .{ .help = "Headers downloaded towards the current target" }, opts),
-            .pivot = .init("downloader_pivot", .{ .help = "State download pivot block" }, opts),
-            .state_progress = state_progress,
-            .heal_blocks_remaining = .init("downloader_heal_blocks_remaining", .{ .help = "Blocks left to heal, 0 when not healing" }, opts),
-            .db_txn_seconds = db_txn_seconds,
-            .db_commit_seconds = db_commit_seconds,
-            .db_size_bytes = .init("downloader_db_size_bytes", .{ .help = "Current size of the state database file" }, opts),
-            .batch_build_seconds = .init("downloader_batch_build_seconds", .{ .help = "Time spent building storage and code request batches" }, opts),
-            .batch_accounts_scanned = .init("downloader_batch_accounts_scanned_total", .{ .help = "Accounts scanned while building storage and code request batches" }, opts),
-        };
-    }
-};
-
 fn secondsSince(io: std.Io, start: std.Io.Timestamp) f64 {
     const ns = start.durationTo(std.Io.Timestamp.now(io, .awake)).toNanoseconds();
     return @as(f64, @floatFromInt(ns)) / std.time.ns_per_s;
@@ -327,45 +256,6 @@ pub const Downloader = struct {
         }
     }
 
-    fn commitTxn(self: *Self, txn: kv.Transaction, op: []const u8, started_at: std.Io.Timestamp) !void {
-        const commit_start = std.Io.Timestamp.now(self.io, .awake);
-        try txn.commit();
-        self.metrics.db_commit_seconds.observe(.{ .op = op }, secondsSince(self.io, commit_start)) catch {};
-        self.metrics.db_txn_seconds.observe(.{ .op = op }, secondsSince(self.io, started_at)) catch {};
-    }
-
-    fn observeHandle(self: *Self, msg: []const u8, started_at: std.Io.Timestamp) void {
-        self.metrics.handle_seconds.observe(.{ .msg = msg }, secondsSince(self.io, started_at)) catch {};
-    }
-
-    pub fn writeMetrics(self: *Self, writer: *std.Io.Writer) !void {
-        return prom.write(&self.metrics, writer);
-    }
-
-    fn updateMetrics(self: *Self) void {
-        const m = &self.metrics;
-        const request_counts = [_]struct { []const u8, []const u8, usize }{
-            .{ "eth", "inflight", self.inflight_eth_requests.inner.len() },
-            .{ "eth", "pending", self.pending_eth_requests.inner.len() },
-            .{ "eth", "validating", self.validating_eth_requests.inner.len() },
-            .{ "snap", "inflight", self.inflight_snap_requests.inner.len() },
-            .{ "snap", "pending", self.pending_snap_requests.inner.len() },
-            .{ "snap", "validating", self.validating_snap_requests.inner.len() },
-            .{ "snap", "stashed", self.stashed_snap_requests.len },
-        };
-        for (request_counts) |c| m.requests.set(.{ .proto = c[0], .state = c[1] }, c[2]) catch {};
-
-        m.sync_target.set(self.syncTarget().number);
-        if (self.bc.head()) |head| m.chain_head.set(head.number) else |_| {}
-        m.headers_downloaded.set(self.progress.headers);
-        if (self.state) |state| m.pivot.set(state.pivot.number);
-        m.state_progress.set(.{ .kind = "accounts" }, keyspacePercent(self.progress.account_keyspace)) catch {};
-        m.state_progress.set(.{ .kind = "storage" }, keyspacePercent(self.progress.storage_keyspace)) catch {};
-        m.state_progress.set(.{ .kind = "codes" }, keyspacePercent(self.progress.code_keyspace)) catch {};
-        if (self.eth_db.kv_store.env.info()) |info| m.db_size_bytes.set(info.geo.current) else |_| {}
-        m.heal_blocks_remaining.set(if (self.state_heal) |heal| heal.target_pivot.number -| (heal.next_pivot.number - 1) else 0);
-    }
-
     fn handleTick(self: *Self) !void {
         self.updateMetrics();
         self.logProgress();
@@ -381,51 +271,6 @@ pub const Downloader = struct {
         }
         try self.checkEthRequestTimeouts();
         try self.checkSnapRequestTimeouts();
-    }
-
-    fn checkEthRequestTimeouts(self: *Self) !void {
-        self.checkRequestTimeouts(eth.Message, &self.inflight_eth_requests, &self.pending_eth_requests, self.eth_provider);
-        self.drainPendingEthRequests();
-    }
-
-    fn checkSnapRequestTimeouts(self: *Self) !void {
-        self.checkRequestTimeouts(snap.Message, &self.inflight_snap_requests, &self.pending_snap_requests, self.snap_provider);
-        self.drainPendingSnapRequests();
-    }
-
-    fn checkRequestTimeouts(
-        self: *Self,
-        comptime Message: type,
-        list: *List(Request(Message)),
-        pending: *List(Request(Message)),
-        provider: anytype,
-    ) void {
-        var current_node = list.inner.first;
-
-        const now = std.Io.Clock.now(.real, self.io);
-        while (current_node) |node| {
-            const next_node = node.next;
-            const request: *List(Request(Message)).Node = @alignCast(@fieldParentPtr("node", node));
-
-            if (request.elem.deadline.toMilliseconds() < now.toMilliseconds()) {
-                if (!std.meta.eql(request.elem.peer, invalid_peer)) {
-                    self.metrics.request_timeouts.incr(.{ .msg = @tagName(request.elem.msg) }) catch {};
-                    log.debug("{t} request {} to {} timed out after {}ms (timeout {}ms)", .{
-                        std.meta.activeTag(request.elem.msg),
-                        request.elem.id,
-                        request.elem.peer,
-                        request.elem.sent_at.durationTo(now).toMilliseconds(),
-                        request.elem.sent_at.durationTo(request.elem.deadline).toMilliseconds(),
-                    });
-                }
-                const assumed_rtt: std.Io.Duration = .fromNanoseconds(request.elem.sent_at.durationTo(now).nanoseconds * 2);
-                provider.observeDelay(request.elem.peer, std.meta.activeTag(request.elem.msg), assumed_rtt);
-                list.inner.remove(node);
-                pending.prepend(&request.elem);
-            }
-
-            current_node = next_node;
-        }
     }
 
     fn handleEth(self: *Self, received: eth.Provider.ParsedMessage) !bool {
@@ -454,6 +299,227 @@ pub const Downloader = struct {
         }
         self.drainPendingEthRequests();
         return matched != null;
+    }
+
+    fn handleSnap(self: *Self, received: snap.Provider.ParsedMessage) !bool {
+        const peer = received.read.peer;
+        const matched = switch (received.msg) {
+            .account_range => |account_range| self.matchRequest(snap.Message, self.snap_provider, &self.inflight_snap_requests, peer, account_range.id, .get_account_range),
+            .storage_ranges => |storage_ranges| self.matchRequest(snap.Message, self.snap_provider, &self.inflight_snap_requests, peer, storage_ranges.id, .get_storage_ranges),
+            .byte_codes => |byte_codes| self.matchRequest(snap.Message, self.snap_provider, &self.inflight_snap_requests, peer, byte_codes.id, .get_byte_codes),
+            else => null,
+        };
+        if (matched) |req| {
+            self.validating_snap_requests.push(req);
+            try self.startValidation(&self.snap_arena, .{ .snap = .{ .msg = received, .req = req } });
+        }
+        self.drainPendingSnapRequests();
+        return matched != null;
+    }
+
+    fn startValidation(self: *Self, arena: *std.heap.ArenaAllocator, resp: @FieldType(ValidatedResponse, "resp")) !void {
+        var owned = arena.*;
+        const validated = try owned.allocator().create(ValidatedResponse);
+        validated.* = .{ .arena = owned, .resp = resp };
+        arena.* = .init(self.allocator);
+        self.validation_group.concurrent(self.io, validate, .{ self, validated }) catch validate(self, validated);
+    }
+
+    fn validate(self: *Self, validated: *ValidatedResponse) void {
+        const start = std.Io.Timestamp.now(self.io, .awake);
+        const allocator = validated.arena.allocator();
+        validated.outcome = switch (validated.resp) {
+            .eth => |*resp| switch (resp.msg.msg) {
+                .block_headers => |headers| validateHeaders(allocator, resp.req.msg.get_block_headers, headers),
+                .block_access_list => |access_lists| validateBal(allocator, access_lists),
+                else => unreachable,
+            },
+            .snap => |*resp| switch (resp.msg.msg) {
+                .account_range => |*account_range| verifyAccounts(allocator, resp.req.msg.get_account_range, account_range),
+                .storage_ranges => |*storage_ranges| verifyStorage(allocator, resp.req.msg.get_storage_ranges, resp.req.storage_roots, storage_ranges),
+                .byte_codes => |byte_codes| hashCodes(allocator, byte_codes),
+                else => unreachable,
+            },
+        };
+        validated.verify_seconds = secondsSince(self.io, start);
+        self.validated_responses.putOneUncancelable(self.io, validated) catch unreachable;
+    }
+
+    fn handleValidated(self: *Self, validated: *ValidatedResponse) !void {
+        defer {
+            switch (validated.resp) {
+                inline else => |resp| self.allocator.free(resp.msg.read.payload),
+            }
+            var arena = validated.arena;
+            arena.deinit();
+        }
+        self.metrics.verify_seconds.observe(.{ .msg = validated.msgName() }, validated.verify_seconds) catch {};
+
+        switch (validated.resp) {
+            .eth => |*resp| {
+                self.validating_eth_requests.remove(resp.req);
+                switch (resp.msg.msg) {
+                    .block_headers => try self.handleHeaders(resp.req, validated.outcome),
+                    .block_access_list => try self.handleBals(resp.req, validated.outcome, &validated.arena),
+                    else => unreachable,
+                }
+                self.drainPendingEthRequests();
+            },
+            .snap => |*resp| {
+                self.validating_snap_requests.remove(resp.req);
+                switch (resp.msg.msg) {
+                    .account_range => |*account_range| try self.handleAccounts(resp.req, account_range, validated.outcome),
+                    .storage_ranges => try self.handleStorage(resp.req, validated.outcome),
+                    .byte_codes => |byte_codes| try self.handleCodes(resp.req, byte_codes, validated.outcome),
+                    else => unreachable,
+                }
+                self.drainPendingSnapRequests();
+                if (self.state != null)
+                    try self.advanceStateDownload();
+                if (self.state_heal != null)
+                    try self.advanceStateHeal();
+            },
+        }
+    }
+
+    fn validateHeaders(allocator: std.mem.Allocator, request: eth.GetBlockHeaders, response: eth.BlockHeaders) !Outcome {
+        if (response.rlps.len == 0) return .{ .headers = .{ .hashes = &.{}, .headers = &.{} } };
+
+        var headers: []types.BlockHeader = try allocator.alloc(types.BlockHeader, response.rlps.len);
+        var hashes: [][32]u8 = try allocator.alloc([32]u8, response.rlps.len);
+        for (response.rlps, 0..) |header_rlp, index| {
+            const canon_index = if (request.range.reverse) response.rlps.len - index - 1 else index;
+            _ = try rlp.deserialize(types.BlockHeader, allocator, header_rlp.value, &headers[canon_index]);
+            std.crypto.hash.sha3.Keccak256.hash(header_rlp.value, &hashes[canon_index], .{});
+        }
+
+        for (1..headers.len) |i| {
+            if (!std.meta.eql(hashes[i - 1], headers[i].parent_hash)) {
+                return error.InvalidHeaderChain;
+            }
+        }
+
+        switch (request.range.origin) {
+            .hash => |expected_hash| {
+                if (!std.meta.eql(hashes[hashes.len - 1], expected_hash)) return error.UnexpectedOriginHeader;
+            },
+            .number => |expected_number| {
+                if (expected_number != headers[hashes.len - 1].number) return error.UnexpectedOriginHeader;
+            },
+        }
+
+        return .{ .headers = .{ .hashes = hashes, .headers = headers } };
+    }
+
+    fn validateBal(allocator: std.mem.Allocator, response: eth.BlockAccessLists) !Outcome {
+        if (response.rlps.len == 0) return error.EmptyResponse;
+        // decode from a copy, the parsed lists point into it and outlive the frame
+        const bal_rlp = try allocator.dupe(u8, response.rlps[0].value);
+        var hash: [32]u8 = undefined;
+        std.crypto.hash.sha3.Keccak256.hash(bal_rlp, &hash, .{});
+        var parsed: types.BlockAccessLists = undefined;
+        _ = try rlp.deserialize(types.BlockAccessLists, allocator, bal_rlp, &parsed);
+        return .{ .bal = .{ .hash = hash, .rlp = bal_rlp, .parsed = parsed } };
+    }
+
+    fn verifyAccounts(allocator: std.mem.Allocator, request: snap.GetAccountRange, response: *const snap.AccountRange) !Outcome {
+        const hashes = try allocator.alloc([32]u8, response.accounts.len);
+        const accounts = try allocator.alloc([]const u8, response.accounts.len);
+        for (response.accounts, 0..) |elem, index| {
+            hashes[index] = elem.hash;
+
+            var slim_account: snap.SlimAccount = undefined;
+            _ = try rlp.deserialize(snap.SlimAccount, allocator, elem.account.value, &slim_account);
+
+            var list = std.array_list.Managed(u8).init(allocator);
+            try rlp.serialize(types.Account, allocator, slimToFullAccount(slim_account), &list);
+            accounts[index] = try list.toOwnedSlice();
+        }
+
+        const proof = try proofNodes(allocator, response.proof);
+        const has_more = try verifyRangeProof(
+            allocator,
+            request.root,
+            request.origin,
+            hashes,
+            accounts,
+            if (response.proof.len > 0) &proof else null,
+        );
+        return .{ .accounts = .{ .hashes = hashes, .has_more = has_more } };
+    }
+
+    fn verifyStorage(
+        allocator: std.mem.Allocator,
+        request: snap.GetStorageRanges,
+        storage_roots: []const [32]u8,
+        response: *const snap.StorageRanges,
+    ) !Outcome {
+        const proof = try proofNodes(allocator, response.proof);
+
+        const served = response.slots[0..@min(response.slots.len, request.account_hashes.len)];
+        var result: VerifiedStorage = .{
+            .keys = try allocator.alloc([][32]u8, served.len),
+            .values = try allocator.alloc([][]const u8, served.len),
+        };
+        var verified: usize = 0;
+        for (served, 0..) |slots, index| {
+            const origin: [32]u8 = if (index == 0) request.starting_hash else @splat(0);
+            const is_last = index + 1 == response.slots.len;
+
+            const keys = try allocator.alloc([32]u8, slots.len);
+            const values = try allocator.alloc([]const u8, slots.len);
+            for (slots, 0..) |slot, slot_index| {
+                keys[slot_index] = slot.hash;
+                values[slot_index] = slot.data;
+            }
+
+            const has_more = verifyRangeProof(
+                allocator,
+                storage_roots[index],
+                origin,
+                keys,
+                values,
+                if (is_last and response.proof.len > 0) &proof else null,
+            ) catch break;
+
+            result.keys[index] = keys;
+            result.values[index] = values;
+            verified = index + 1;
+            if (has_more) {
+                result.continue_from_slot = origin;
+                if (keys.len > 0)
+                    std.mem.writeInt(
+                        u256,
+                        &result.continue_from_slot.?,
+                        std.mem.readInt(u256, &keys[keys.len - 1], .big) + 1,
+                        .big,
+                    );
+                break;
+            }
+        }
+        result.keys = result.keys[0..verified];
+        result.values = result.values[0..verified];
+        return .{ .storage = result };
+    }
+
+    fn hashCodes(allocator: std.mem.Allocator, response: snap.ByteCodes) !Outcome {
+        const hashes = try allocator.alloc([32]u8, response.bytecodes.len);
+        for (response.bytecodes, hashes) |code, *hash|
+            std.crypto.hash.sha3.Keccak256.hash(code, hash, .{});
+        return .{ .codes = hashes };
+    }
+
+    fn proofNodes(allocator: std.mem.Allocator, nodes: []const []const u8) !trie.NodesHashMap {
+        var proof: trie.NodesHashMap = .empty;
+        if (nodes.len > 0) {
+            try proof.ensureTotalCapacity(allocator, @intCast(nodes.len));
+            for (nodes) |node| {
+                var h: [32]u8 align(8) = undefined;
+                std.crypto.hash.sha3.Keccak256.hash(node, &h, .{});
+                try proof.put(allocator, h, node);
+            }
+        }
+        return proof;
     }
 
     pub fn syncTarget(self: *Self) SyncTarget {
@@ -493,20 +559,6 @@ pub const Downloader = struct {
         try self.updatePivot();
     }
 
-    fn pickEthPeer(self: *Self, msg: eth.Message) !rlpx.Server.PeerId {
-        switch (msg) {
-            .get_block_headers => |header_req| {
-                const height = switch (header_req.range.origin) {
-                    .number => |number| number,
-                    .hash => self.syncTarget().number,
-                };
-                return self.eth_provider.pickRandomPeer(PeerFilter(eth.Message).init(self, &self.inflight_eth_requests, height));
-            },
-            else => {},
-        }
-        return self.eth_provider.pickRandomPeer(PeerFilter(eth.Message).init(self, &self.inflight_eth_requests, null));
-    }
-
     fn sendRequest(self: *Self, provider: anytype, pick_peer_fn: anytype, req: anytype) !void {
         const sent_at = std.Io.Clock.now(.real, self.io);
         errdefer {
@@ -527,17 +579,37 @@ pub const Downloader = struct {
         req.deadline = sent_at.addDuration(try provider.timeoutFor(req.peer, std.meta.activeTag(req.msg)));
     }
 
-    fn reissueEthRequest(self: *Self, req: *Request(eth.Message)) !void {
-        return self.sendRequest(self.eth_provider, Self.pickEthPeer, req);
-    }
+    fn matchRequest(
+        self: *Self,
+        comptime Message: type,
+        provider: anytype,
+        list: *List(Request(Message)),
+        peer: rlpx.Server.PeerId,
+        id: u64,
+        request_tag: std.meta.Tag(Message),
+    ) ?*Request(Message) {
+        var current_node = list.inner.first;
 
-    fn sendEthRequest(self: *Self, req: *Request(eth.Message), urgent: bool) void {
-        if (urgent) self.pending_eth_requests.prepend(req) else self.pending_eth_requests.push(req);
-        self.drainPendingEthRequests();
-    }
+        while (current_node) |node| {
+            const next_node = node.next;
+            const request: *List(Request(Message)).Node = @alignCast(@fieldParentPtr("node", node));
 
-    fn drainPendingEthRequests(self: *Self) void {
-        drainPendingRequests(self, &self.pending_eth_requests, &self.inflight_eth_requests, Self.reissueEthRequest);
+            if (request.elem.id == id and std.meta.eql(peer, request.elem.peer) and std.meta.eql(request_tag, request.elem.msg)) {
+                const delay = request.elem.sent_at.untilNow(self.io, .real);
+                provider.observeDelay(peer, request_tag, delay);
+                self.metrics.response_seconds.observe(
+                    .{ .msg = @tagName(request_tag) },
+                    @as(f64, @floatFromInt(delay.toNanoseconds())) / std.time.ns_per_s,
+                ) catch {};
+                list.inner.remove(node);
+                node.next = null;
+                node.prev = null;
+                return &request.elem;
+            }
+
+            current_node = next_node;
+        }
+        return null;
     }
 
     fn drainPendingRequests(self: *Self, pending: anytype, inflight: anytype, send_fn: anytype) void {
@@ -545,6 +617,133 @@ pub const Downloader = struct {
             send_fn(self, req) catch return pending.prepend(req);
             inflight.push(req);
         }
+    }
+
+    fn checkRequestTimeouts(
+        self: *Self,
+        comptime Message: type,
+        list: *List(Request(Message)),
+        pending: *List(Request(Message)),
+        provider: anytype,
+    ) void {
+        var current_node = list.inner.first;
+
+        const now = std.Io.Clock.now(.real, self.io);
+        while (current_node) |node| {
+            const next_node = node.next;
+            const request: *List(Request(Message)).Node = @alignCast(@fieldParentPtr("node", node));
+
+            if (request.elem.deadline.toMilliseconds() < now.toMilliseconds()) {
+                if (!std.meta.eql(request.elem.peer, invalid_peer)) {
+                    self.metrics.request_timeouts.incr(.{ .msg = @tagName(request.elem.msg) }) catch {};
+                    log.debug("{t} request {} to {} timed out after {}ms (timeout {}ms)", .{
+                        std.meta.activeTag(request.elem.msg),
+                        request.elem.id,
+                        request.elem.peer,
+                        request.elem.sent_at.durationTo(now).toMilliseconds(),
+                        request.elem.sent_at.durationTo(request.elem.deadline).toMilliseconds(),
+                    });
+                }
+                const assumed_rtt: std.Io.Duration = .fromNanoseconds(request.elem.sent_at.durationTo(now).nanoseconds * 2);
+                provider.observeDelay(request.elem.peer, std.meta.activeTag(request.elem.msg), assumed_rtt);
+                list.inner.remove(node);
+                pending.prepend(&request.elem);
+            }
+
+            current_node = next_node;
+        }
+    }
+
+    fn pickEthPeer(self: *Self, msg: eth.Message) !rlpx.Server.PeerId {
+        switch (msg) {
+            .get_block_headers => |header_req| {
+                const height = switch (header_req.range.origin) {
+                    .number => |number| number,
+                    .hash => self.syncTarget().number,
+                };
+                return self.eth_provider.pickRandomPeer(PeerFilter(eth.Message).init(self, &self.inflight_eth_requests, height));
+            },
+            else => {},
+        }
+        return self.eth_provider.pickRandomPeer(PeerFilter(eth.Message).init(self, &self.inflight_eth_requests, null));
+    }
+
+    fn sendEthRequest(self: *Self, req: *Request(eth.Message), urgent: bool) void {
+        if (urgent) self.pending_eth_requests.prepend(req) else self.pending_eth_requests.push(req);
+        self.drainPendingEthRequests();
+    }
+
+    fn reissueEthRequest(self: *Self, req: *Request(eth.Message)) !void {
+        return self.sendRequest(self.eth_provider, Self.pickEthPeer, req);
+    }
+
+    fn drainPendingEthRequests(self: *Self) void {
+        drainPendingRequests(self, &self.pending_eth_requests, &self.inflight_eth_requests, Self.reissueEthRequest);
+    }
+
+    fn checkEthRequestTimeouts(self: *Self) !void {
+        self.checkRequestTimeouts(eth.Message, &self.inflight_eth_requests, &self.pending_eth_requests, self.eth_provider);
+        self.drainPendingEthRequests();
+    }
+
+    fn pickSnapPeer(self: *Self, _: snap.Message) !rlpx.Server.PeerId {
+        return self.snap_provider.pickRandomPeer(PeerFilter(snap.Message).init(self, &self.inflight_snap_requests, self.state.?.pivot.number));
+    }
+
+    fn sendSnapRequest(self: *Self, req: *Request(snap.Message)) !void {
+        self.pending_snap_requests.push(req);
+        self.drainPendingSnapRequests();
+    }
+
+    fn reissueSnapRequest(self: *Self, req: *Request(snap.Message)) !void {
+        return self.sendRequest(self.snap_provider, Self.pickSnapPeer, req);
+    }
+
+    fn drainPendingSnapRequests(self: *Self) void {
+        // until the heal requests an access list, pending requests are download follow ups to be stashed
+        if (self.state_heal) |state_heal| if (!state_heal.bal_requested) return;
+        drainPendingRequests(self, &self.pending_snap_requests, &self.inflight_snap_requests, Self.reissueSnapRequest);
+    }
+
+    fn checkSnapRequestTimeouts(self: *Self) !void {
+        self.checkRequestTimeouts(snap.Message, &self.inflight_snap_requests, &self.pending_snap_requests, self.snap_provider);
+        self.drainPendingSnapRequests();
+    }
+
+    fn stashSnapRequests(self: *Self) void {
+        while (self.inflight_snap_requests.pop() orelse self.pending_snap_requests.pop()) |node| {
+            self.stashed_snap_requests.len += 1;
+            self.stashed_snap_requests[self.stashed_snap_requests.len - 1] = node.*;
+            self.free_snap_requests.push(node);
+        }
+    }
+
+    fn popSnapRequests(self: *Self) !void {
+        std.debug.assert(self.inflight_snap_requests.empty() and self.pending_snap_requests.empty());
+
+        const pivot_root = self.state.?.pivot.state_root;
+        const txn = try self.eth_db.kv_store.transaction_ro();
+        defer txn.abort() catch unreachable;
+
+        for (self.stashed_snap_requests) |stashed_req| {
+            const req = self.free_snap_requests.pop() orelse unreachable;
+            req.* = stashed_req;
+            switch (req.msg) {
+                .get_account_range => |*account_range_req| account_range_req.root = pivot_root,
+                .get_storage_ranges => |*storage_ranges_req| {
+                    storage_ranges_req.root_hash = pivot_root;
+                    // healing may have changed the storage roots of the stashed accounts
+                    for (storage_ranges_req.account_hashes, req.storage_roots) |account_hash, *root| {
+                        const account = try self.eth_db.readAccount(txn, account_hash);
+                        root.* = if (account) |acc| acc.storage_hash else types.empty_root_hash;
+                    }
+                },
+                else => {},
+            }
+
+            self.sendSnapRequest(req) catch {};
+        }
+        self.stashed_snap_requests.len = 0;
     }
 
     fn advanceHeaderDownload(self: *Self) !void {
@@ -632,44 +831,42 @@ pub const Downloader = struct {
         try self.checkHeaderDownloadComplete();
     }
 
-    fn validateHeaders(allocator: std.mem.Allocator, request: eth.GetBlockHeaders, response: eth.BlockHeaders) !Outcome {
-        if (response.rlps.len == 0) return .{ .headers = .{ .hashes = &.{}, .headers = &.{} } };
-
-        var headers: []types.BlockHeader = try allocator.alloc(types.BlockHeader, response.rlps.len);
-        var hashes: [][32]u8 = try allocator.alloc([32]u8, response.rlps.len);
-        for (response.rlps, 0..) |header_rlp, index| {
-            const canon_index = if (request.range.reverse) response.rlps.len - index - 1 else index;
-            _ = try rlp.deserialize(types.BlockHeader, allocator, header_rlp.value, &headers[canon_index]);
-            std.crypto.hash.sha3.Keccak256.hash(header_rlp.value, &hashes[canon_index], .{});
+    fn hasHeaderRequest(list: *List(Request(eth.Message))) bool {
+        var current_node = list.inner.first;
+        while (current_node) |node| : (current_node = node.next) {
+            const request: *List(Request(eth.Message)).Node = @alignCast(@fieldParentPtr("node", node));
+            if (request.elem.msg == .get_block_headers) return true;
         }
-
-        for (1..headers.len) |i| {
-            if (!std.meta.eql(hashes[i - 1], headers[i].parent_hash)) {
-                return error.InvalidHeaderChain;
-            }
-        }
-
-        switch (request.range.origin) {
-            .hash => |expected_hash| {
-                if (!std.meta.eql(hashes[hashes.len - 1], expected_hash)) return error.UnexpectedOriginHeader;
-            },
-            .number => |expected_number| {
-                if (expected_number != headers[hashes.len - 1].number) return error.UnexpectedOriginHeader;
-            },
-        }
-
-        return .{ .headers = .{ .hashes = hashes, .headers = headers } };
+        return false;
     }
 
-    fn validateBal(allocator: std.mem.Allocator, response: eth.BlockAccessLists) !Outcome {
-        if (response.rlps.len == 0) return error.EmptyResponse;
-        // decode from a copy, the parsed lists point into it and outlive the frame
-        const bal_rlp = try allocator.dupe(u8, response.rlps[0].value);
-        var hash: [32]u8 = undefined;
-        std.crypto.hash.sha3.Keccak256.hash(bal_rlp, &hash, .{});
-        var parsed: types.BlockAccessLists = undefined;
-        _ = try rlp.deserialize(types.BlockAccessLists, allocator, bal_rlp, &parsed);
-        return .{ .bal = .{ .hash = hash, .rlp = bal_rlp, .parsed = parsed } };
+    fn checkHeaderDownloadComplete(self: *Self) !void {
+        const target = self.syncTarget();
+        if (self.header.?.requested_header_head < target.number or
+            self.header.?.requested_header_tail > target.cutoff_number)
+            return;
+
+        if (!self.pending_eth_requests.empty()) return;
+        if (hasHeaderRequest(&self.inflight_eth_requests) or hasHeaderRequest(&self.validating_eth_requests)) return;
+
+        const head = try self.bc.head();
+        log.debug("persisting headers start {} end {}", .{
+            head.number + 1,
+            target.number,
+        });
+
+        const first = head.number + 1;
+        const total = target.number - head.number;
+        var persisted: u64 = 0;
+        while (persisted < total) {
+            const count = @min(header_persist_chunk, total - persisted);
+            const headers = try self.readDownladedHeaders(self.allocator, first + persisted, count);
+            defer self.allocator.free(headers);
+            try self.bc.appendHeaders(headers);
+            persisted += count;
+        }
+
+        try self.clearDownloadedHeaders();
     }
 
     fn persistDownloadedHeaderChain(
@@ -761,42 +958,22 @@ pub const Downloader = struct {
         try file.value.file.setLength(self.io, 0);
     }
 
-    fn hasHeaderRequest(list: *List(Request(eth.Message))) bool {
-        var current_node = list.inner.first;
-        while (current_node) |node| : (current_node = node.next) {
-            const request: *List(Request(eth.Message)).Node = @alignCast(@fieldParentPtr("node", node));
-            if (request.elem.msg == .get_block_headers) return true;
-        }
-        return false;
+    fn readHeader(self: *Self, number: u64) !?types.BlockHeader {
+        return try self.readDownladedHeader(number) orelse self.bc.readHeader(number);
     }
 
-    fn checkHeaderDownloadComplete(self: *Self) !void {
+    fn headerIsInTargetChain(self: *Self, header: types.BlockHeader) !bool {
         const target = self.syncTarget();
-        if (self.header.?.requested_header_head < target.number or
-            self.header.?.requested_header_tail > target.cutoff_number)
-            return;
+        const head = try self.readHeader(target.number) orelse return error.Maybe;
+        if (!std.mem.eql(u8, &target.hash, &head.hash())) return error.Maybe;
 
-        if (!self.pending_eth_requests.empty()) return;
-        if (hasHeaderRequest(&self.inflight_eth_requests) or hasHeaderRequest(&self.validating_eth_requests)) return;
+        const stored_header = try self.readHeader(header.number) orelse return false;
+        if (!std.mem.eql(u8, &stored_header.hash(), &header.hash())) return false;
 
-        const head = try self.bc.head();
-        log.debug("persisting headers start {} end {}", .{
-            head.number + 1,
-            target.number,
-        });
-
-        const first = head.number + 1;
-        const total = target.number - head.number;
-        var persisted: u64 = 0;
-        while (persisted < total) {
-            const count = @min(header_persist_chunk, total - persisted);
-            const headers = try self.readDownladedHeaders(self.allocator, first + persisted, count);
-            defer self.allocator.free(headers);
-            try self.bc.appendHeaders(headers);
-            persisted += count;
+        for (header.number + 1..head.number) |block_number| {
+            _ = try self.readHeader(block_number) orelse return error.Maybe;
         }
-
-        try self.clearDownloadedHeaders();
+        return true;
     }
 
     fn updatePivot(self: *Self) !void {
@@ -866,6 +1043,76 @@ pub const Downloader = struct {
                 log.info("account download done", .{});
             }
         }
+    }
+
+    fn requestAccountRange(self: *Self, req: *Request(snap.Message), state_root: [32]u8, origin: [32]u8, limit: [32]u8) void {
+        log.debug("requesting account range origin: {x} limit: {x}", .{ origin, limit });
+        req.msg = .{ .get_account_range = .{
+            .root = state_root,
+            .origin = origin,
+            .limit = limit,
+        } };
+        self.sendSnapRequest(req) catch {};
+    }
+
+    fn handleAccounts(self: *Self, request: *Request(snap.Message), response: *const snap.AccountRange, outcome: anyerror!Outcome) !void {
+        const get_accounts_range = request.msg.get_account_range;
+        const verified: ?VerifiedAccounts = if (outcome) |result| result.accounts else |_| null;
+
+        var remaining: ?struct { [32]u8, [32]u8 } = null;
+        if (verified) |accounts| {
+            const hashes = accounts.hashes;
+            const last = if (hashes.len > 0) hashes[hashes.len - 1] else get_accounts_range.limit;
+            log.debug("verified account range {x}-{x}", .{ get_accounts_range.origin, last });
+            if (accounts.has_more and std.mem.order(u8, &last, &get_accounts_range.limit) == .lt)
+                remaining = .{ last, get_accounts_range.limit };
+            try self.persistAccounts(get_accounts_range, hashes, response);
+            const covered_until = if (accounts.has_more) last else get_accounts_range.limit;
+            self.progress.account_keyspace +|= std.mem.readInt(u256, &covered_until, .big) - std.mem.readInt(u256, &get_accounts_range.origin, .big);
+        } else {
+            remaining = .{ get_accounts_range.origin, get_accounts_range.limit };
+        }
+
+        if (remaining) |range| {
+            const origin = range.@"0";
+            const limit = range.@"1";
+            log.debug("remaining account range {x}-{x}", .{ origin, limit });
+
+            const origin_numeric = std.mem.readInt(u256, &origin, .big);
+            const limit_numeric = std.mem.readInt(u256, &limit, .big);
+            const pivot_state_root = self.state.?.pivot.state_root;
+            if (limit_numeric - origin_numeric < min_split_range) {
+                self.requestAccountRange(request, pivot_state_root, origin, limit);
+            } else if (self.free_snap_requests.pop()) |new_req| {
+                var split_point: [32]u8 = undefined;
+                std.mem.writeInt(u256, &split_point, origin_numeric / 2 + limit_numeric / 2, .big);
+                self.requestAccountRange(new_req, pivot_state_root, origin, split_point);
+                self.requestAccountRange(request, pivot_state_root, split_point, limit);
+            } else {
+                self.requestAccountRange(request, pivot_state_root, origin, limit);
+            }
+        } else {
+            self.free_snap_requests.push(request);
+        }
+    }
+
+    fn persistAccounts(self: *Self, request: snap.GetAccountRange, hashes: [][32]u8, response: *const snap.AccountRange) !void {
+        const txn_start = std.Io.Timestamp.now(self.io, .awake);
+        const txn = try self.eth_db.kv_store.transaction_rw();
+        errdefer _ = txn.abort() catch |e| {
+            log.err("failed to abort txn {}", .{e});
+        };
+
+        const table = self.eth_db.kv_store.table(txn, .accounts);
+        for (hashes, 0..) |hash, index| {
+            try table.set(&hash, response.accounts[index].account.value, .Upsert);
+        }
+        // a proven single account query that doesn't return the account means it no longer exists
+        if (std.meta.eql(request.origin, request.limit) and (hashes.len == 0 or !std.meta.eql(hashes[0], request.origin))) {
+            try self.eth_db.deleteAccount(txn, request.origin);
+        }
+
+        try self.commitTxn(txn, "accounts", txn_start);
     }
 
     fn advanceStorageAndCodeDownload(self: *Self) !void {
@@ -986,6 +1233,82 @@ pub const Downloader = struct {
         self.sendSnapRequest(req) catch {};
     }
 
+    fn handleStorage(self: *Self, req: *Request(snap.Message), outcome: anyerror!Outcome) !void {
+        const result: VerifiedStorage = if (outcome) |verified| verified.storage else |_| .{};
+        const request = &req.msg.get_storage_ranges;
+        const requested_accounts = request.account_hashes;
+        const storage_roots = req.storage_roots;
+        const verified = result.keys.len;
+
+        const txn_start = std.Io.Timestamp.now(self.io, .awake);
+        const txn = try self.eth_db.kv_store.transaction_rw();
+        errdefer _ = txn.abort() catch |e| {
+            log.err("failed to abort txn {}", .{e});
+        };
+        for (requested_accounts[0..verified], result.keys, result.values) |account_hash, keys, values|
+            try self.eth_db.insertStorage(txn, account_hash, keys, values);
+        try self.commitTxn(txn, "storage", txn_start);
+
+        const continue_from_slot = if (result.continue_from_slot) |from| try self.splitLargeAccount(req, verified, from) else null;
+        const unserved = requested_accounts[verified..];
+        var remaining: usize = 0;
+        var next_start: [32]u8 = if (verified == 0) request.starting_hash else @splat(0);
+        if (continue_from_slot) |slot| {
+            requested_accounts[0] = requested_accounts[verified - 1];
+            storage_roots[0] = storage_roots[verified - 1];
+            next_start = slot;
+            remaining = 1;
+        }
+        std.mem.copyForwards([32]u8, requested_accounts[remaining..][0..unserved.len], unserved);
+        std.mem.copyForwards([32]u8, storage_roots[remaining..][0..unserved.len], storage_roots[verified..]);
+        remaining += unserved.len;
+
+        if (remaining > 0) {
+            request.account_hashes = requested_accounts[0..remaining];
+            req.storage_roots = storage_roots[0..remaining];
+            request.starting_hash = next_start;
+            self.sendSnapRequest(req) catch {};
+        } else {
+            self.allocator.free(@as([][32]u8, requested_accounts.ptr[0..batch_storage_code_req_size]));
+            self.allocator.free(@as([][32]u8, storage_roots.ptr[0..batch_storage_code_req_size]));
+            self.progress.storage_keyspace +|= req.keyspace[1] - req.keyspace[0];
+            self.free_snap_requests.push(req);
+        }
+    }
+
+    fn splitLargeAccount(self: *Self, req: *Request(snap.Message), verified: usize, from: [32]u8) !?[32]u8 {
+        const request = &req.msg.get_storage_ranges;
+        const only_account_left = verified == request.account_hashes.len;
+        const account_limit = if (only_account_left) request.limit_hash else @as([32]u8, @splat(0xff));
+        const origin = std.mem.readInt(u256, &from, .big);
+        const limit = std.mem.readInt(u256, &account_limit, .big);
+        if (limit < origin) return null;
+        if (only_account_left and limit - origin < min_split_range) return from;
+        const new_req = self.free_snap_requests.pop() orelse return from;
+
+        var new_origin = from;
+        if (only_account_left) {
+            std.mem.writeInt(u256, &request.limit_hash, origin / 2 + limit / 2, .big);
+            std.mem.writeInt(u256, &new_origin, origin / 2 + limit / 2 + 1, .big);
+        }
+
+        const hashes = try self.allocator.alloc([32]u8, batch_storage_code_req_size);
+        errdefer self.allocator.free(hashes);
+        const roots = try self.allocator.alloc([32]u8, batch_storage_code_req_size);
+        hashes[0] = request.account_hashes[verified - 1];
+        roots[0] = req.storage_roots[verified - 1];
+        new_req.keyspace = .{ 0, 0 };
+        new_req.storage_roots = roots[0..1];
+        new_req.msg = .{ .get_storage_ranges = .{
+            .account_hashes = hashes[0..1],
+            .root_hash = request.root_hash,
+            .starting_hash = new_origin,
+            .limit_hash = account_limit,
+        } };
+        self.sendSnapRequest(new_req) catch {};
+        return if (only_account_left) from else null;
+    }
+
     fn requestCodes(self: *Self, req: *Request(snap.Message), code_hashes: [][32]u8) void {
         log.debug("requesting codes: {}", .{code_hashes.len});
         req.msg = .{ .get_byte_codes = .{
@@ -994,45 +1317,41 @@ pub const Downloader = struct {
         self.sendSnapRequest(req) catch {};
     }
 
-    fn stashSnapRequests(self: *Self) void {
-        while (self.inflight_snap_requests.pop() orelse self.pending_snap_requests.pop()) |node| {
-            self.stashed_snap_requests.len += 1;
-            self.stashed_snap_requests[self.stashed_snap_requests.len - 1] = node.*;
-            self.free_snap_requests.push(node);
-        }
-    }
+    fn handleCodes(self: *Self, req: *Request(snap.Message), codes: snap.ByteCodes, outcome: anyerror!Outcome) !void {
+        const code_hashes: ?[][32]u8 = if (outcome) |result| result.codes else |_| null;
+        const txn_start = std.Io.Timestamp.now(self.io, .awake);
+        const txn = try self.eth_db.kv_store.transaction_rw();
+        defer self.commitTxn(txn, "codes", txn_start) catch unreachable;
+        const table = self.eth_db.kv_store.table(txn, .codes);
 
-    fn popSnapRequests(self: *Self) !void {
-        std.debug.assert(self.inflight_snap_requests.empty() and self.pending_snap_requests.empty());
+        const requested_hashes = req.msg.get_byte_codes.hashes;
 
-        const pivot_root = self.state.?.pivot.state_root;
-        const txn = try self.eth_db.kv_store.transaction_ro();
-        defer txn.abort() catch unreachable;
-
-        for (self.stashed_snap_requests) |stashed_req| {
-            const req = self.free_snap_requests.pop() orelse unreachable;
-            req.* = stashed_req;
-            switch (req.msg) {
-                .get_account_range => |*account_range_req| account_range_req.root = pivot_root,
-                .get_storage_ranges => |*storage_ranges_req| {
-                    storage_ranges_req.root_hash = pivot_root;
-                    // healing may have changed the storage roots of the stashed accounts
-                    for (storage_ranges_req.account_hashes, req.storage_roots) |account_hash, *root| {
-                        const account = try self.eth_db.readAccount(txn, account_hash);
-                        root.* = if (account) |acc| acc.storage_hash else types.empty_root_hash;
-                    }
-                },
-                else => {},
+        var retry_count: usize = 0;
+        var next_hash_index: usize = 0;
+        const served_codes = if (code_hashes != null) codes.bytecodes else &.{};
+        for (served_codes, code_hashes orelse &.{}) |code, code_hash| {
+            while (next_hash_index < requested_hashes.len and !std.meta.eql(requested_hashes[next_hash_index], code_hash)) : (next_hash_index += 1) {
+                requested_hashes[retry_count] = requested_hashes[next_hash_index];
+                retry_count += 1;
             }
+            if (next_hash_index == requested_hashes.len) break;
 
-            self.sendSnapRequest(req) catch {};
+            table.set(&code_hash, code, .Create) catch |e| {
+                if (e != lmdbx.Error.MDBX_KEYEXIST) return e;
+            };
+            next_hash_index += 1;
         }
-        self.stashed_snap_requests.len = 0;
-    }
+        const unserved = requested_hashes[next_hash_index..];
+        std.mem.copyForwards([32]u8, requested_hashes[retry_count..][0..unserved.len], unserved);
+        retry_count += unserved.len;
 
-    fn requestBals(self: *Self, req: *Request(eth.Message), hashes: [][32]u8) void {
-        req.msg = .{ .get_block_access_list = .{ .hashes = hashes } };
-        self.sendEthRequest(req, true);
+        if (retry_count > 0) {
+            self.requestCodes(req, requested_hashes[0..retry_count]);
+        } else {
+            self.allocator.free(@as([][32]u8, requested_hashes.ptr[0..batch_storage_code_req_size]));
+            self.progress.code_keyspace +|= req.keyspace[1] - req.keyspace[0];
+            self.free_snap_requests.push(req);
+        }
     }
 
     fn advanceStateHeal(self: *Self) !void {
@@ -1077,274 +1396,9 @@ pub const Downloader = struct {
         }
     }
 
-    fn pickSnapPeer(self: *Self, _: snap.Message) !rlpx.Server.PeerId {
-        return self.snap_provider.pickRandomPeer(PeerFilter(snap.Message).init(self, &self.inflight_snap_requests, self.state.?.pivot.number));
-    }
-
-    fn reissueSnapRequest(self: *Self, req: *Request(snap.Message)) !void {
-        return self.sendRequest(self.snap_provider, Self.pickSnapPeer, req);
-    }
-
-    fn sendSnapRequest(self: *Self, req: *Request(snap.Message)) !void {
-        self.pending_snap_requests.push(req);
-        self.drainPendingSnapRequests();
-    }
-
-    fn drainPendingSnapRequests(self: *Self) void {
-        // until the heal requests an access list, pending requests are download follow ups to be stashed
-        if (self.state_heal) |state_heal| if (!state_heal.bal_requested) return;
-        drainPendingRequests(self, &self.pending_snap_requests, &self.inflight_snap_requests, Self.reissueSnapRequest);
-    }
-
-    fn requestAccountRange(self: *Self, req: *Request(snap.Message), state_root: [32]u8, origin: [32]u8, limit: [32]u8) void {
-        log.debug("requesting account range origin: {x} limit: {x}", .{ origin, limit });
-        req.msg = .{ .get_account_range = .{
-            .root = state_root,
-            .origin = origin,
-            .limit = limit,
-        } };
-        self.sendSnapRequest(req) catch {};
-    }
-
-    fn handleSnap(self: *Self, received: snap.Provider.ParsedMessage) !bool {
-        const peer = received.read.peer;
-        const matched = switch (received.msg) {
-            .account_range => |account_range| self.matchRequest(snap.Message, self.snap_provider, &self.inflight_snap_requests, peer, account_range.id, .get_account_range),
-            .storage_ranges => |storage_ranges| self.matchRequest(snap.Message, self.snap_provider, &self.inflight_snap_requests, peer, storage_ranges.id, .get_storage_ranges),
-            .byte_codes => |byte_codes| self.matchRequest(snap.Message, self.snap_provider, &self.inflight_snap_requests, peer, byte_codes.id, .get_byte_codes),
-            else => null,
-        };
-        if (matched) |req| {
-            self.validating_snap_requests.push(req);
-            try self.startValidation(&self.snap_arena, .{ .snap = .{ .msg = received, .req = req } });
-        }
-        self.drainPendingSnapRequests();
-        return matched != null;
-    }
-
-    fn startValidation(self: *Self, arena: *std.heap.ArenaAllocator, resp: @FieldType(ValidatedResponse, "resp")) !void {
-        var owned = arena.*;
-        const validated = try owned.allocator().create(ValidatedResponse);
-        validated.* = .{ .arena = owned, .resp = resp };
-        arena.* = .init(self.allocator);
-        self.validation_group.concurrent(self.io, validate, .{ self, validated }) catch validate(self, validated);
-    }
-
-    fn validate(self: *Self, validated: *ValidatedResponse) void {
-        const start = std.Io.Timestamp.now(self.io, .awake);
-        const allocator = validated.arena.allocator();
-        validated.outcome = switch (validated.resp) {
-            .eth => |*resp| switch (resp.msg.msg) {
-                .block_headers => |headers| validateHeaders(allocator, resp.req.msg.get_block_headers, headers),
-                .block_access_list => |access_lists| validateBal(allocator, access_lists),
-                else => unreachable,
-            },
-            .snap => |*resp| switch (resp.msg.msg) {
-                .account_range => |*account_range| verifyAccounts(allocator, resp.req.msg.get_account_range, account_range),
-                .storage_ranges => |*storage_ranges| verifyStorage(allocator, resp.req.msg.get_storage_ranges, resp.req.storage_roots, storage_ranges),
-                .byte_codes => |byte_codes| hashCodes(allocator, byte_codes),
-                else => unreachable,
-            },
-        };
-        validated.verify_seconds = secondsSince(self.io, start);
-        self.validated_responses.putOneUncancelable(self.io, validated) catch unreachable;
-    }
-
-    fn handleValidated(self: *Self, validated: *ValidatedResponse) !void {
-        defer {
-            switch (validated.resp) {
-                inline else => |resp| self.allocator.free(resp.msg.read.payload),
-            }
-            var arena = validated.arena;
-            arena.deinit();
-        }
-        self.metrics.verify_seconds.observe(.{ .msg = validated.msgName() }, validated.verify_seconds) catch {};
-
-        switch (validated.resp) {
-            .eth => |*resp| {
-                self.validating_eth_requests.remove(resp.req);
-                switch (resp.msg.msg) {
-                    .block_headers => try self.handleHeaders(resp.req, validated.outcome),
-                    .block_access_list => try self.handleBals(resp.req, validated.outcome, &validated.arena),
-                    else => unreachable,
-                }
-                self.drainPendingEthRequests();
-            },
-            .snap => |*resp| {
-                self.validating_snap_requests.remove(resp.req);
-                switch (resp.msg.msg) {
-                    .account_range => |*account_range| try self.handleAccounts(resp.req, account_range, validated.outcome),
-                    .storage_ranges => try self.handleStorage(resp.req, validated.outcome),
-                    .byte_codes => |byte_codes| try self.handleCodes(resp.req, byte_codes, validated.outcome),
-                    else => unreachable,
-                }
-                self.drainPendingSnapRequests();
-                if (self.state != null)
-                    try self.advanceStateDownload();
-                if (self.state_heal != null)
-                    try self.advanceStateHeal();
-            },
-        }
-    }
-
-    fn verifyAccounts(allocator: std.mem.Allocator, request: snap.GetAccountRange, response: *const snap.AccountRange) !Outcome {
-        const hashes = try allocator.alloc([32]u8, response.accounts.len);
-        const accounts = try allocator.alloc([]const u8, response.accounts.len);
-        for (response.accounts, 0..) |elem, index| {
-            hashes[index] = elem.hash;
-
-            var slim_account: snap.SlimAccount = undefined;
-            _ = try rlp.deserialize(snap.SlimAccount, allocator, elem.account.value, &slim_account);
-
-            var list = std.array_list.Managed(u8).init(allocator);
-            try rlp.serialize(types.Account, allocator, slimToFullAccount(slim_account), &list);
-            accounts[index] = try list.toOwnedSlice();
-        }
-
-        const proof = try proofNodes(allocator, response.proof);
-        const has_more = try verifyRangeProof(
-            allocator,
-            request.root,
-            request.origin,
-            hashes,
-            accounts,
-            if (response.proof.len > 0) &proof else null,
-        );
-        return .{ .accounts = .{ .hashes = hashes, .has_more = has_more } };
-    }
-
-    fn verifyStorage(
-        allocator: std.mem.Allocator,
-        request: snap.GetStorageRanges,
-        storage_roots: []const [32]u8,
-        response: *const snap.StorageRanges,
-    ) !Outcome {
-        const proof = try proofNodes(allocator, response.proof);
-
-        const served = response.slots[0..@min(response.slots.len, request.account_hashes.len)];
-        var result: VerifiedStorage = .{
-            .keys = try allocator.alloc([][32]u8, served.len),
-            .values = try allocator.alloc([][]const u8, served.len),
-        };
-        var verified: usize = 0;
-        for (served, 0..) |slots, index| {
-            const origin: [32]u8 = if (index == 0) request.starting_hash else @splat(0);
-            const is_last = index + 1 == response.slots.len;
-
-            const keys = try allocator.alloc([32]u8, slots.len);
-            const values = try allocator.alloc([]const u8, slots.len);
-            for (slots, 0..) |slot, slot_index| {
-                keys[slot_index] = slot.hash;
-                values[slot_index] = slot.data;
-            }
-
-            const has_more = verifyRangeProof(
-                allocator,
-                storage_roots[index],
-                origin,
-                keys,
-                values,
-                if (is_last and response.proof.len > 0) &proof else null,
-            ) catch break;
-
-            result.keys[index] = keys;
-            result.values[index] = values;
-            verified = index + 1;
-            if (has_more) {
-                result.continue_from_slot = origin;
-                if (keys.len > 0)
-                    std.mem.writeInt(
-                        u256,
-                        &result.continue_from_slot.?,
-                        std.mem.readInt(u256, &keys[keys.len - 1], .big) + 1,
-                        .big,
-                    );
-                break;
-            }
-        }
-        result.keys = result.keys[0..verified];
-        result.values = result.values[0..verified];
-        return .{ .storage = result };
-    }
-
-    fn hashCodes(allocator: std.mem.Allocator, response: snap.ByteCodes) !Outcome {
-        const hashes = try allocator.alloc([32]u8, response.bytecodes.len);
-        for (response.bytecodes, hashes) |code, *hash|
-            std.crypto.hash.sha3.Keccak256.hash(code, hash, .{});
-        return .{ .codes = hashes };
-    }
-
-    fn proofNodes(allocator: std.mem.Allocator, nodes: []const []const u8) !trie.NodesHashMap {
-        var proof: trie.NodesHashMap = .empty;
-        if (nodes.len > 0) {
-            try proof.ensureTotalCapacity(allocator, @intCast(nodes.len));
-            for (nodes) |node| {
-                var h: [32]u8 align(8) = undefined;
-                std.crypto.hash.sha3.Keccak256.hash(node, &h, .{});
-                try proof.put(allocator, h, node);
-            }
-        }
-        return proof;
-    }
-
-    fn handleAccounts(self: *Self, request: *Request(snap.Message), response: *const snap.AccountRange, outcome: anyerror!Outcome) !void {
-        const get_accounts_range = request.msg.get_account_range;
-        const verified: ?VerifiedAccounts = if (outcome) |result| result.accounts else |_| null;
-
-        var remaining: ?struct { [32]u8, [32]u8 } = null;
-        if (verified) |accounts| {
-            const hashes = accounts.hashes;
-            const last = if (hashes.len > 0) hashes[hashes.len - 1] else get_accounts_range.limit;
-            log.debug("verified account range {x}-{x}", .{ get_accounts_range.origin, last });
-            if (accounts.has_more and std.mem.order(u8, &last, &get_accounts_range.limit) == .lt)
-                remaining = .{ last, get_accounts_range.limit };
-            try self.persistAccounts(get_accounts_range, hashes, response);
-            const covered_until = if (accounts.has_more) last else get_accounts_range.limit;
-            self.progress.account_keyspace +|= std.mem.readInt(u256, &covered_until, .big) - std.mem.readInt(u256, &get_accounts_range.origin, .big);
-        } else {
-            remaining = .{ get_accounts_range.origin, get_accounts_range.limit };
-        }
-
-        if (remaining) |range| {
-            const origin = range.@"0";
-            const limit = range.@"1";
-            log.debug("remaining account range {x}-{x}", .{ origin, limit });
-
-            const origin_numeric = std.mem.readInt(u256, &origin, .big);
-            const limit_numeric = std.mem.readInt(u256, &limit, .big);
-            const pivot_state_root = self.state.?.pivot.state_root;
-            if (limit_numeric - origin_numeric < min_split_range) {
-                self.requestAccountRange(request, pivot_state_root, origin, limit);
-            } else if (self.free_snap_requests.pop()) |new_req| {
-                var split_point: [32]u8 = undefined;
-                std.mem.writeInt(u256, &split_point, origin_numeric / 2 + limit_numeric / 2, .big);
-                self.requestAccountRange(new_req, pivot_state_root, origin, split_point);
-                self.requestAccountRange(request, pivot_state_root, split_point, limit);
-            } else {
-                self.requestAccountRange(request, pivot_state_root, origin, limit);
-            }
-        } else {
-            self.free_snap_requests.push(request);
-        }
-    }
-
-    fn persistAccounts(self: *Self, request: snap.GetAccountRange, hashes: [][32]u8, response: *const snap.AccountRange) !void {
-        const txn_start = std.Io.Timestamp.now(self.io, .awake);
-        const txn = try self.eth_db.kv_store.transaction_rw();
-        errdefer _ = txn.abort() catch |e| {
-            log.err("failed to abort txn {}", .{e});
-        };
-
-        const table = self.eth_db.kv_store.table(txn, .accounts);
-        for (hashes, 0..) |hash, index| {
-            try table.set(&hash, response.accounts[index].account.value, .Upsert);
-        }
-        // a proven single account query that doesn't return the account means it no longer exists
-        if (std.meta.eql(request.origin, request.limit) and (hashes.len == 0 or !std.meta.eql(hashes[0], request.origin))) {
-            try self.eth_db.deleteAccount(txn, request.origin);
-        }
-
-        try self.commitTxn(txn, "accounts", txn_start);
+    fn requestBals(self: *Self, req: *Request(eth.Message), hashes: [][32]u8) void {
+        req.msg = .{ .get_block_access_list = .{ .hashes = hashes } };
+        self.sendEthRequest(req, true);
     }
 
     fn handleBals(self: *Self, req: *Request(eth.Message), outcome: anyerror!Outcome, arena: *std.heap.ArenaAllocator) !void {
@@ -1450,117 +1504,43 @@ pub const Downloader = struct {
         return true;
     }
 
-    fn handleStorage(self: *Self, req: *Request(snap.Message), outcome: anyerror!Outcome) !void {
-        const result: VerifiedStorage = if (outcome) |verified| verified.storage else |_| .{};
-        const request = &req.msg.get_storage_ranges;
-        const requested_accounts = request.account_hashes;
-        const storage_roots = req.storage_roots;
-        const verified = result.keys.len;
+    fn commitTxn(self: *Self, txn: kv.Transaction, op: []const u8, started_at: std.Io.Timestamp) !void {
+        const commit_start = std.Io.Timestamp.now(self.io, .awake);
+        try txn.commit();
+        self.metrics.db_commit_seconds.observe(.{ .op = op }, secondsSince(self.io, commit_start)) catch {};
+        self.metrics.db_txn_seconds.observe(.{ .op = op }, secondsSince(self.io, started_at)) catch {};
+    }
 
-        const txn_start = std.Io.Timestamp.now(self.io, .awake);
-        const txn = try self.eth_db.kv_store.transaction_rw();
-        errdefer _ = txn.abort() catch |e| {
-            log.err("failed to abort txn {}", .{e});
+    fn observeHandle(self: *Self, msg: []const u8, started_at: std.Io.Timestamp) void {
+        self.metrics.handle_seconds.observe(.{ .msg = msg }, secondsSince(self.io, started_at)) catch {};
+    }
+
+    pub fn writeMetrics(self: *Self, writer: *std.Io.Writer) !void {
+        return prom.write(&self.metrics, writer);
+    }
+
+    fn updateMetrics(self: *Self) void {
+        const m = &self.metrics;
+        const request_counts = [_]struct { []const u8, []const u8, usize }{
+            .{ "eth", "inflight", self.inflight_eth_requests.inner.len() },
+            .{ "eth", "pending", self.pending_eth_requests.inner.len() },
+            .{ "eth", "validating", self.validating_eth_requests.inner.len() },
+            .{ "snap", "inflight", self.inflight_snap_requests.inner.len() },
+            .{ "snap", "pending", self.pending_snap_requests.inner.len() },
+            .{ "snap", "validating", self.validating_snap_requests.inner.len() },
+            .{ "snap", "stashed", self.stashed_snap_requests.len },
         };
-        for (requested_accounts[0..verified], result.keys, result.values) |account_hash, keys, values|
-            try self.eth_db.insertStorage(txn, account_hash, keys, values);
-        try self.commitTxn(txn, "storage", txn_start);
+        for (request_counts) |c| m.requests.set(.{ .proto = c[0], .state = c[1] }, c[2]) catch {};
 
-        const continue_from_slot = if (result.continue_from_slot) |from| try self.splitLargeAccount(req, verified, from) else null;
-        const unserved = requested_accounts[verified..];
-        var remaining: usize = 0;
-        var next_start: [32]u8 = if (verified == 0) request.starting_hash else @splat(0);
-        if (continue_from_slot) |slot| {
-            requested_accounts[0] = requested_accounts[verified - 1];
-            storage_roots[0] = storage_roots[verified - 1];
-            next_start = slot;
-            remaining = 1;
-        }
-        std.mem.copyForwards([32]u8, requested_accounts[remaining..][0..unserved.len], unserved);
-        std.mem.copyForwards([32]u8, storage_roots[remaining..][0..unserved.len], storage_roots[verified..]);
-        remaining += unserved.len;
-
-        if (remaining > 0) {
-            request.account_hashes = requested_accounts[0..remaining];
-            req.storage_roots = storage_roots[0..remaining];
-            request.starting_hash = next_start;
-            self.sendSnapRequest(req) catch {};
-        } else {
-            self.allocator.free(@as([][32]u8, requested_accounts.ptr[0..batch_storage_code_req_size]));
-            self.allocator.free(@as([][32]u8, storage_roots.ptr[0..batch_storage_code_req_size]));
-            self.progress.storage_keyspace +|= req.keyspace[1] - req.keyspace[0];
-            self.free_snap_requests.push(req);
-        }
-    }
-
-    fn splitLargeAccount(self: *Self, req: *Request(snap.Message), verified: usize, from: [32]u8) !?[32]u8 {
-        const request = &req.msg.get_storage_ranges;
-        const only_account_left = verified == request.account_hashes.len;
-        const account_limit = if (only_account_left) request.limit_hash else @as([32]u8, @splat(0xff));
-        const origin = std.mem.readInt(u256, &from, .big);
-        const limit = std.mem.readInt(u256, &account_limit, .big);
-        if (limit < origin) return null;
-        if (only_account_left and limit - origin < min_split_range) return from;
-        const new_req = self.free_snap_requests.pop() orelse return from;
-
-        var new_origin = from;
-        if (only_account_left) {
-            std.mem.writeInt(u256, &request.limit_hash, origin / 2 + limit / 2, .big);
-            std.mem.writeInt(u256, &new_origin, origin / 2 + limit / 2 + 1, .big);
-        }
-
-        const hashes = try self.allocator.alloc([32]u8, batch_storage_code_req_size);
-        errdefer self.allocator.free(hashes);
-        const roots = try self.allocator.alloc([32]u8, batch_storage_code_req_size);
-        hashes[0] = request.account_hashes[verified - 1];
-        roots[0] = req.storage_roots[verified - 1];
-        new_req.keyspace = .{ 0, 0 };
-        new_req.storage_roots = roots[0..1];
-        new_req.msg = .{ .get_storage_ranges = .{
-            .account_hashes = hashes[0..1],
-            .root_hash = request.root_hash,
-            .starting_hash = new_origin,
-            .limit_hash = account_limit,
-        } };
-        self.sendSnapRequest(new_req) catch {};
-        return if (only_account_left) from else null;
-    }
-
-    fn handleCodes(self: *Self, req: *Request(snap.Message), codes: snap.ByteCodes, outcome: anyerror!Outcome) !void {
-        const code_hashes: ?[][32]u8 = if (outcome) |result| result.codes else |_| null;
-        const txn_start = std.Io.Timestamp.now(self.io, .awake);
-        const txn = try self.eth_db.kv_store.transaction_rw();
-        defer self.commitTxn(txn, "codes", txn_start) catch unreachable;
-        const table = self.eth_db.kv_store.table(txn, .codes);
-
-        const requested_hashes = req.msg.get_byte_codes.hashes;
-
-        var retry_count: usize = 0;
-        var next_hash_index: usize = 0;
-        const served_codes = if (code_hashes != null) codes.bytecodes else &.{};
-        for (served_codes, code_hashes orelse &.{}) |code, code_hash| {
-            while (next_hash_index < requested_hashes.len and !std.meta.eql(requested_hashes[next_hash_index], code_hash)) : (next_hash_index += 1) {
-                requested_hashes[retry_count] = requested_hashes[next_hash_index];
-                retry_count += 1;
-            }
-            if (next_hash_index == requested_hashes.len) break;
-
-            table.set(&code_hash, code, .Create) catch |e| {
-                if (e != lmdbx.Error.MDBX_KEYEXIST) return e;
-            };
-            next_hash_index += 1;
-        }
-        const unserved = requested_hashes[next_hash_index..];
-        std.mem.copyForwards([32]u8, requested_hashes[retry_count..][0..unserved.len], unserved);
-        retry_count += unserved.len;
-
-        if (retry_count > 0) {
-            self.requestCodes(req, requested_hashes[0..retry_count]);
-        } else {
-            self.allocator.free(@as([][32]u8, requested_hashes.ptr[0..batch_storage_code_req_size]));
-            self.progress.code_keyspace +|= req.keyspace[1] - req.keyspace[0];
-            self.free_snap_requests.push(req);
-        }
+        m.sync_target.set(self.syncTarget().number);
+        if (self.bc.head()) |head| m.chain_head.set(head.number) else |_| {}
+        m.headers_downloaded.set(self.progress.headers);
+        if (self.state) |state| m.pivot.set(state.pivot.number);
+        m.state_progress.set(.{ .kind = "accounts" }, keyspacePercent(self.progress.account_keyspace)) catch {};
+        m.state_progress.set(.{ .kind = "storage" }, keyspacePercent(self.progress.storage_keyspace)) catch {};
+        m.state_progress.set(.{ .kind = "codes" }, keyspacePercent(self.progress.code_keyspace)) catch {};
+        if (self.eth_db.kv_store.env.info()) |info| m.db_size_bytes.set(info.geo.current) else |_| {}
+        m.heal_blocks_remaining.set(if (self.state_heal) |heal| heal.target_pivot.number -| (heal.next_pivot.number - 1) else 0);
     }
 
     fn logProgress(self: *Self) void {
@@ -1634,57 +1614,6 @@ pub const Downloader = struct {
     fn keyspacePercent(covered: u256) f64 {
         return @as(f64, @floatFromInt(@as(u64, @truncate(covered >> 192)))) / std.math.pow(f64, 2, 64) * 100;
     }
-
-    fn matchRequest(
-        self: *Self,
-        comptime Message: type,
-        provider: anytype,
-        list: *List(Request(Message)),
-        peer: rlpx.Server.PeerId,
-        id: u64,
-        request_tag: std.meta.Tag(Message),
-    ) ?*Request(Message) {
-        var current_node = list.inner.first;
-
-        while (current_node) |node| {
-            const next_node = node.next;
-            const request: *List(Request(Message)).Node = @alignCast(@fieldParentPtr("node", node));
-
-            if (request.elem.id == id and std.meta.eql(peer, request.elem.peer) and std.meta.eql(request_tag, request.elem.msg)) {
-                const delay = request.elem.sent_at.untilNow(self.io, .real);
-                provider.observeDelay(peer, request_tag, delay);
-                self.metrics.response_seconds.observe(
-                    .{ .msg = @tagName(request_tag) },
-                    @as(f64, @floatFromInt(delay.toNanoseconds())) / std.time.ns_per_s,
-                ) catch {};
-                list.inner.remove(node);
-                node.next = null;
-                node.prev = null;
-                return &request.elem;
-            }
-
-            current_node = next_node;
-        }
-        return null;
-    }
-
-    fn readHeader(self: *Self, number: u64) !?types.BlockHeader {
-        return try self.readDownladedHeader(number) orelse self.bc.readHeader(number);
-    }
-
-    fn headerIsInTargetChain(self: *Self, header: types.BlockHeader) !bool {
-        const target = self.syncTarget();
-        const head = try self.readHeader(target.number) orelse return error.Maybe;
-        if (!std.mem.eql(u8, &target.hash, &head.hash())) return error.Maybe;
-
-        const stored_header = try self.readHeader(header.number) orelse return false;
-        if (!std.mem.eql(u8, &stored_header.hash(), &header.hash())) return false;
-
-        for (header.number + 1..head.number) |block_number| {
-            _ = try self.readHeader(block_number) orelse return error.Maybe;
-        }
-        return true;
-    }
 };
 
 const invalid_peer: rlpx.Server.PeerId = .{
@@ -1737,3 +1666,74 @@ fn slimToFullAccount(slim: snap.SlimAccount) types.Account {
             types.empty_root_hash,
     };
 }
+
+const Metrics = struct {
+    const duration_buckets: []const f64 = &.{ 0.001, 0.005, 0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30 };
+    const MsgLabels = struct { msg: []const u8 };
+    const RequestLabels = struct { proto: []const u8, state: []const u8 };
+    const KindLabels = struct { kind: []const u8 };
+    const OpLabels = struct { op: []const u8 };
+
+    loop_busy_seconds: prom.Counter(f64),
+    loop_wait_seconds: prom.Counter(f64),
+    handle_seconds: prom.HistogramVec(f64, MsgLabels, duration_buckets),
+    requests_sent: prom.CounterVec(u64, MsgLabels),
+    request_timeouts: prom.CounterVec(u64, MsgLabels),
+    response_seconds: prom.HistogramVec(f64, MsgLabels, duration_buckets),
+    verify_seconds: prom.HistogramVec(f64, MsgLabels, duration_buckets),
+    requests: prom.GaugeVec(u64, RequestLabels),
+    sync_target: prom.Gauge(u64),
+    chain_head: prom.Gauge(u64),
+    headers_downloaded: prom.Gauge(u64),
+    pivot: prom.Gauge(u64),
+    state_progress: prom.GaugeVec(f64, KindLabels),
+    heal_blocks_remaining: prom.Gauge(u64),
+    db_txn_seconds: prom.HistogramVec(f64, OpLabels, duration_buckets),
+    db_commit_seconds: prom.HistogramVec(f64, OpLabels, duration_buckets),
+    db_size_bytes: prom.Gauge(u64),
+    batch_build_seconds: prom.Histogram(f64, duration_buckets),
+    batch_accounts_scanned: prom.Counter(u64),
+
+    fn init(allocator: std.mem.Allocator, io: std.Io) !Metrics {
+        const opts: prom.RegistryOpts = .{};
+        var handle_seconds: @FieldType(Metrics, "handle_seconds") = try .init(allocator, io, "downloader_handle_seconds", .{ .help = "Time the downloader loop spent handling a message or tick" }, opts);
+        errdefer handle_seconds.deinit();
+        var requests_sent: @FieldType(Metrics, "requests_sent") = try .init(allocator, io, "downloader_requests_sent_total", .{ .help = "Requests sent to peers" }, opts);
+        errdefer requests_sent.deinit();
+        var request_timeouts: @FieldType(Metrics, "request_timeouts") = try .init(allocator, io, "downloader_request_timeouts_total", .{ .help = "Requests that timed out" }, opts);
+        errdefer request_timeouts.deinit();
+        var response_seconds: @FieldType(Metrics, "response_seconds") = try .init(allocator, io, "downloader_response_seconds", .{ .help = "Time from sending a request to matching its response" }, opts);
+        errdefer response_seconds.deinit();
+        var verify_seconds: @FieldType(Metrics, "verify_seconds") = try .init(allocator, io, "downloader_verify_seconds", .{ .help = "Time spent verifying a snap response off the downloader loop" }, opts);
+        errdefer verify_seconds.deinit();
+        var requests: @FieldType(Metrics, "requests") = try .init(allocator, io, "downloader_requests", .{ .help = "Requests by protocol and state" }, opts);
+        errdefer requests.deinit();
+        var state_progress: @FieldType(Metrics, "state_progress") = try .init(allocator, io, "downloader_state_progress", .{ .help = "State download progress in percent of the keyspace" }, opts);
+        errdefer state_progress.deinit();
+        var db_txn_seconds: @FieldType(Metrics, "db_txn_seconds") = try .init(allocator, io, "downloader_db_txn_seconds", .{ .help = "Write transaction duration from begin to commit, by operation" }, opts);
+        errdefer db_txn_seconds.deinit();
+        const db_commit_seconds: @FieldType(Metrics, "db_commit_seconds") = try .init(allocator, io, "downloader_db_commit_seconds", .{ .help = "Write transaction commit duration, by operation" }, opts);
+
+        return .{
+            .loop_busy_seconds = .init("downloader_loop_busy_seconds_total", .{ .help = "Time the downloader loop spent processing" }, opts),
+            .loop_wait_seconds = .init("downloader_loop_wait_seconds_total", .{ .help = "Time the downloader loop spent waiting for messages" }, opts),
+            .handle_seconds = handle_seconds,
+            .requests_sent = requests_sent,
+            .request_timeouts = request_timeouts,
+            .response_seconds = response_seconds,
+            .verify_seconds = verify_seconds,
+            .requests = requests,
+            .sync_target = .init("downloader_sync_target", .{ .help = "Block number the downloader is syncing towards" }, opts),
+            .chain_head = .init("downloader_chain_head", .{ .help = "Last header persisted in the chain" }, opts),
+            .headers_downloaded = .init("downloader_headers_downloaded", .{ .help = "Headers downloaded towards the current target" }, opts),
+            .pivot = .init("downloader_pivot", .{ .help = "State download pivot block" }, opts),
+            .state_progress = state_progress,
+            .heal_blocks_remaining = .init("downloader_heal_blocks_remaining", .{ .help = "Blocks left to heal, 0 when not healing" }, opts),
+            .db_txn_seconds = db_txn_seconds,
+            .db_commit_seconds = db_commit_seconds,
+            .db_size_bytes = .init("downloader_db_size_bytes", .{ .help = "Current size of the state database file" }, opts),
+            .batch_build_seconds = .init("downloader_batch_build_seconds", .{ .help = "Time spent building storage and code request batches" }, opts),
+            .batch_accounts_scanned = .init("downloader_batch_accounts_scanned_total", .{ .help = "Accounts scanned while building storage and code request batches" }, opts),
+        };
+    }
+};
