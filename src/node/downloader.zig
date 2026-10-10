@@ -212,7 +212,7 @@ pub const Downloader = struct {
         while (true) {
             const wait_start = std.Io.Timestamp.now(self.io, .awake);
             self.metrics.loop_busy_seconds.incrBy(secondsSince(self.io, busy_start));
-            const event = select.await() catch |e| return e;
+            const event = try select.await();
             busy_start = std.Io.Timestamp.now(self.io, .awake);
             self.metrics.loop_wait_seconds.incrBy(secondsSince(self.io, wait_start));
 
