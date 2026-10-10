@@ -139,6 +139,7 @@ pub const Downloader = struct {
             resume_index: usize = 0,
         } = null,
         pivot_hash_buf: [1][32]u8 = undefined,
+        stale_storage_roots: std.AutoArrayHashMapUnmanaged([32]u8, void) = .empty,
     } = null,
     metrics: Metrics,
     progress: struct {
@@ -1371,6 +1372,9 @@ pub const Downloader = struct {
             if (bal.resume_index < bal.parsed.len) {
                 bal.resume_index = try self.applyBal(bal.parsed, bal.resume_index);
             }
+            if (bal.resume_index == bal.parsed.len and state_heal.next_pivot.number + 1 > state_heal.target_pivot.number) {
+                if (self.fetchStaleStorageRoots()) return;
+            }
             if (bal.resume_index == bal.parsed.len and self.inflight_snap_requests.empty() and
                 self.pending_snap_requests.empty() and self.validating_snap_requests.empty())
             {
@@ -1380,6 +1384,7 @@ pub const Downloader = struct {
                         state_heal.started_at.durationTo(std.Io.Clock.now(.real, self.io)).toSeconds(),
                     });
                     bal.arena.deinit();
+                    state_heal.stale_storage_roots.deinit(self.allocator);
                     self.state_heal = null;
                     try self.popSnapRequests();
                     return;
@@ -1469,13 +1474,8 @@ pub const Downloader = struct {
                 try self.eth_db.writeStorage(txn, addr_hash, slot_hash, slot_changes.changes[slot_changes.changes.len - 1].value);
             }
 
-            if (changes.storage_changes.len > 0) {
-                self.requestAccountRange(
-                    self.free_snap_requests.pop() orelse return account_index,
-                    self.state_heal.?.next_pivot.state_root,
-                    addr_hash,
-                    addr_hash,
-                );
+            if (changes.storage_changes.len > 0 and !self.isStorageFetched(addr_hash, null)) {
+                try self.state_heal.?.stale_storage_roots.put(self.allocator, addr_hash, {});
             } else {
                 var updated_account = try self.eth_db.readAccount(txn, addr_hash) orelse types.EmptyAccount;
                 if (changes.balance_changes.len > 0)
@@ -1494,7 +1494,7 @@ pub const Downloader = struct {
         return bal.len;
     }
 
-    fn isStorageFetched(self: *Self, account_hash: [32]u8, slot_hash: [32]u8) bool {
+    fn isStorageFetched(self: *Self, account_hash: [32]u8, slot_hash: ?[32]u8) bool {
         std.debug.assert(self.state_heal != null);
         const state = &self.state.?;
         if (!state.accounts_done) return false;
@@ -1506,10 +1506,28 @@ pub const Downloader = struct {
             const storage_request = request.msg.get_storage_ranges;
             for (storage_request.account_hashes, 0..) |requested_account, index| {
                 if (!std.meta.eql(requested_account, account_hash)) continue;
+                const slot = slot_hash orelse return false;
                 if (index > 0) return false;
-                if (std.mem.order(u8, &slot_hash, &storage_request.starting_hash) != .lt and
-                    std.mem.order(u8, &slot_hash, &storage_request.limit_hash) != .gt) return false;
+                if (std.mem.order(u8, &slot, &storage_request.starting_hash) != .lt and
+                    std.mem.order(u8, &slot, &storage_request.limit_hash) != .gt) return false;
             }
+        }
+        return true;
+    }
+
+    fn fetchStaleStorageRoots(self: *Self) bool {
+        const stale_storage_roots = &self.state_heal.?.stale_storage_roots;
+        const idle = self.inflight_snap_requests.empty() and self.pending_snap_requests.empty() and
+            self.validating_snap_requests.empty();
+        if (idle) {
+            if (stale_storage_roots.count() == 0) return false;
+            log.info("state heal: fetching {} accounts with stale storage roots", .{stale_storage_roots.count()});
+        }
+
+        while (stale_storage_roots.count() > 0) {
+            const req = self.free_snap_requests.pop() orelse break;
+            const account_hash = stale_storage_roots.pop().?.key;
+            self.requestAccountRange(req, self.state.?.pivot.state_root, account_hash, account_hash);
         }
         return true;
     }
