@@ -81,10 +81,6 @@ pub fn verify(allocator: std.mem.Allocator, input: types.StatelessInput) !void {
         stateCapacities(spec.evmSpec(), block.bal.?, input.witness.codes, block.block.transactions, block.block.withdrawals.len, block.block.header.gas_used),
     );
 
-    // processBlock doesn't touch the code of these contracts, assert they exist in the witness here
-    try assertAccountCodeIsInWitness(&committed, zevm.processor.HISTORY_CONTRACT);
-    try assertAccountCodeIsInWitness(&committed, zevm.processor.BEACON_ROOTS_ADDRESS);
-
     try zevm.processor.processBlock(
         allocator,
         zevm.processor.Spec.fromFork(spec.fork, @import("build_options").chain_id),
