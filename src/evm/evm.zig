@@ -99,7 +99,7 @@ pub const Frame = struct {
 
     pub fn enter(self: *Self, comptime cfg: Config) !void {
         return ops.Ops(cfg).entry(
-            self.code.threaded_code[0..].ptr,
+            self.code.entry(),
             self.gas,
             self.stackBottom(),
             self,
@@ -247,6 +247,11 @@ pub const EVM = struct {
     state_gas_reservoir: u64,
     state_gas_used: i64 = 0,
 
+    /// Execution status and charged gas after a successful process() return.
+    /// Transaction-validation and host failures still use the error return.
+    last_tx_error: ?Errors = null,
+    last_tx_gas_used: u64 = 0,
+
     pub fn init(
         gpa: std.mem.Allocator,
         context: *const Context,
@@ -338,7 +343,10 @@ pub const EVM = struct {
     pub fn effectiveGasPrice(msg: *const Message, basefee: u256) u256 {
         const priority = msg.max_priority_fee_per_gas orelse 0;
         return if (msg.max_fee_per_gas) |mfpg|
-            @min(mfpg, basefee + priority)
+            // The mathematical sum may exceed u256, but the
+            // effective price is bounded by maxFeePerGas. Saturation is exact
+            // after min() and lets invalid extreme fees reach validation.
+            @min(mfpg, basefee +| priority)
         else
             msg.gas_price orelse 0;
     }
@@ -366,6 +374,8 @@ pub const EVM = struct {
     }
 
     pub fn process(self: *Self, comptime cfg: Config, msg: *const Message, state: *State) !struct { u64, u64 } {
+        self.last_tx_error = null;
+        self.last_tx_gas_used = 0;
         self.msg = msg;
         self.effective_gas_price = effectiveGasPrice(msg, self.context.basefee);
 
@@ -516,8 +526,10 @@ pub const EVM = struct {
                 state_gas_spillover += create_spillover;
             } else |_| {
                 remaining_gas = 0;
+                self.last_tx_error = Errors.OutOfGas;
             }
         }
+        if (err) |e| self.last_tx_error = e;
         if (err) |e| {
             remaining_gas, state_gas_spillover = self.creditStateGasRefund(remaining_gas, state_gas_spillover, create_state_gas);
             if (e != Errors.Reverted) remaining_gas = 0;
@@ -541,6 +553,7 @@ pub const EVM = struct {
         // EIP-1559: coinbase receives only the tip; the base fee is burned
         const tip = self.effective_gas_price - self.context.basefee;
         const gas_used = msg.gas_limit - remaining_gas;
+        self.last_tx_gas_used = gas_used;
         if (tip > 0) {
             (try state.accounts.update(self.context.coinbase)).balance += @as(u256, @intCast(gas_used)) * tip;
         } else {
@@ -694,6 +707,7 @@ pub const EVM = struct {
             defer frame.memory.deinit();
 
             frame.enter(cfg) catch |frameErr| {
+                if (isHostError(frameErr)) return frameErr;
                 err = frameErr;
             };
             remaining_gas = frame.gas;
@@ -701,6 +715,7 @@ pub const EVM = struct {
         }
 
         if (err != null) {
+            if (isHostError(err.?)) return err.?;
             state.revert(state_snap);
             self.revert(evm_snap);
             remaining_gas += state_gas_spillover;
@@ -803,6 +818,7 @@ pub const EVM = struct {
         // Use write() (journaled) so the caller's revert can undo this entry if needed.
         _ = try self.created_accounts.write(new_addr, .Created);
         frame.enter(cfg) catch |err| {
+            if (isHostError(err)) return err;
             state.revert(state_snap);
             self.revert(evm_snap);
             frame.gas += frame.state_gas_spillover;
@@ -1015,6 +1031,16 @@ pub const EVM = struct {
     }
 };
 
+// Missing host data and allocation failures must abort simulation,
+// including inside nested CALL/CREATE frames. They are not EVM exceptions.
+fn isHostError(err: Errors) bool {
+    if (err == error.OutOfMemory) return true;
+    inline for (@typeInfo(@import("committed_state.zig").Errors).error_set.error_names.?) |name| {
+        if (err == @field(anyerror, name)) return true;
+    }
+    return false;
+}
+
 // EIP-7702: resolve delegation designator one level deep. Pure lookup with no gas side effects.
 fn resolveCode(code_addr: u160, state: *State, comptime cfg: Config) !?Bytecode {
     const code_hash = (try state.accounts.read(code_addr)).code_hash;
@@ -1159,4 +1185,191 @@ pub fn computeLogsHash(allocator: std.mem.Allocator, logs: *const std.DoublyLink
     try rlp.serialize([]Log, allocator, log_list, &encoded);
 
     return keccak256(encoded.items);
+}
+
+test "effective gas price remains bounded when base fee plus priority overflows" {
+    var msg: Message = .{ .caller = 0, .nonce = 0, .target = 0, .gas_limit = 21_000, .calldata = &.{}, .value = 0 };
+    msg.max_fee_per_gas = 100;
+    msg.max_priority_fee_per_gas = std.math.maxInt(u256);
+    try std.testing.expectEqual(100, EVM.effectiveGasPrice(&msg, 1));
+    msg.max_fee_per_gas = std.math.maxInt(u256);
+    try std.testing.expectEqual(std.math.maxInt(u256), EVM.effectiveGasPrice(&msg, 1));
+    msg.max_priority_fee_per_gas = 2;
+    try std.testing.expectEqual(3, EVM.effectiveGasPrice(&msg, 1));
+    msg.max_fee_per_gas = null;
+    msg.gas_price = 7;
+    try std.testing.expectEqual(7, EVM.effectiveGasPrice(&msg, 1));
+}
+
+test "nested CALL and CREATE propagate missing host code instead of an EVM failure" {
+    const cfg: Config = .{ .fork = comptime Spec.fromFork(.Amsterdam) };
+    // CALL address 0x1234 with all available gas, then STOP.
+    const call_code = [_]u8{ 0x5f, 0x5f, 0x5f, 0x5f, 0x5f, 0x61, 0x12, 0x34, 0x5a, 0xf1, 0x00 };
+    inline for (.{ false, true }) |create| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        const committed: @import("committed_state.zig").CommittedState = .{};
+        var state = try State.init(a, &committed, cfg.fork.stateCapacities(1_000_000));
+        var context = std.mem.zeroes(Context);
+        context.gas_limit = 1_000_000;
+        var vm = try EVM.init(a, &context, cfg.fork.evmCapacities());
+        // The account exists but its nonempty bytecode is unavailable to the host.
+        var missing_code = types.EmptyAccount;
+        missing_code.code_hash = @splat(0xaa);
+        _ = try state.accounts.write(0x1234, missing_code);
+        const hash = keccak256(&call_code);
+        try state.deploy_code(hash, &call_code, cfg);
+        var caller_contract = types.EmptyAccount;
+        caller_contract.code_hash = hash;
+        _ = try state.accounts.write(0x2345, caller_contract);
+        const calldata = try a.dupe(u8, &call_code);
+        const msg: Message = .{ .caller = 0x3456, .nonce = 0, .target = if (create) null else 0x2345, .gas_limit = 1_000_000, .gas_price = 0, .calldata = if (create) calldata else &.{}, .value = 0 };
+        try std.testing.expectError(error.NotFound, vm.process(cfg, &msg, &state));
+    }
+}
+
+test "transaction status distinguishes valid reverts and resets for subsequent transactions" {
+    const cfg: Config = .{ .fork = comptime Spec.fromFork(.Amsterdam) };
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const committed: @import("committed_state.zig").CommittedState = .{};
+    var state = try State.init(a, &committed, cfg.fork.stateCapacities(1_000_000));
+    var context = std.mem.zeroes(Context);
+    context.gas_limit = 1_000_000;
+    var vm = try EVM.init(a, &context, cfg.fork.evmCapacities());
+    const code = [_]u8{ 0x5f, 0x5f, 0xfd };
+    const hash = keccak256(&code);
+    try state.deploy_code(hash, &code, cfg);
+    var contract = types.EmptyAccount;
+    contract.code_hash = hash;
+    _ = try state.accounts.write(0x1234, contract);
+    var msg: Message = .{ .caller = 0x3456, .nonce = 0, .target = 0x1234, .gas_limit = 1_000_000, .gas_price = 0, .calldata = &.{}, .value = 0 };
+    _ = try vm.process(cfg, &msg, &state);
+    try std.testing.expectEqual(error.Reverted, vm.last_tx_error.?);
+    try std.testing.expect(vm.last_tx_gas_used > 0 and vm.last_tx_gas_used < msg.gas_limit);
+    try std.testing.expectEqual(1, (try state.accounts.read(msg.caller)).nonce);
+    vm.reset();
+    msg.nonce = 1;
+    msg.target = 0x5678;
+    _ = try vm.process(cfg, &msg, &state);
+    try std.testing.expectEqual(null, vm.last_tx_error);
+    vm.reset();
+    try std.testing.expectError(error.NonceMismatch, vm.process(cfg, &msg, &state));
+    try std.testing.expectEqual(0, vm.last_tx_gas_used);
+}
+
+const LazyCodeRun = struct { err: ?Errors, slots: [2]u256 };
+
+// Runs `code` as the only contract with `calldata` and returns the execution
+// status plus storage slots 0 and 1, exercising the paged threaded decoder end
+// to end (sequential page crossing, far and backward jumps).
+fn runLazyCode(a: std.mem.Allocator, comptime cfg: Config, code: []const u8, calldata: []u8) !LazyCodeRun {
+    const committed: @import("committed_state.zig").CommittedState = .{};
+    var state = try State.init(a, &committed, cfg.fork.stateCapacities(1_000_000));
+    var context = std.mem.zeroes(Context);
+    context.gas_limit = 1_000_000;
+    var vm = try EVM.init(a, &context, cfg.fork.evmCapacities());
+    const hash = keccak256(code);
+    try state.deploy_code(hash, code, cfg);
+    var contract = types.EmptyAccount;
+    contract.code_hash = hash;
+    _ = try state.accounts.write(0x1234, contract);
+    const msg: Message = .{ .caller = 0x3456, .nonce = 0, .target = 0x1234, .gas_limit = 1_000_000, .gas_price = 0, .calldata = calldata, .value = 0 };
+    _ = try vm.process(cfg, &msg, &state);
+    var slots: [2]u256 = undefined;
+    for (&slots, 0..) |*slot, i| slot.* = try state.contract_state.read(.{ .address = 0x1234, .slot = i });
+    return .{ .err = vm.last_tx_error, .slots = slots };
+}
+
+// Three-page contract that immediately jumps to `tail` at the last page. The
+// filler is PUSH32 words whose data bytes all look like JUMPDEST.
+fn farJumpCode(a: std.mem.Allocator, tail: []const u8) ![]u8 {
+    const tail_pc = 2 * Bytecode.page_size + 16;
+    const code = try a.alloc(u8, 3 * Bytecode.page_size);
+    @memcpy(code[0..4], &[_]u8{ 0x61, tail_pc >> 8, tail_pc & 0xff, 0x56 });
+    var pc: usize = 4;
+    while (pc + 33 <= tail_pc) : (pc += 33) {
+        code[pc] = 0x7f;
+        @memset(code[pc + 1 .. pc + 33], 0x5b);
+    }
+    @memset(code[pc..], 0x00);
+    @memcpy(code[tail_pc .. tail_pc + tail.len], tail);
+    return code;
+}
+
+test "sequential execution crosses pages through PUSH32 data and keeps the program counter" {
+    const cfg: Config = .{ .fork = comptime Spec.fromFork(.Amsterdam) };
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // 125 x (PC, POP), then at 250 a PUSH32 whose data spans the page boundary,
+    // then SSTORE it to slot 0 and the PC after it to slot 1.
+    var code: [290]u8 = undefined;
+    var pc: usize = 0;
+    while (pc < 250) : (pc += 2) @memcpy(code[pc .. pc + 2], &[_]u8{ 0x58, 0x50 });
+    code[250] = 0x7f;
+    for (code[251..283], 0..) |*b, i| b.* = @intCast(0x5b + i);
+    @memcpy(code[283..290], &[_]u8{ 0x5f, 0x55, 0x58, 0x60, 0x01, 0x55, 0x00 });
+    var no_calldata: [0]u8 = .{};
+    const result = try runLazyCode(arena.allocator(), cfg, &code, &no_calldata);
+    try std.testing.expectEqual(null, result.err);
+    try std.testing.expectEqual(std.mem.readInt(u256, code[251..283], .big), result.slots[0]);
+    try std.testing.expectEqual(285, result.slots[1]);
+}
+
+test "far jump into the last page and backward jump to the first page store absolute PCs" {
+    const cfg: Config = .{ .fork = comptime Spec.fromFork(.Amsterdam) };
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const tail_pc = 2 * Bytecode.page_size + 16;
+    // Tail: store PC in slot 0, then jump back to pc 4 which stores PC in slot 1.
+    const code = try farJumpCode(arena.allocator(), &.{ 0x5b, 0x58, 0x5f, 0x55, 0x60, 0x04, 0x56 });
+    @memcpy(code[4..10], &[_]u8{ 0x5b, 0x58, 0x60, 0x01, 0x55, 0x00 });
+    var no_calldata: [0]u8 = .{};
+    const result = try runLazyCode(arena.allocator(), cfg, code, &no_calldata);
+    try std.testing.expectEqual(null, result.err);
+    try std.testing.expectEqual(tail_pc + 1, result.slots[0]);
+    try std.testing.expectEqual(5, result.slots[1]);
+}
+
+test "JUMPDEST inside PUSH data crossing a page is rejected and the real one after it accepted" {
+    const cfg: Config = .{ .fork = comptime Spec.fromFork(.Amsterdam) };
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // PUSH0 CALLDATALOAD PUSH2 <target> JUMPI, JUMPDEST filler, PUSH32 of JUMPDEST
+    // bytes spanning the page boundary, then a real JUMPDEST storing its PC.
+    var code: [291]u8 = undefined;
+    @memcpy(code[0..6], &[_]u8{ 0x5f, 0x35, 0x61, 0x01, 0x00, 0x57 });
+    @memset(code[6..253], 0x5b);
+    code[253] = 0x7f;
+    @memset(code[254..286], 0x5b);
+    @memcpy(code[286..291], &[_]u8{ 0x5b, 0x58, 0x5f, 0x55, 0x00 });
+    var calldata: [32]u8 = @splat(0);
+    calldata[31] = 1;
+    const rejected = try runLazyCode(arena.allocator(), cfg, &code, &calldata);
+    try std.testing.expectEqual(Errors.InvalidJumpDest, rejected.err.?);
+    try std.testing.expectEqual(0, rejected.slots[0]);
+    code[3] = 0x01;
+    code[4] = 0x1e;
+    const accepted = try runLazyCode(arena.allocator(), cfg, &code, &calldata);
+    try std.testing.expectEqual(null, accepted.err);
+    try std.testing.expectEqual(287, accepted.slots[0]);
+}
+
+test "Amsterdam DUPN immediate on the next page is consumed during execution" {
+    const cfg: Config = .{ .fork = comptime Spec.fromFork(.Amsterdam) };
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // 109 JUMPDESTs, PUSH1 7, 144 PUSH0, DUPN at 255 with immediate 0x00 at 256
+    // (n = 145), then SSTORE the duplicated bottom value into slot 0.
+    var code: [260]u8 = undefined;
+    @memset(code[0..109], 0x5b);
+    @memcpy(code[109..111], &[_]u8{ 0x60, 0x07 });
+    @memset(code[111..255], 0x5f);
+    @memcpy(code[255..260], &[_]u8{ 0xe6, 0x00, 0x5f, 0x55, 0x00 });
+    var no_calldata: [0]u8 = .{};
+    const result = try runLazyCode(arena.allocator(), cfg, &code, &no_calldata);
+    try std.testing.expectEqual(null, result.err);
+    try std.testing.expectEqual(7, result.slots[0]);
 }

@@ -228,6 +228,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
         .use_llvm = true,
+        .filters = b.option([]const []const u8, "test-filter", "Only run unit tests whose name contains this text (repeatable)") orelse &.{},
     });
     unit_tests.root_module.link_libcpp = true;
     const native_opts = b.addOptions();
@@ -288,6 +289,22 @@ pub fn build(b: *std.Build) void {
     bench_opts.addOption(Platform, "platform", .native);
     bench.root_module.addOptions("build_options", bench_opts);
     bench_step.dependOn(&b.addInstallArtifact(bench, .{}).step);
+
+    // Instruction boundary scanning micro-benchmark (opt-in)
+    const bytecode_bench_step = b.step("bench-bytecode", "Build the Bytecode boundary scanning micro-benchmark");
+    const bytecode_bench = b.addExecutable(.{
+        .name = "zevm-bytecode-bench",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/bytecode_bench.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+        .use_llvm = true,
+    });
+    bytecode_bench.root_module.link_libcpp = true;
+    linkDeps(bytecode_bench.root_module, deps, .native);
+    bytecode_bench.root_module.addOptions("build_options", bench_opts);
+    bytecode_bench_step.dependOn(&b.addInstallArtifact(bytecode_bench, .{}).step);
 
     const test_zevm_mod = createZevmModule(b, target, optimize, b.createModule(.{
         .root_source_file = b.path("test/committed_state.zig"),

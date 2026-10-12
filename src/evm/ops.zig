@@ -298,9 +298,12 @@ pub fn Ops(comptime cfg: Config) type {
             return next(next_ip, gas, fork.constantGas(.JUMPDEST), stack_head, frame);
         }
 
+        // Allocation failure while activating the destination page is a host
+        // error and propagates as such; only a non-JUMPDEST target is an EVM
+        // InvalidJumpDest.
         pub fn jump(_: InstructionPointer, gas: u64, stack_head: StackPtr, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 1, 0);
-            const dest = frame.code.isValidJumpDest(args[0]) orelse return evm.Errors.InvalidJumpDest;
+            const dest = (try frame.code.isValidJumpDest(args[0], cfg)) orelse return evm.Errors.InvalidJumpDest;
             return next(dest + 1, gas, fork.constantGas(.JUMP) + fork.constantGas(.JUMPDEST), new_stack_head, frame);
         }
 
@@ -310,8 +313,25 @@ pub fn Ops(comptime cfg: Config) type {
                 return next(next_ip, gas, fork.constantGas(.JUMPI), new_stack_head, frame);
             }
 
-            const dest = frame.code.isValidJumpDest(args[1]) orelse return evm.Errors.InvalidJumpDest;
+            const dest = (try frame.code.isValidJumpDest(args[1], cfg)) orelse return evm.Errors.InvalidJumpDest;
             return next(dest + 1, gas, fork.constantGas(.JUMPI) + fork.constantGas(.JUMPDEST), new_stack_head, frame);
+        }
+
+        // Reached when sequential execution leaves the current threaded page.
+        // Tail slots of every non-final page hold this handler, so `ip - 1` is
+        // the slot that was dereferenced: at most 32 PUSH data bytes past the
+        // page's last position, still inside the same allocation. The absolute
+        // program counter is recovered from this frame's page base, the next
+        // page is activated (allocation failure is a host error), and
+        // execution resumes there with no extra gas charge. `next` already
+        // checked gas and traced the crossing instruction before dispatching
+        // here, so the real handler is tail-called directly rather than through
+        // `next` again.
+        pub fn crossPage(ip: InstructionPointer, gas: u64, stack_head: StackPtr, frame: *evm.Frame) evm.Errors!void {
+            const crossing_pc = frame.code.programCounter(ip - 1);
+            const next_ip = try frame.code.activate(@intCast(crossing_pc), cfg);
+            const next_op: Fn = @ptrCast(next_ip[0].?);
+            return @call(.always_tail, next_op, .{ next_ip + 1, gas, stack_head, frame });
         }
 
         pub fn opGas(next_ip: InstructionPointer, gas: u64, stack_head: StackPtr, frame: *evm.Frame) evm.Errors!void {
@@ -329,7 +349,7 @@ pub fn Ops(comptime cfg: Config) type {
                 pub fn push(next_ip: InstructionPointer, gas: u64, stack_head: StackPtr, frame: *evm.Frame) evm.Errors!void {
                     const new_stack_head, const slot = try frame.stackReserve(stack_head);
                     frame.code.readBytesToValue(next_ip, n, slot);
-                    return next(next_ip + n, gas, fork.constantGas(@enumFromInt(@intFromEnum(Opcode.PUSH0) + n)), new_stack_head, frame);
+                    return next(next_ip + n, gas, fork.constantGas(@fromBackingInt(@intCast(@backingInt(Opcode.PUSH0) + n))), new_stack_head, frame);
                 }
             }.push;
         }
@@ -339,7 +359,7 @@ pub fn Ops(comptime cfg: Config) type {
                 pub fn dup(next_ip: InstructionPointer, gas: u64, stack_head: StackPtr, frame: *evm.Frame) evm.Errors!void {
                     var new_stack_head, const s = try frame.stackPop(stack_head, n, n);
                     new_stack_head = try frame.stackPush(new_stack_head, s[0]);
-                    return next(next_ip, gas, fork.constantGas(@enumFromInt(Opcode.DUP1.byte() + n - 1)), new_stack_head, frame);
+                    return next(next_ip, gas, fork.constantGas(@fromBackingInt(@intCast(Opcode.DUP1.byte() + n - 1))), new_stack_head, frame);
                 }
             }.dup;
         }
@@ -351,7 +371,7 @@ pub fn Ops(comptime cfg: Config) type {
                     const tmp = s[0];
                     s[0] = s[n];
                     s[n] = tmp;
-                    return next(next_ip, gas, fork.constantGas(@enumFromInt(Opcode.SWAP1.byte() + n - 1)), new_stack_head, frame);
+                    return next(next_ip, gas, fork.constantGas(@fromBackingInt(@intCast(Opcode.SWAP1.byte() + n - 1))), new_stack_head, frame);
                 }
             }.swap;
         }

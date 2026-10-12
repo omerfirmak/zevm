@@ -146,6 +146,7 @@ fn runStateTestFile(io: std.Io, allocator: std.mem.Allocator, dir: std.Io.Dir, p
 
 fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []const u8, comptime trace: bool, comptime dump_diff: bool) !void {
     const fork_enum = utils.forkFromString(fork);
+    const borrow_analysis = std.c.getenv("BYTECODE_ANALYSIS") != null;
     const post_entries = test_case.post.map.get(fork).?;
 
     const blob_schedule = if (test_case.config.blobSchedule) |bs| bs.map.get(fork) else null;
@@ -158,6 +159,10 @@ fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []con
 
         var committed = try utils.buildCommittedState(gpa, test_case.pre);
         defer committed.deinit();
+        if (borrow_analysis) switch (fork_enum) {
+            inline .Osaka, .BPO1, .BPO2, .Amsterdam => |f| try committed.prepareCodeAnalysis(Spec.fromFork(f)),
+            else => unreachable,
+        };
 
         const arena_allocator = arena.allocator();
 
@@ -193,6 +198,7 @@ fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []con
                 inline .Osaka, .BPO1, .BPO2, .Amsterdam => |f| (comptime Spec.fromFork(f)).stateCapacities(@min(30_000_000, gas_limit)),
                 else => unreachable,
             });
+            state.borrow_committed_code = borrow_analysis;
             vm = try evm.EVM.init(arena_allocator, &context, switch (fork_enum) {
                 inline .Osaka, .BPO1, .BPO2, .Amsterdam => |f| (comptime Spec.fromFork(f)).evmCapacities(),
                 else => unreachable,

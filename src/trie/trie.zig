@@ -210,7 +210,7 @@ pub const Trie = struct {
                     try self.insert(branch.children[idx].?, key[1..], path.append(key[0]), value, key_buf, keys, values);
                     if (branch.children[idx].?.* == .empty) {
                         branch.children[idx] = null;
-                        collapseBranch(node, branch);
+                        try collapseBranch(node, branch);
                     }
                 }
                 branch.hash = null;
@@ -349,7 +349,7 @@ pub const Trie = struct {
     }
 
     // Collapse a branch that has dropped to 0 or 1 live children after a deletion.
-    fn collapseBranch(node: *Node, branch: *Node.Branch) void {
+    fn collapseBranch(node: *Node, branch: *Node.Branch) !void {
         var count: usize = 0;
         var remaining_nibble: u8 = 0;
         var remaining_child: *Node = undefined;
@@ -381,10 +381,13 @@ pub const Trie = struct {
                 @memcpy(new_key[1..][0..ext.key_len], ext.key[0..ext.key_len]);
                 node.* = Node.Extension.init(new_key[0 .. ext.key_len + 1], ext.child);
             },
-            .branch, .hashed => {
+            .branch => {
                 const new_key: [1]u8 = .{remaining_nibble};
                 node.* = Node.Extension.init(&new_key, remaining_child);
             },
+            // A hash alone cannot tell whether a sibling's path
+            // must merge with this branch's final nibble. Never guess a root.
+            .hashed => return error.IncompleteTrieProof,
             .empty => unreachable,
         }
     }
@@ -817,4 +820,43 @@ fn compactToHex(compact: []const u8, out_buf: *[65]u8) struct { is_leaf: bool, n
         i += 2;
     }
     return .{ .is_leaf = is_leaf, .nibbles = out_buf[0..i] };
+}
+
+test "deleting a leaf requires its remaining sibling preimage" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var leaf_path: [32]u8 = @splat(0);
+    leaf_path[0] = 0x30;
+    const value_a: [32]u8 = @splat(0xaa);
+    const value_b: [32]u8 = @splat(0xbb);
+    var encoded_a = std.array_list.Managed(u8).init(a);
+    var encoded_b = std.array_list.Managed(u8).init(a);
+    try rlp.serialize([2][]const u8, a, .{ &leaf_path, &value_a }, &encoded_a);
+    try rlp.serialize([2][]const u8, a, .{ &leaf_path, &value_b }, &encoded_b);
+    const hash_a = keccak256(encoded_a.items);
+    const hash_b = keccak256(encoded_b.items);
+    var branch: [17][]const u8 = @splat(&.{});
+    branch[0] = &hash_a;
+    branch[1] = &hash_b;
+    var encoded_branch = std.array_list.Managed(u8).init(a);
+    try rlp.serialize([17][]const u8, a, branch, &encoded_branch);
+    const root = keccak256(encoded_branch.items);
+    var nodes: NodesHashMap = .empty;
+    try nodes.put(a, root, encoded_branch.items);
+    try nodes.put(a, hash_a, encoded_a.items);
+    var incomplete = try loadFromNodesMap(a, root, &nodes);
+    const key_a: [32]u8 = @splat(0);
+    var values = [_][]const u8{&.{}};
+    try std.testing.expectError(error.IncompleteTrieProof, incomplete.update(&.{key_a}, &values));
+
+    try nodes.put(a, hash_b, encoded_b.items);
+    var complete = try loadFromNodesMap(a, root, &nodes);
+    try complete.update(&.{key_a}, &values);
+    var remaining_path: [33]u8 = @splat(0);
+    remaining_path[0] = 0x20;
+    remaining_path[1] = 0x10;
+    var expected = std.array_list.Managed(u8).init(a);
+    try rlp.serialize([2][]const u8, a, .{ &remaining_path, &value_b }, &expected);
+    try std.testing.expectEqualSlices(u8, &keccak256(expected.items), &try complete.rootHash());
 }

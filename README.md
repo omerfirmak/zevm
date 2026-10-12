@@ -33,6 +33,15 @@ Run a single fixture file:
 zig build state-tests -Dstate-test=/path/to/fixture.json
 ```
 
+To exercise the optional host-owned instruction analysis, set
+`BYTECODE_ANALYSIS=1`. The state-test provider prepares immutable analysis for
+the fixture's committed code and lends it to the EVM; deployed code keeps its
+normal ownership. State-root, logs and expected-exception checks are unchanged.
+
+```sh
+BYTECODE_ANALYSIS=1 zig build state-tests -Dfork=Amsterdam -Dstate-test=/path/to/fixture.json
+```
+
 ## Usage
 
 The entry point for executing a transaction is `EVM.init` followed by `EVM.process`. You need to provide a `Message` (transaction parameters), a `Context` (block parameters), and a `State` (account/storage world state).
