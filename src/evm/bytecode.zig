@@ -31,14 +31,9 @@ pub fn init(gpa: std.mem.Allocator, bytes: []const u8, comptime cfg: Config) !By
 
         switch (opcode) {
             Opcode.PUSH1.byte()...Opcode.PUSH32.byte() => {
-                const data_len = opcode - Opcode.PUSH1.byte() + 1;
-                const data_end = pc + data_len + 1;
-                // Fill positions of PUSH data bytes with null function pointers
-                for (threaded_code[pc + 1 .. data_end]) |*slot| {
-                    slot.* = null;
-                }
+                threaded_code[pc + 1 ..][0..32].* = @splat(null);
                 // land on the last data byte; loop increment moves to next opcode
-                pc = data_end - 1;
+                pc += opcode - Opcode.PUSH1.byte() + 1;
             },
             inline Opcode.DUPN.byte(), Opcode.SWAPN.byte(), Opcode.EXCHANGE.byte() => |op| if (cfg.fork.isEnabled(.Amsterdam)) {
                 const inv_imm_low = if (op == Opcode.EXCHANGE.byte()) 0x52 else 0x5b;
