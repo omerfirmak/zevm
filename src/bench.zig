@@ -150,7 +150,8 @@ fn runBenchmark(io: std.Io, allocator: std.mem.Allocator, bench_def: BenchmarkDe
 
     for (0..iters + warmup) |i| {
         _ = vm_arena.reset(.retain_capacity);
-        var vm = try evm.EVM.init(vm_arena.allocator(), &context, bench_fork.fork.evmCapacities());
+        var vm: evm.EVM = undefined;
+        try vm.init(vm_arena.allocator(), &context, bench_fork.fork.evmCapacities());
         const start = std.Io.Timestamp.now(io, .awake);
         const result = vm.process(bench_fork, &msg, &state) catch |err| {
             std.debug.print("error at iter {d}: {}\n", .{ i, err });

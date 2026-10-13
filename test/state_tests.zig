@@ -193,7 +193,7 @@ fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []con
                 inline .Osaka, .BPO1, .BPO2, .Amsterdam => |f| (comptime Spec.fromFork(f)).stateCapacities(@min(30_000_000, gas_limit)),
                 else => unreachable,
             });
-            vm = try evm.EVM.init(arena_allocator, &context, switch (fork_enum) {
+            try vm.init(arena_allocator, &context, switch (fork_enum) {
                 inline .Osaka, .BPO1, .BPO2, .Amsterdam => |f| (comptime Spec.fromFork(f)).evmCapacities(),
                 else => unreachable,
             });

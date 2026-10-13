@@ -89,8 +89,6 @@ pub const Frame = struct {
     value: u256,
     is_static: bool,
     depth: usize,
-    // caller-provided slice where sub-call return data is written
-    return_buffer: []u8,
 
     // vm state
     gas: u64,
@@ -225,7 +223,7 @@ pub const EVM = struct {
     context: *const Context,
 
     // LOG handling
-    logs_fba: std.heap.FixedBufferAllocator,
+    logs_allocator: std.heap.BufferFirstAllocator,
     logs: std.DoublyLinkedList,
     num_logs: usize,
 
@@ -249,28 +247,33 @@ pub const EVM = struct {
     state_gas_used: i64 = 0,
 
     pub fn init(
+        self: *Self,
         gpa: std.mem.Allocator,
         context: *const Context,
         caps: Spec.EvmCapacities,
-    ) !Self {
-        var rounded_allocator = RoundedAllocator{ .backing = gpa };
-        const allocator = rounded_allocator.allocator();
+    ) !void {
+        self.rounded_allocator = .{ .backing = gpa };
+        const allocator = self.rounded_allocator.allocator();
         var pre_state: storage.SlotKeyedMap(u256) = .empty;
         try pre_state.ensureTotalCapacity(allocator, caps.pre_state);
         const logs_buffer = try allocator.alloc(u8, caps.logs_buf);
-        return Self{
-            .rounded_allocator = rounded_allocator,
+        const return_buffer = try allocator.alloc(u8, caps.return_buf);
+        const warm_accounts = try storage.AccountsAccessList.init(allocator, caps.warm_accounts, caps.warm_accounts, {});
+        const warm_slots = try storage.SlotsAccessList.init(allocator, caps.warm_slots, caps.warm_slots, {});
+        const created_accounts = try storage.CreatedAccounts.init(allocator, caps.created, caps.created_journal, {});
+        self.* = .{
+            .rounded_allocator = .{ .backing = gpa },
             .msg = undefined,
             .context = context,
-            .return_buffer = try allocator.alloc(u8, caps.return_buf),
+            .return_buffer = return_buffer,
             .return_data_size = 0,
             .pre_state = pre_state,
-            .warm_accounts = try storage.AccountsAccessList.init(allocator, caps.warm_accounts, caps.warm_accounts, {}),
-            .warm_slots = try storage.SlotsAccessList.init(allocator, caps.warm_slots, caps.warm_slots, {}),
+            .warm_accounts = warm_accounts,
+            .warm_slots = warm_slots,
             .gas_refund = 0,
             .effective_gas_price = undefined,
-            .created_accounts = try storage.CreatedAccounts.init(allocator, caps.created, caps.created_journal, {}),
-            .logs_fba = std.heap.FixedBufferAllocator.init(logs_buffer),
+            .created_accounts = created_accounts,
+            .logs_allocator = .init(logs_buffer, allocator),
             .logs = .{},
             .num_logs = 0,
             .state_gas_reservoir = 0,
@@ -504,7 +507,6 @@ pub const EVM = struct {
                     msg.calldata,
                     msg.value,
                     0,
-                    &[_]u8{},
                     false,
                     false,
                 );
@@ -564,7 +566,7 @@ pub const EVM = struct {
             _ = try state.accounts.read(self.context.coinbase); // BAL forces us to do that
         }
 
-        defer self.clearSelfdestructed(state, cfg);
+        try self.clearSelfdestructed(state, cfg);
         if (cfg.fork.isEnabled(.Amsterdam)) {
             const state_gas: u64 = @intCast(@max(@as(i64, 0), self.state_gas_used));
             const regular_gas = gas_used_before_refund - state_gas;
@@ -656,7 +658,6 @@ pub const EVM = struct {
         calldata: []u8,
         value: u256,
         depth: usize,
-        return_buffer: []u8,
         skip_value_transfer: bool,
         is_static: bool,
     ) !struct { u64, u64, ?Errors } {
@@ -679,12 +680,7 @@ pub const EVM = struct {
         }
 
         if (cfg.fork.getPrecompile(code_addr)) |precompile_handler| {
-            remaining_gas, err = self.callPrecompile(
-                precompile_handler,
-                remaining_gas,
-                calldata,
-                return_buffer,
-            );
+            remaining_gas, err = try self.callPrecompile(precompile_handler, remaining_gas, calldata);
         } else if (try resolveCode(code_addr, state, cfg)) |code| {
             const allocator = self.rounded_allocator.allocator();
             var frame = try allocator.create(Frame);
@@ -700,7 +696,6 @@ pub const EVM = struct {
                 .calldata = calldata,
                 .value = value,
                 .is_static = is_static,
-                .return_buffer = return_buffer,
 
                 .gas = remaining_gas,
                 .state_gas_spillover = 0,
@@ -748,14 +743,10 @@ pub const EVM = struct {
         handler: precompile.Handler,
         initial_gas: u64,
         calldata: []u8,
-        return_buffer: []u8,
-    ) struct { u64, ?Errors } {
-        const result = handler(self.rounded_allocator.allocator(), initial_gas, calldata, self.return_buffer);
+    ) !struct { u64, ?Errors } {
+        const output = try self.returnBuffer(@max(calldata.len, precompile.max_output_len));
+        const result = handler(self.rounded_allocator.allocator(), initial_gas, calldata, output);
         self.return_data_size = result.return_size;
-        if (result.return_size > 0) {
-            const copy_len = @min(result.return_size, return_buffer.len);
-            @memcpy(return_buffer[0..copy_len], self.return_buffer[0..copy_len]);
-        }
         return .{ result.remaining_gas, result.err };
     }
 
@@ -809,7 +800,6 @@ pub const EVM = struct {
             .calldata = &[_]u8{},
             .value = value,
             .is_static = false,
-            .return_buffer = &[_]u8{}, // RETURN will write to self.return_buffer anyways
             .gas = initial_gas,
             .state_gas_spillover = 0,
             .stack = undefined,
@@ -866,10 +856,20 @@ pub const EVM = struct {
         return .{ frame.gas, frame.state_gas_spillover, new_addr, @as(?Errors, null) };
     }
 
+    pub fn returnBuffer(self: *Self, len: usize) ![]u8 {
+        if (len > self.return_buffer.len) {
+            const allocator = self.rounded_allocator.allocator();
+            const new_len = @max(len, self.return_buffer.len * 2);
+            allocator.free(self.return_buffer);
+            self.return_buffer = try allocator.alloc(u8, new_len);
+        }
+        return self.return_buffer;
+    }
+
     pub const LogNode = struct { log: Log, node: std.DoublyLinkedList.Node };
 
     pub fn pushLog(self: *Self, address: u160, topics: []const u256, data: []const u8) !void {
-        const allocator = self.logs_fba.allocator();
+        const allocator = self.logs_allocator.allocator();
         const ln = try allocator.create(LogNode);
         ln.* = LogNode{ .log = .{
             .address = address,
@@ -881,7 +881,7 @@ pub const EVM = struct {
     }
 
     pub fn popLog(self: *Self) void {
-        const allocator = self.logs_fba.allocator();
+        const allocator = self.logs_allocator.allocator();
         if (self.logs.pop()) |node| {
             const ln: *LogNode = @alignCast(@fieldParentPtr("node", node));
             // make sure to free in the reverse of the order they were allocated
@@ -1014,13 +1014,13 @@ pub const EVM = struct {
         return false;
     }
 
-    fn clearSelfdestructed(self: *Self, state: *State, comptime cfg: Config) void {
+    fn clearSelfdestructed(self: *Self, state: *State, comptime cfg: Config) !void {
         var any = false;
         var it = self.created_accounts.dirtiesIterator();
         while (it.next()) |entry| {
             if (entry[0].value_ptr.* != .Selfdestructed) continue;
             any = true;
-            state.clearAccount(entry[0].key_ptr.*, cfg);
+            try state.clearAccount(entry[0].key_ptr.*, cfg);
         }
         if (!any) return;
 
@@ -1213,7 +1213,8 @@ test "nested CALL and CREATE propagate missing host code instead of an EVM failu
         var state = try State.init(a, &committed, cfg.fork.stateCapacities(1_000_000));
         var context = std.mem.zeroes(Context);
         context.gas_limit = 1_000_000;
-        var vm = try EVM.init(a, &context, cfg.fork.evmCapacities());
+        var vm: EVM = undefined;
+        try vm.init(a, &context, cfg.fork.evmCapacities());
         // The account exists but its nonempty bytecode is unavailable to the host.
         var missing_code = types.EmptyAccount;
         missing_code.code_hash = @splat(0xaa);
@@ -1238,7 +1239,8 @@ test "transaction status distinguishes valid reverts and resets for subsequent t
     var state = try State.init(a, &committed, cfg.fork.stateCapacities(1_000_000));
     var context = std.mem.zeroes(Context);
     context.gas_limit = 1_000_000;
-    var vm = try EVM.init(a, &context, cfg.fork.evmCapacities());
+    var vm: EVM = undefined;
+    try vm.init(a, &context, cfg.fork.evmCapacities());
     const code = [_]u8{ 0x5f, 0x5f, 0xfd };
     const hash = keccak256(&code);
     try state.deploy_code(hash, &code, cfg);

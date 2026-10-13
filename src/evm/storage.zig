@@ -50,6 +50,7 @@ pub fn JournaledStorage(comptime Key: type, comptime Value: type, comptime Map: 
         const Self = @This();
 
         const zero_value = std.mem.zeroes(Value);
+        gpa: std.mem.Allocator,
         committed: Committed,
 
         dirties: Map = .empty,
@@ -57,19 +58,20 @@ pub fn JournaledStorage(comptime Key: type, comptime Value: type, comptime Map: 
         removed: u32 = 0,
         journal: std.ArrayListUnmanaged(struct { key: Key, old_value: Value }) = .empty,
 
-        pub fn init(gpa: std.mem.Allocator, max_dirties: u32, max_journal: u32, committed: Committed) !Self {
+        pub fn init(gpa: std.mem.Allocator, dirties: u32, journal: u32, committed: Committed) !Self {
             var self = Self{
+                .gpa = gpa,
                 .committed = committed,
             };
-            try self.dirties.ensureTotalCapacity(gpa, max_dirties);
-            try self.journal.ensureTotalCapacity(gpa, max_journal);
+            try self.dirties.ensureTotalCapacity(gpa, dirties);
+            try self.journal.ensureTotalCapacity(gpa, journal);
 
             return self;
         }
 
-        pub fn deinit(self: *Self, gpa: std.mem.Allocator) void {
-            self.dirties.deinit(gpa);
-            self.journal.deinit(gpa);
+        pub fn deinit(self: *Self) void {
+            self.dirties.deinit(self.gpa);
+            self.journal.deinit(self.gpa);
         }
 
         pub fn committedOrZero(self: *Self, key: Key) !Value {
@@ -87,7 +89,7 @@ pub fn JournaledStorage(comptime Key: type, comptime Value: type, comptime Map: 
             if (Committed == void)
                 return self.nonTemporalRead(key);
 
-            const entry = self.dirties.getOrPutAssumeCapacity(key);
+            const entry = try self.dirties.getOrPut(self.gpa, key);
             if (!entry.found_existing) {
                 entry.value_ptr.* = try self.committed.read(key);
             }
@@ -96,9 +98,9 @@ pub fn JournaledStorage(comptime Key: type, comptime Value: type, comptime Map: 
 
         // Writes a value and journals the old value for revert. Returns { old_value, was_present }.
         pub fn write(self: *Self, key: Key, value: Value) !struct { Value, bool } {
-            const entry = self.dirties.getOrPutAssumeCapacity(key);
+            const entry = try self.dirties.getOrPut(self.gpa, key);
             const old_value = if (entry.found_existing) entry.value_ptr.* else try self.committedOrZero(key);
-            self.journal.appendAssumeCapacity(.{ .key = key, .old_value = old_value });
+            try self.journal.append(self.gpa, .{ .key = key, .old_value = old_value });
             entry.value_ptr.* = value;
             return .{ old_value, entry.found_existing };
         }
@@ -107,18 +109,18 @@ pub fn JournaledStorage(comptime Key: type, comptime Value: type, comptime Map: 
         // Used for access list tracking (EIP-2929): first access marks warm, subsequent calls no-op.
         pub fn writeNoClobber(self: *Self, key: Key, value: Value) !bool {
             if (Committed != void) @compileError("writeNoClobber not supported with committed state");
-            const entry = self.dirties.getOrPutAssumeCapacity(key);
+            const entry = try self.dirties.getOrPut(self.gpa, key);
             if (entry.found_existing) return false;
-            self.journal.appendAssumeCapacity(.{ .key = key, .old_value = try self.committedOrZero(key) });
+            try self.journal.append(self.gpa, .{ .key = key, .old_value = try self.committedOrZero(key) });
             entry.value_ptr.* = value;
             return true;
         }
 
         // Returns a mutable pointer for in-place modification, journaling the pre-update value.
         pub fn update(self: *Self, key: Key) !*Value {
-            const entry = self.dirties.getOrPutAssumeCapacity(key);
+            const entry = try self.dirties.getOrPut(self.gpa, key);
             if (!entry.found_existing) entry.value_ptr.* = try self.committedOrZero(key);
-            self.journal.appendAssumeCapacity(.{ .key = key, .old_value = entry.value_ptr.* });
+            try self.journal.append(self.gpa, .{ .key = key, .old_value = entry.value_ptr.* });
             return entry.value_ptr;
         }
 

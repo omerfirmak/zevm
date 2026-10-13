@@ -54,7 +54,8 @@ pub fn main() !void {
     defer vm_arena.deinit();
     const vm_alloc = vm_arena.allocator();
 
-    var vm = try zevm.evm.EVM.init(vm_alloc, &context, fork.evmCapacities());
+    var vm: zevm.evm.EVM = undefined;
+    try vm.init(vm_alloc, &context, fork.evmCapacities());
 
     // process() returns an error only for invalid transactions (bad nonce, insufficient
     // funds, etc.). Reverts are NOT errors — check return data for revert payloads.

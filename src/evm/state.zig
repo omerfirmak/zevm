@@ -24,6 +24,7 @@ pub const Capacities = Spec.StateCapacities;
 pub const State = struct {
     const Self = @This();
 
+    gpa: std.mem.Allocator,
     committed_state: *const CommittedState,
 
     accounts: storage.AccountStorage,
@@ -31,27 +32,34 @@ pub const State = struct {
     transient_storage: storage.TransientStorage,
     code_storage: storage.CodeStorage,
 
-    deployed_bytecode_allocator: std.heap.FixedBufferAllocator,
+    deployed_bytecode_allocator: std.heap.BufferFirstAllocator,
 
     pub fn init(gpa: std.mem.Allocator, committed_state: *const CommittedState, caps: Capacities) !Self {
         var code_storage = storage.CodeStorage.empty;
         try code_storage.ensureTotalCapacity(gpa, caps.code_slots);
         return Self{
+            .gpa = gpa,
             .committed_state = committed_state,
             .accounts = try storage.AccountStorage.init(gpa, caps.account_dirties, caps.account_journal, .{ .inner = committed_state }),
             .contract_state = try storage.ContractStorage.init(gpa, caps.contract_dirties, caps.contract_journal, .{ .inner = committed_state }),
             .transient_storage = try storage.TransientStorage.init(gpa, caps.transient_dirties, caps.transient_journal, {}),
             .code_storage = code_storage,
-            .deployed_bytecode_allocator = std.heap.FixedBufferAllocator.init(try gpa.alloc(u8, caps.bytecode_buf)),
+            .deployed_bytecode_allocator = .init(try gpa.alloc(u8, caps.bytecode_buf), gpa),
         };
     }
 
     pub fn deinit(self: *Self, gpa: std.mem.Allocator) void {
+        const bytecode_allocator = self.deployed_bytecode_allocator.allocator();
+        var codes = self.code_storage.valueIterator();
+        while (codes.next()) |bytecode| {
+            bytecode.deinit(bytecode_allocator);
+            bytecode_allocator.free(bytecode.bytes);
+        }
         self.code_storage.deinit(gpa);
-        self.accounts.deinit(gpa);
-        self.contract_state.deinit(gpa);
-        self.transient_storage.deinit(gpa);
-        gpa.free(self.deployed_bytecode_allocator.buffer);
+        self.accounts.deinit();
+        self.contract_state.deinit();
+        self.transient_storage.deinit();
+        gpa.free(self.deployed_bytecode_allocator.fixed_buffer_allocator.buffer);
     }
 
     pub fn snapshot(self: *Self) Snapshot {
@@ -74,11 +82,11 @@ pub const State = struct {
         self.transient_storage.clearViaJournal();
     }
 
-    pub fn clearAccount(self: *Self, addr: u160, comptime cfg: Config) void {
+    pub fn clearAccount(self: *Self, addr: u160, comptime cfg: Config) !void {
         var balance: u256 = 0;
         if (cfg.fork.isEnabled(.Amsterdam))
             balance = if (self.accounts.dirties.get(addr)) |acct| acct.balance else 0;
-        _ = self.accounts.dirties.putAssumeCapacity(addr, .{
+        try self.accounts.dirties.put(self.gpa, addr, .{
             .balance = balance,
             .nonce = 0,
             .code_hash = types.empty_code_hash,
@@ -101,6 +109,6 @@ pub const State = struct {
         const allocator = self.deployed_bytecode_allocator.allocator();
         const code_bytes = try allocator.dupe(u8, code);
         const bytecode = try Bytecode.init(allocator, code_bytes, cfg);
-        self.code_storage.putAssumeCapacity(hash, bytecode);
+        try self.code_storage.put(self.gpa, hash, bytecode);
     }
 };

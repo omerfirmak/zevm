@@ -86,7 +86,8 @@ pub fn processBlock(
     defer gpa.free(num_logs_per_tx);
     var context = contextFromBlock(spec, &p_block.block, ancestors);
 
-    var vm = try evm.EVM.init(gpa, &context, evm_spec.evmCapacities());
+    var vm: evm.EVM = undefined;
+    try vm.init(gpa, &context, evm_spec.evmCapacities());
 
     var parent_beacon_block_root = p_block.block.header.parent_beacon_block_root.?;
     var parent_hash = p_block.block.header.parent_hash;
@@ -286,7 +287,6 @@ fn systemCall(
         calldata,
         0,
         0,
-        &.{},
         true,
         false,
     );

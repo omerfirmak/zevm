@@ -72,7 +72,6 @@ fn mcl_init() void {
     if (mcl.mclBn_init(mcl.mclBn_CurveSNARK1, mcl.MCLBN_COMPILED_TIME_VAR) != 0) unreachable;
 }
 
-
 const bls12_g1_discounts = [_]u16{
     0,   1000, 949, 848, 797, 764, 750, 738, 728, 719, 712, 705, 698, 692, 687, 682, 677, 673, 669, 665, 661, 658, 654,
     651, 648,  645, 642, 640, 637, 635, 632, 630, 627, 625, 623, 621, 619, 617, 615, 613, 611, 609, 608, 606, 604, 603,
@@ -116,6 +115,7 @@ const blake2b_sigma = [10][16]u8{
 };
 
 const modexp_max_length = 1024;
+pub const max_output_len = modexp_max_length;
 const modexp_max_bits = modexp_max_length * 8;
 const modexp_value_limbs = BigInt.calcTwosCompLimbCount(modexp_max_bits);
 const modexp_product_limbs = modexp_value_limbs * 2 + 1;

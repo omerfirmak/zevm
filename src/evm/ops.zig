@@ -329,7 +329,7 @@ pub fn Ops(comptime cfg: Config) type {
                 pub fn push(next_ip: InstructionPointer, gas: u64, stack_head: StackPtr, frame: *evm.Frame) evm.Errors!void {
                     const new_stack_head, const slot = try frame.stackReserve(stack_head);
                     frame.code.readBytesToValue(next_ip, n, slot);
-                    return next(next_ip + n, gas, fork.constantGas(@enumFromInt(@intFromEnum(Opcode.PUSH0) + n)), new_stack_head, frame);
+                    return next(next_ip + n, gas, fork.constantGas(@fromBackingInt(@intCast(@backingInt(Opcode.PUSH0) + n))), new_stack_head, frame);
                 }
             }.push;
         }
@@ -339,7 +339,7 @@ pub fn Ops(comptime cfg: Config) type {
                 pub fn dup(next_ip: InstructionPointer, gas: u64, stack_head: StackPtr, frame: *evm.Frame) evm.Errors!void {
                     var new_stack_head, const s = try frame.stackPop(stack_head, n, n);
                     new_stack_head = try frame.stackPush(new_stack_head, s[0]);
-                    return next(next_ip, gas, fork.constantGas(@enumFromInt(Opcode.DUP1.byte() + n - 1)), new_stack_head, frame);
+                    return next(next_ip, gas, fork.constantGas(@fromBackingInt(@intCast(Opcode.DUP1.byte() + n - 1))), new_stack_head, frame);
                 }
             }.dup;
         }
@@ -351,7 +351,7 @@ pub fn Ops(comptime cfg: Config) type {
                     const tmp = s[0];
                     s[0] = s[n];
                     s[n] = tmp;
-                    return next(next_ip, gas, fork.constantGas(@enumFromInt(Opcode.SWAP1.byte() + n - 1)), new_stack_head, frame);
+                    return next(next_ip, gas, fork.constantGas(@fromBackingInt(@intCast(Opcode.SWAP1.byte() + n - 1))), new_stack_head, frame);
                 }
             }.swap;
         }
@@ -736,7 +736,7 @@ pub fn Ops(comptime cfg: Config) type {
             }
             const old_value, _ = try frame.state.contract_state.write(lookup, args[0]);
             // lazily record the pre-tx value on first write; subsequent writes don't update it
-            const original_value_entry = frame.evm.pre_state.getOrPutAssumeCapacity(lookup);
+            const original_value_entry = try frame.evm.pre_state.getOrPut(frame.evm.rounded_allocator.allocator(), lookup);
             if (!original_value_entry.found_existing) {
                 original_value_entry.value_ptr.* = old_value;
             }
@@ -955,7 +955,6 @@ pub fn Ops(comptime cfg: Config) type {
                         available_gas -= forwarded_gas;
 
                         const calldata = frame.memory.slice(@truncate(args[3]), @intCast(args[2]));
-                        const return_buffer = frame.memory.slice(@truncate(args[1]), @intCast(args[0]));
 
                         const leftover_gas, const call_spillover, const err = try frame.evm.call(
                             cfg,
@@ -967,10 +966,12 @@ pub fn Ops(comptime cfg: Config) type {
                             calldata,
                             value,
                             frame.depth,
-                            return_buffer,
                             comptime (variant == .DELEGATECALL),
                             frame.is_static or (variant == .STATICCALL),
                         );
+                        const output = frame.memory.slice(@truncate(args[1]), @intCast(args[0]));
+                        const output_len = @min(output.len, frame.evm.return_data_size);
+                        @memcpy(output[0..output_len], frame.evm.return_buffer[0..output_len]);
                         args[0] = if (err != null) 0 else 1;
                         available_gas += leftover_gas;
                         frame.state_gas_spillover += call_spillover;
@@ -1004,11 +1005,7 @@ pub fn Ops(comptime cfg: Config) type {
 
                     if (args[0] > 0) {
                         const source = frame.memory.slice(@intCast(args[1]), @intCast(args[0]));
-                        const min_len = @min(frame.return_buffer.len, source.len);
-
-                        @memcpy(frame.return_buffer[0..min_len], source[0..min_len]);
-                        if (source.len > frame.evm.return_buffer.len) unreachable;
-                        @memcpy(frame.evm.return_buffer[0..source.len], source);
+                        @memcpy((try frame.evm.returnBuffer(source.len))[0..source.len], source);
                     }
                     frame.evm.return_data_size = @intCast(args[0]);
                     frame.gas = remaining;

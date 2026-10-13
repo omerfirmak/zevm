@@ -126,27 +126,29 @@ pub const Spec = struct {
     account_write: u64 = 0,
     storage_write: u64 = 0,
 
-    /// Pre-allocation sizes for State, derived from spec gas costs.
+    /// Pre-allocation sizes for State, derived from spec gas costs. They default to no
+    /// pre-allocation, everything grows as needed.
     pub const StateCapacities = struct {
-        account_dirties: u32,
-        account_journal: u32,
-        contract_dirties: u32,
-        contract_journal: u32,
-        transient_dirties: u32,
-        transient_journal: u32,
-        code_slots: u32,
-        bytecode_buf: usize,
+        account_dirties: u32 = 0,
+        account_journal: u32 = 0,
+        contract_dirties: u32 = 0,
+        contract_journal: u32 = 0,
+        transient_dirties: u32 = 0,
+        transient_journal: u32 = 0,
+        code_slots: u32 = 0,
+        bytecode_buf: usize = 0,
     };
 
-    /// Pre-allocation sizes for EVM, derived from spec gas costs.
+    /// Pre-allocation sizes for EVM, derived from spec gas costs. They default to no
+    /// pre-allocation, everything grows as needed.
     pub const EvmCapacities = struct {
-        pre_state: u32,
-        warm_accounts: u32,
-        warm_slots: u32,
-        created: u32,
-        created_journal: u32,
-        return_buf: usize,
-        logs_buf: usize,
+        pre_state: u32 = 0,
+        warm_accounts: u32 = 0,
+        warm_slots: u32 = 0,
+        created: u32 = 0,
+        created_journal: u32 = 0,
+        return_buf: usize = 0,
+        logs_buf: usize = 0,
     };
 
     /// Derive tight State pre-allocation sizes from a transaction gas limit.
@@ -251,7 +253,7 @@ pub const Spec = struct {
     }
 
     pub inline fn isEnabled(comptime self: Self, comptime fork: Fork) bool {
-        return @intFromEnum(self.fork) >= @intFromEnum(fork);
+        return @backingInt(self.fork) >= @backingInt(fork);
     }
 
     pub fn fromFork(comptime fork: Fork) Spec {
