@@ -1,0 +1,5 @@
+zig-out
+zig-pkg
+.zig-cache
+datadir
+monitoring
