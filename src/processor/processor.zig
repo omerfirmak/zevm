@@ -87,7 +87,7 @@ pub fn processBlock(
     var context = contextFromBlock(spec, &p_block.block, ancestors);
 
     var vm: evm.EVM = undefined;
-    try vm.init(gpa, &context, evm_spec.evmCapacities());
+    try vm.init(gpa, &context, .{});
 
     var parent_beacon_block_root = p_block.block.header.parent_beacon_block_root.?;
     var parent_hash = p_block.block.header.parent_hash;

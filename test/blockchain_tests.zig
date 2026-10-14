@@ -158,12 +158,10 @@ fn runBlockchainTest(gpa: std.mem.Allocator, test_case: *const BlockchainTest, c
     var prep_arena = std.heap.ArenaAllocator.init(gpa);
     defer prep_arena.deinit();
     const blocks_parsed = try prep_arena.allocator().alloc(anyerror!zevm.processor.PreprocessedBlock, test_case.blocks.len);
-    var total_gas: u64 = 30_000_000;
     for (test_case.blocks, blocks_parsed) |block_entry, *slot| {
         slot.* = prepareBlock(prep_arena.allocator(), block_entry);
-        if (slot.*) |p| total_gas += p.block.header.gas_used else |_| {}
     }
-    var state = try state_mod.State.init(prep_arena.allocator(), &committed, zevm.spec.Osaka.stateCapacities(total_gas));
+    var state = try state_mod.State.init(prep_arena.allocator(), &committed, .{});
 
     for (test_case.blocks, blocks_parsed) |block_entry, parse_result| {
         var arena = std.heap.ArenaAllocator.init(gpa);
