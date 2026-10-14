@@ -9,6 +9,7 @@ comptime {
     _ = @import("forks.zig");
     _ = @import("free_list.zig");
     _ = @import("trie/trie.zig");
+    _ = @import("trie/node_store.zig");
     _ = @import("trie/range_proof.zig");
     _ = @import("evm/crypto/ripemd160.zig");
     _ = @import("devp2p/allocator.zig");
