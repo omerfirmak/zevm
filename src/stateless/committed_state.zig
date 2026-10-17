@@ -44,7 +44,7 @@ pub const CommittedState = struct {
         }
 
         const state_trie = evm.AccountTrie.initFromTrie(
-            try evm.trie.loadFromNodesMap(allocator, parent_state_root, &nodes),
+            try evm.trie.loadFromNodesMap(allocator, parent_state_root, &nodes, null),
         );
 
         var account_tries: std.AutoHashMapUnmanaged(u160, evm.StorageTrie) = .empty;
@@ -53,7 +53,7 @@ pub const CommittedState = struct {
         for (bal.*) |entry| {
             const storage_hash = (try state_trie.get(keccakOfU160(entry.addr))).storage_hash;
             account_tries.putAssumeCapacity(entry.addr, evm.StorageTrie.initFromTrie(
-                try evm.trie.loadFromNodesMap(allocator, storage_hash, &nodes),
+                try evm.trie.loadFromNodesMap(allocator, storage_hash, &nodes, null),
             ));
         }
 

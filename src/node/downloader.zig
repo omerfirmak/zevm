@@ -458,6 +458,7 @@ pub const Downloader = struct {
             hashes,
             accounts,
             if (response.proof.len > 0) &proof else null,
+            try scratch.create([trie.Trie.stack_size]u8),
         );
         const served = countBelowLimit(hashes, request.limit);
         return .{ .accounts = .{
@@ -481,6 +482,7 @@ pub const Downloader = struct {
         defer scratch_arena.deinit();
         const scratch = scratch_arena.allocator();
         const proof = try proofNodes(scratch, response.proof);
+        const stack_buffer = try scratch.create([trie.Trie.stack_size]u8);
 
         const served = response.slots[0..@min(response.slots.len, request.account_hashes.len)];
         var result: VerifiedStorage = .{
@@ -491,7 +493,7 @@ pub const Downloader = struct {
         var verified: usize = 0;
         if (served.len == 0 and request.account_hashes.len > 0) {
             // without slots, the proof has to show the first account has none from the starting to u256.max
-            _ = try verifyRangeProof(scratch, storage_roots[0], request.starting_hash, &.{}, &.{}, &proof);
+            _ = try verifyRangeProof(scratch, storage_roots[0], request.starting_hash, &.{}, &.{}, &proof, stack_buffer);
             result.keys[0] = &.{};
             result.values[0] = &.{};
             verified = 1;
@@ -514,6 +516,7 @@ pub const Downloader = struct {
                 keys,
                 values,
                 if (is_last and response.proof.len > 0) &proof else null,
+                stack_buffer,
             ) catch break;
 
             const served_slots = if (index + 1 == request.account_hashes.len)

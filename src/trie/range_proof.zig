@@ -12,6 +12,7 @@ pub fn verifyRangeProof(
     keys: []const [32]u8,
     values: [][]const u8,
     proof: ?*const trie.NodesHashMap,
+    stack_buffer: *[trie.Trie.stack_size]u8,
 ) !bool {
     if (keys.len != values.len) return error.InconsistentProofData;
     for (values) |v| if (v.len == 0) return error.RangeContainsDeletion;
@@ -25,13 +26,13 @@ pub fn verifyRangeProof(
             if (!std.mem.eql(u8, &root, &trie.empty_root_hash)) return error.BadRangeProof;
             return false;
         }
-        var t = try trie.Trie.init(allocator);
+        var t = try trie.Trie.initWithStack(allocator, stack_buffer);
         try t.updateNoDeletions(keys, values);
         if (!std.mem.eql(u8, &try t.rootHash(), &root)) return error.BadRangeProof;
         return false;
     }
 
-    var t = try trie.loadFromNodesMap(allocator, root, proof.?);
+    var t = try trie.loadFromNodesMap(allocator, root, proof.?, stack_buffer);
 
     if (keys.len == 0) {
         if ((try t.get(origin)) != null) return error.MoreEntriesAvailable;
@@ -1719,6 +1720,8 @@ const fixtures = [_]Fixture{
 };
 
 test "geth range proof fixtures" {
+    const stack_buffer = try std.testing.allocator.create([trie.Trie.stack_size]u8);
+    defer std.testing.allocator.destroy(stack_buffer);
     for (fixtures) |f| {
         var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
         defer arena.deinit();
@@ -1751,7 +1754,7 @@ test "geth range proof fixtures" {
             proof = &nodes;
         }
 
-        const more = verifyRangeProof(alloc, root, origin, keys, values, proof) catch |e| {
+        const more = verifyRangeProof(alloc, root, origin, keys, values, proof, stack_buffer) catch |e| {
             if (f.outcome == .reject) continue;
             std.debug.print("{s}: want {s}, got error.{s}\n", .{ f.name, @tagName(f.outcome), @errorName(e) });
             return e;

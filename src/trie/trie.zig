@@ -13,9 +13,13 @@ pub const empty_root_hash: [32]u8 = .{
 }; // 0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421
 
 pub const Node = union(enum) {
+    // Nodes decoded from proofs aren't allocated in key order, so hashing them never frees memory.
+    pub const no_frame = std.math.maxInt(u32);
+
     pub const Branch = struct {
         children: [16]?*Node = @splat(null),
         hash: ?*[32]u8 = null,
+        frame: u32 = no_frame,
 
         pub fn init() Node {
             return Node{ .branch = .{} };
@@ -26,6 +30,7 @@ pub const Node = union(enum) {
         key_len: u8,
         child: *Node,
         hash: ?*[32]u8 = null,
+        frame: u32 = no_frame,
 
         pub fn init(key: []const u8, child: *Node) Node {
             var n = Node{ .ext = .{
@@ -96,10 +101,14 @@ const Path = struct {
 pub const Trie = struct {
     const Self = @This();
 
+    // Revisit if Node grows or stack tries take values larger than state values.
+    pub const stack_size = 512 << 10;
+
     root: *Node,
 
     allocator: std.mem.Allocator,
     resolver: ?NodeResolver = null,
+    stack: ?std.heap.FixedBufferAllocator = null,
 
     skip: enum { none, deletions, writes } = .none,
     skipped_deletions: bool = false,
@@ -115,6 +124,17 @@ pub const Trie = struct {
         return Self{
             .root = root,
             .allocator = allocator,
+        };
+    }
+
+    pub fn initWithStack(allocator: std.mem.Allocator, buffer: *[stack_size]u8) !Self {
+        var stack: std.heap.FixedBufferAllocator = .init(buffer);
+        const root = try stack.allocator().create(Node);
+        root.* = .empty;
+        return .{
+            .root = root,
+            .allocator = allocator,
+            .stack = stack,
         };
     }
 
@@ -149,6 +169,7 @@ pub const Trie = struct {
     pub fn update(self: *Self, keys: []const [32]u8, values: [][]const u8) !void {
         std.debug.assert(keys.len != 0);
         std.debug.assert(keys.len == values.len);
+        std.debug.assert(self.stack == null); // stack tries only take updateNoDeletions
 
         self.skipped_deletions = false;
         defer self.skip = .none;
@@ -211,7 +232,7 @@ pub const Trie = struct {
         }
         switch (node.*) {
             .empty => {
-                if (value.len != 0) node.* = Node.Leaf.init(key, value);
+                if (value.len != 0) node.* = Node.Leaf.init(key, try self.dupeValue(value));
                 if (keys.*.len > 0) _ = writeHexKey(&keys.*[0], key_buf);
             },
             .branch => |*branch| {
@@ -277,10 +298,13 @@ pub const Trie = struct {
                     const new_idx = key[diff_idx];
                     var n: *Node = undefined;
                     if (diff_idx < ext.key_len - 1) {
-                        // Break before the last byte: wrap in intermediate extension.
-                        n = try self.allocator.create(Node);
-                        n.* = Node.Extension.init(ext.key[diff_idx + 1 .. ext.key_len], ext.child);
-                        if (orig_idx < new_idx) try self.hash(n, path.appendSlice(ext.key[0 .. diff_idx + 1]));
+                        // Break before the last byte: wrap in intermediate extension. It is
+                        // hashed before being allocated, so its child's frame is freed first.
+                        var remainder = Node.Extension.init(ext.key[diff_idx + 1 .. ext.key_len], ext.child);
+                        remainder.ext.frame = ext.frame;
+                        if (orig_idx < new_idx) try self.hash(&remainder, path.appendSlice(ext.key[0 .. diff_idx + 1]));
+                        n = try self.createNode();
+                        n.* = remainder;
                     } else {
                         // Break at the last byte: reuse child directly.
                         n = ext.child;
@@ -291,12 +315,15 @@ pub const Trie = struct {
                     var p: *Node.Branch = undefined;
                     if (diff_idx == 0) {
                         // Convert this node to a branch.
+                        const ext_frame = ext.frame;
                         node.* = Node.Branch.init();
+                        node.branch.frame = ext_frame;
                         p = &node.branch;
                     } else {
                         // Keep as ext with truncated key; insert branch child.
-                        ext.child = try self.allocator.create(Node);
+                        ext.child = try self.createNode();
                         ext.child.* = Node.Branch.init();
+                        ext.child.branch.frame = self.currentFrame();
                         p = &ext.child.branch;
                         ext.key_len = @intCast(diff_idx);
                         ext.hash = null;
@@ -323,18 +350,24 @@ pub const Trie = struct {
                     if (diff_idx == 0) {
                         // Convert this leaf into a branch.
                         node.* = Node.Branch.init();
+                        node.branch.frame = self.currentFrame();
                         p = &node.branch;
                     } else {
                         // Convert this leaf into an ext + branch.
-                        const child = try self.allocator.create(Node);
+                        const ext_frame = self.currentFrame();
+                        const child = try self.createNode();
                         child.* = Node.Branch.init();
+                        child.branch.frame = self.currentFrame();
                         node.* = Node.Extension.init(leaf.key[0..diff_idx], child);
+                        node.ext.frame = ext_frame;
                         p = &child.branch;
                     }
 
                     const orig_idx = leaf.key[diff_idx];
                     const new_idx = key[diff_idx];
-                    p.children[orig_idx] = try self.createLeaf(leaf.key[diff_idx + 1 .. leaf.key_len], leaf.val);
+                    // the value is already owned by the trie, no need to copy it again
+                    p.children[orig_idx] = try self.createNode();
+                    p.children[orig_idx].?.* = Node.Leaf.init(leaf.key[diff_idx + 1 .. leaf.key_len], leaf.val);
                     if (orig_idx < new_idx) try self.hash(p.children[orig_idx].?, path.appendSlice(leaf.key[0 .. diff_idx + 1]));
 
                     // Insert the new value.
@@ -376,8 +409,8 @@ pub const Trie = struct {
     }
 
     fn createLeaf(self: *Self, key: []const u8, value: []const u8) !*Node {
-        const n = try self.allocator.create(Node);
-        n.* = Node.Leaf.init(key, value);
+        const n = try self.createNode();
+        n.* = Node.Leaf.init(key, try self.dupeValue(value));
         return n;
     }
 
@@ -456,6 +489,11 @@ pub const Trie = struct {
 
     fn hash(self: *Self, node: *Node, path: Path) !void {
         if (self.skip == .deletions) return;
+        const own_frame = switch (node.*) {
+            .branch => |branch| branch.frame,
+            .ext => |ext| ext.frame,
+            else => Node.no_frame,
+        };
         var list = std.array_list.Managed(u8).init(self.allocator);
         defer list.deinit();
 
@@ -518,6 +556,23 @@ pub const Trie = struct {
             const h = keccak256(list.items);
             node.* = Node.Hashed.init(&h);
         }
+        if (self.stack) |*stack| if (own_frame != Node.no_frame) {
+            stack.end_index = own_frame;
+        };
+    }
+
+    fn createNode(self: *Self) !*Node {
+        if (self.stack) |*stack| return stack.allocator().create(Node);
+        return self.allocator.create(Node);
+    }
+
+    fn currentFrame(self: *const Self) u32 {
+        return if (self.stack) |stack| @intCast(stack.end_index) else 0;
+    }
+
+    fn dupeValue(self: *Self, value: []const u8) ![]const u8 {
+        if (self.stack) |*stack| return stack.allocator().dupe(u8, value);
+        return value;
     }
 };
 
@@ -771,6 +826,88 @@ test "delete non-existent key is no-op" {
     try std.testing.expectEqualSlices(u8, &expected, &got);
 }
 
+fn stackTrieRoot(buffer: *[Trie.stack_size]u8, keys: []const [32]u8, values: [][]const u8, batch_sizes: []const usize) ![32]u8 {
+    var trie = try Trie.initWithStack(std.testing.allocator, buffer);
+    var start: usize = 0;
+    for (batch_sizes) |size| {
+        const end = @min(start + size, keys.len);
+        if (end == start) continue;
+        try trie.updateNoDeletions(keys[start..end], values[start..end]);
+        start = end;
+    }
+    if (start < keys.len) try trie.updateNoDeletions(keys[start..], values[start..]);
+    return trie.rootHash();
+}
+
+test "stack trie matches the regular trie and stays bounded" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var prng = std.Random.DefaultPrng.init(0x5eed);
+    const random = prng.random();
+
+    for ([_]usize{ 1, 2, 17, 300, 5000, 100_000 }) |count| {
+        const keys = try a.alloc([32]u8, count);
+        for (keys, 0..) |*key, i| {
+            random.bytes(key);
+            // shared prefixes produce extensions, and their splits
+            if (i % 3 == 0) @memset(key[0..random.uintLessThan(usize, 6)], 0xab);
+        }
+        std.mem.sortUnstable([32]u8, keys, {}, struct {
+            fn lessThan(_: void, l: [32]u8, r: [32]u8) bool {
+                return std.mem.order(u8, &l, &r) == .lt;
+            }
+        }.lessThan);
+        var unique: usize = 0;
+        for (keys) |key| {
+            if (unique > 0 and std.mem.eql(u8, &keys[unique - 1], &key)) continue;
+            keys[unique] = key;
+            unique += 1;
+        }
+        const values = try a.alloc([]const u8, unique);
+        for (values) |*value| {
+            const buf = try a.alloc(u8, 1 + random.uintLessThan(usize, 100));
+            random.bytes(buf);
+            value.* = buf;
+        }
+
+        var regular = try Trie.init(a);
+        try regular.updateNoDeletions(keys[0..unique], values);
+        const expected = try regular.rootHash();
+
+        const buffer = try std.testing.allocator.create([Trie.stack_size]u8);
+        defer std.testing.allocator.destroy(buffer);
+        try std.testing.expectEqualSlices(u8, &expected, &try stackTrieRoot(buffer, keys[0..unique], values, &.{unique}));
+        try std.testing.expectEqualSlices(u8, &expected, &try stackTrieRoot(buffer, keys[0..unique], values, &.{ 1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233 }));
+    }
+}
+
+test "stack trie keeps values across batches" {
+    var keys: [4][32]u8 = undefined;
+    makeKey("1234da", &keys[0]);
+    makeKey("1234ea", &keys[1]);
+    makeKey("1234fa", &keys[2]);
+    makeKey("2000", &keys[3]);
+    var vals = [_][]const u8{ "x___________________________1", "x___________________________2", "x___________________________3", "x___________________________4" };
+    var regular = try Trie.init(std.heap.c_allocator);
+    try regular.update(&keys, &vals);
+    const expected = try regular.rootHash();
+
+    const buffer = try std.testing.allocator.create([Trie.stack_size]u8);
+    defer std.testing.allocator.destroy(buffer);
+    var trie = try Trie.initWithStack(std.testing.allocator, buffer);
+    var buf: [1][]const u8 = undefined;
+    var value: [29]u8 = undefined;
+    for (keys, vals) |key, val| {
+        // the caller reuses its value buffer for every batch
+        @memcpy(&value, val);
+        buf[0] = &value;
+        try trie.updateNoDeletions(&.{key}, &buf);
+        @memset(&value, 0);
+    }
+    try std.testing.expectEqualSlices(u8, &expected, &try trie.rootHash());
+}
+
 pub const NodesHashMap = std.HashMapUnmanaged([32]u8, []const u8, struct {
     pub fn eql(_: @This(), a: [32]u8, b: [32]u8) bool {
         return std.mem.eql(u8, &a, &b);
@@ -784,13 +921,10 @@ pub fn loadFromNodesMap(
     allocator: std.mem.Allocator,
     root: [32]u8,
     nodes: *const NodesHashMap,
+    stack_buffer: ?*[Trie.stack_size]u8,
 ) !Trie {
-    if (std.mem.eql(u8, &empty_root_hash, &root)) return Trie.init(allocator);
-    var t = Trie{
-        .root = undefined,
-        .allocator = allocator,
-    };
-    t.root = try allocator.create(Node);
+    var t = if (stack_buffer) |buffer| try Trie.initWithStack(allocator, buffer) else try Trie.init(allocator);
+    if (std.mem.eql(u8, &empty_root_hash, &root)) return t;
     t.root.* = Node.Hashed.init(&root);
     try resolveFromMap(&t, t.root, nodes);
     return t;
@@ -845,7 +979,7 @@ fn decodeNode(self: *Trie, node: *Node, encoded: []const u8, node_hash: ?*[32]u8
 }
 
 fn decodeChild(self: *Trie, payload: []const u8) !*Node {
-    const child = try self.allocator.create(Node);
+    const child = try self.createNode();
     if (payload.len == 32) {
         child.* = Node.Hashed.init(payload);
     } else {
@@ -896,14 +1030,14 @@ test "deleting a leaf requires its remaining sibling preimage" {
     var nodes: NodesHashMap = .empty;
     try nodes.put(a, root, encoded_branch.items);
     try nodes.put(a, hash_a, encoded_a.items);
-    var incomplete = try loadFromNodesMap(a, root, &nodes);
+    var incomplete = try loadFromNodesMap(a, root, &nodes, null);
     const key_a: [32]u8 = @splat(0);
     var values = [_][]const u8{&.{}};
     try std.testing.expectError(error.SubTrieNotAvailable, incomplete.update(&.{key_a}, &values));
 
     var store: NodesHashMap = .empty;
     try store.put(a, hash_b, encoded_b.items);
-    var resolved = try loadFromNodesMap(a, root, &nodes);
+    var resolved = try loadFromNodesMap(a, root, &nodes, null);
     resolved.resolver = .{ .ptr = &store, .resolveFn = struct {
         fn resolve(ptr: *anyopaque, _: std.mem.Allocator, path: []const u8, node_hash: [32]u8) anyerror!?[]const u8 {
             try std.testing.expectEqualSlices(u8, &.{1}, path);
@@ -913,7 +1047,7 @@ test "deleting a leaf requires its remaining sibling preimage" {
     try resolved.update(&.{key_a}, &values);
 
     try nodes.put(a, hash_b, encoded_b.items);
-    var complete = try loadFromNodesMap(a, root, &nodes);
+    var complete = try loadFromNodesMap(a, root, &nodes, null);
     try complete.update(&.{key_a}, &values);
     var remaining_path: [33]u8 = @splat(0);
     remaining_path[0] = 0x20;
@@ -953,7 +1087,7 @@ test "a write in the same batch keeps the branch from collapsing onto a missing 
     var nodes: NodesHashMap = .empty;
     try nodes.put(a, root, encoded_branch.items);
     try nodes.put(a, hash_3, encoded_3.items);
-    var t = try loadFromNodesMap(a, root, &nodes);
+    var t = try loadFromNodesMap(a, root, &nodes, null);
 
     // The deletion under 3 sorts before the write under 7, but must not collapse the branch
     var key_3: [32]u8 = @splat(0);
