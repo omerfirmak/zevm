@@ -933,23 +933,30 @@ pub fn loadFromNodesMap(
     var t = if (stack_buffer) |buffer| try Trie.initWithStack(allocator, buffer) else try Trie.init(allocator);
     if (std.mem.eql(u8, &empty_root_hash, &root)) return t;
     t.root.* = Node.Hashed.init(&root);
-    try resolveFromMap(&t, t.root, nodes);
+    try resolveFromMap(&t, t.root, nodes, 0);
     return t;
 }
 
-fn resolveFromMap(self: *Trie, node: *Node, nodes: *const NodesHashMap) anyerror!void {
+fn resolveFromMap(self: *Trie, node: *Node, nodes: *const NodesHashMap, depth: usize) anyerror!void {
     switch (node.*) {
         .hashed => |hashed| {
             if (hashed.len != 32) return;
             const entry = nodes.getEntryContext(hashed.data, .{}) orelse return;
             try decodeNode(self, node, entry.value_ptr.*, entry.key_ptr);
-            try resolveFromMap(self, node, nodes);
+            try resolveFromMap(self, node, nodes, depth);
         },
-        .branch => |branch| for (branch.children) |child| {
-            if (child) |c| try resolveFromMap(self, c, nodes);
+        .branch => |branch| {
+            if (depth >= 64) return error.MalformedTrieNode;
+            for (branch.children) |child| {
+                if (child) |c| try resolveFromMap(self, c, nodes, depth + 1);
+            }
         },
-        .ext => |ext| try resolveFromMap(self, ext.child, nodes),
-        .leaf, .empty => {},
+        .ext => |ext| {
+            if (depth + ext.key_len > 64) return error.MalformedTrieNode;
+            try resolveFromMap(self, ext.child, nodes, depth + ext.key_len);
+        },
+        .leaf => |leaf| if (depth + leaf.key_len > 64) return error.MalformedTrieNode,
+        .empty => {},
     }
 }
 
@@ -970,7 +977,7 @@ fn decodeNode(self: *Trie, node: *Node, encoded: []const u8, node_hash: ?*[32]u8
         const value_payload = items[1];
 
         var key_buf: [65]u8 = undefined;
-        const decoded = compactToHex(key_payload, &key_buf);
+        const decoded = try compactToHex(key_payload, &key_buf);
 
         if (decoded.is_leaf) {
             node.* = Node.Leaf.init(decoded.nibbles, value_payload);
@@ -995,7 +1002,8 @@ fn decodeChild(self: *Trie, payload: []const u8) !*Node {
     return child;
 }
 
-fn compactToHex(compact: []const u8, out_buf: *[65]u8) struct { is_leaf: bool, nibbles: []u8 } {
+fn compactToHex(compact: []const u8, out_buf: *[65]u8) !struct { is_leaf: bool, nibbles: []u8 } {
+    if (compact.len > 33) return error.MalformedTrieNode;
     const flags = compact[0] >> 4;
     const is_leaf = (flags & 0x2) != 0;
     const odd = (flags & 0x1) != 0;
