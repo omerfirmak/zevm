@@ -5,52 +5,73 @@ const std = @import("std");
 const trie = @import("trie.zig");
 const keccak256 = @import("../evm/crypto/hash.zig").keccak256;
 
-pub fn verifyRangeProof(
-    allocator: std.mem.Allocator,
-    root: [32]u8,
-    origin: [32]u8,
-    keys: []const [32]u8,
-    values: [][]const u8,
-    proof: ?*const trie.NodesHashMap,
+pub const Verifier = struct {
+    const Self = @This();
+
     stack_buffer: *[trie.Trie.stack_size]u8,
-) !bool {
-    if (keys.len != values.len) return error.InconsistentProofData;
-    for (values) |v| if (v.len == 0) return error.RangeContainsDeletion;
+    collector: ?*trie.NodeCollector = null,
 
-    var i: usize = 1;
-    while (i < keys.len) : (i += 1)
-        if (std.mem.order(u8, &keys[i - 1], &keys[i]) != .lt) return error.RangeNotMonotonic;
+    pub fn init(allocator: std.mem.Allocator) !Self {
+        return .{ .stack_buffer = try allocator.create([trie.Trie.stack_size]u8) };
+    }
 
-    if (proof == null) {
-        if (keys.len == 0) {
-            if (!std.mem.eql(u8, &root, &trie.empty_root_hash)) return error.BadRangeProof;
+    pub fn deinit(self: *const Self, allocator: std.mem.Allocator) void {
+        allocator.destroy(self.stack_buffer);
+    }
+
+    pub fn withCollector(self: Self, collector: *trie.NodeCollector) Self {
+        var copy = self;
+        copy.collector = collector;
+        return copy;
+    }
+
+    pub fn verify(
+        self: *const Self,
+        allocator: std.mem.Allocator,
+        root: [32]u8,
+        origin: [32]u8,
+        keys: []const [32]u8,
+        values: [][]const u8,
+        proof: ?*const trie.NodesHashMap,
+    ) !bool {
+        if (keys.len != values.len) return error.InconsistentProofData;
+        for (values) |v| if (v.len == 0) return error.RangeContainsDeletion;
+
+        var i: usize = 1;
+        while (i < keys.len) : (i += 1)
+            if (std.mem.order(u8, &keys[i - 1], &keys[i]) != .lt) return error.RangeNotMonotonic;
+        if (keys.len > 0 and std.mem.order(u8, &origin, &keys[0]) == .gt) return error.KeysPrecedeOrigin;
+
+        if (proof == null) {
+            if (keys.len == 0) {
+                if (!std.mem.eql(u8, &root, &trie.empty_root_hash)) return error.BadRangeProof;
+                return false;
+            }
+            var t = try trie.Trie.initWithStack(allocator, self.stack_buffer);
+            t.node_collector = self.collector;
+            try t.updateNoDeletions(keys, values);
+            if (!std.mem.eql(u8, &try t.rootHash(), &root)) return error.BadRangeProof;
             return false;
         }
-        var t = try trie.Trie.initWithStack(allocator, stack_buffer);
+
+        var t = try trie.loadFromNodesMap(allocator, root, proof.?, self.stack_buffer);
+
+        if (keys.len == 0) {
+            if ((try t.get(origin)) != null) return error.MoreEntriesAvailable;
+            if (try hasRightElement(t.root, origin)) return error.MoreEntriesAvailable;
+            return false;
+        }
+
+        const last = keys[keys.len - 1];
+        try clearInternal(&t, origin, last);
         try t.updateNoDeletions(keys, values);
+
+        const more = try hasRightElement(t.root, last);
+
         if (!std.mem.eql(u8, &try t.rootHash(), &root)) return error.BadRangeProof;
-        return false;
+        return more;
     }
-
-    var t = try trie.loadFromNodesMap(allocator, root, proof.?, stack_buffer);
-
-    if (keys.len == 0) {
-        if ((try t.get(origin)) != null) return error.MoreEntriesAvailable;
-        if (try hasRightElement(t.root, origin)) return error.MoreEntriesAvailable;
-        return false;
-    }
-
-    if (std.mem.order(u8, &origin, &keys[0]) == .gt) return error.KeysPrecedeOrigin;
-
-    const last = keys[keys.len - 1];
-    try clearInternal(&t, origin, last);
-    try t.updateNoDeletions(keys, values);
-
-    const more = try hasRightElement(t.root, last);
-
-    if (!std.mem.eql(u8, &try t.rootHash(), &root)) return error.BadRangeProof;
-    return more;
-}
+};
 
 fn hasRightElement(root: *trie.Node, key: [32]u8) !bool {
     var key_buf: [64]u8 = undefined;
@@ -1720,8 +1741,6 @@ const fixtures = [_]Fixture{
 };
 
 test "geth range proof fixtures" {
-    const stack_buffer = try std.testing.allocator.create([trie.Trie.stack_size]u8);
-    defer std.testing.allocator.destroy(stack_buffer);
     for (fixtures) |f| {
         var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
         defer arena.deinit();
@@ -1754,7 +1773,9 @@ test "geth range proof fixtures" {
             proof = &nodes;
         }
 
-        const more = verifyRangeProof(alloc, root, origin, keys, values, proof, stack_buffer) catch |e| {
+        const verifier = try Verifier.init(alloc);
+        defer verifier.deinit(alloc);
+        const more = verifier.verify(alloc, root, origin, keys, values, proof) catch |e| {
             if (f.outcome == .reject) continue;
             std.debug.print("{s}: want {s}, got error.{s}\n", .{ f.name, @tagName(f.outcome), @errorName(e) });
             return e;

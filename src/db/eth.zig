@@ -6,6 +6,7 @@ const kv = @import("kv.zig");
 const types = @import("../types.zig");
 const rlp = @import("rlp");
 const lmdbx = @import("lmdbx");
+const trie = @import("../trie/trie.zig");
 
 pub const Eth = struct {
     const Self = @This();
@@ -78,6 +79,28 @@ pub const Eth = struct {
         const flags: lmdbx.Database.SetFlag = if (append_key) lmdbx.Database.SetFlag.AppendDup.with(.Append) else .AppendDup;
         for (slot_hashes, values_rlp) |slot_hash, value_rlp| {
             try cursor.put(&account_hash, try encodeSlot(&buf, slot_hash, value_rlp), flags);
+        }
+    }
+
+    fn encodeTrieNode(buf: *[768]u8, path: []const u8, blob: []const u8) ![]const u8 {
+        if (path.len > 64) return error.TrieNodePathTooLong;
+        if (blob.len > buf.len - path.len - 1) return error.TrieNodeTooLong;
+        @memcpy(buf[0..path.len], path);
+        buf[path.len] = 0xff;
+        @memcpy(buf[path.len + 1 ..][0..blob.len], blob);
+        return buf[0 .. path.len + 1 + blob.len];
+    }
+
+    pub fn appendStorageTrie(self: *Self, txn: kv.Transaction, account_hash: [32]u8, nodes: []const trie.NodeCollector.Node) !void {
+        const cursor = try self.kv_store.table(txn, .storage_tries).cursor();
+        defer cursor.deinit();
+        var buf: [768]u8 = undefined;
+        for (nodes) |node| {
+            try cursor.put(&account_hash, try encodeTrieNode(
+                &buf,
+                node.path,
+                node.blob,
+            ), lmdbx.Database.SetFlag.AppendDup.with(.Append));
         }
     }
 

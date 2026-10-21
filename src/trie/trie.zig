@@ -108,7 +108,7 @@ pub const Trie = struct {
 
     allocator: std.mem.Allocator,
     resolver: ?NodeResolver = null,
-    on_node: ?OnNode = null,
+    node_collector: ?*NodeCollector = null,
     stack: ?std.heap.FixedBufferAllocator = null,
 
     skip: enum { none, deletions, writes } = .none,
@@ -117,11 +117,6 @@ pub const Trie = struct {
     pub const NodeResolver = struct {
         ptr: *anyopaque,
         resolveFn: *const fn (ptr: *anyopaque, allocator: std.mem.Allocator, path: []const u8, node_hash: [32]u8) anyerror!?[]const u8,
-    };
-
-    pub const OnNode = struct {
-        ptr: *anyopaque,
-        onNodeFn: *const fn (ptr: *anyopaque, path: []const u8, node_hash: [32]u8, blob: []const u8) anyerror!void,
     };
 
     pub fn init(allocator: std.mem.Allocator) !Self {
@@ -500,8 +495,10 @@ pub const Trie = struct {
             .ext => |ext| ext.frame,
             else => Node.no_frame,
         };
+        const is_leaf = node.* == .leaf;
         var list = std.array_list.Managed(u8).init(self.allocator);
-        defer list.deinit();
+        var collected = false;
+        defer if (!collected) list.deinit();
 
         switch (node.*) {
             .empty => {
@@ -561,7 +558,10 @@ pub const Trie = struct {
         } else {
             const h = keccak256(list.items);
             node.* = Node.Hashed.init(&h);
-            if (self.on_node) |on_node| try on_node.onNodeFn(on_node.ptr, path.slice(), h, list.items);
+            if (self.node_collector) |collector| if (!is_leaf) {
+                try collector.collect(try self.allocator.dupe(u8, path.slice()), list.items);
+                collected = true;
+            };
         }
         if (self.stack) |*stack| if (own_frame != Node.no_frame) {
             stack.end_index = own_frame;
@@ -1119,3 +1119,25 @@ test "a write in the same batch keeps the branch from collapsing onto a missing 
     try rlp.serialize([17][]const u8, a, expected_branch, &expected);
     try std.testing.expectEqualSlices(u8, &keccak256(expected.items), &try t.rootHash());
 }
+
+pub const NodeCollector = struct {
+    const Self = @This();
+    pub const Node = struct { path: []const u8, blob: []const u8 };
+
+    nodes: []Self.Node,
+    index: usize = 0,
+
+    pub fn init(allocator: std.mem.Allocator, max_nodes: usize) !Self {
+        return .{ .nodes = try allocator.alloc(Self.Node, max_nodes) };
+    }
+
+    pub fn collect(self: *Self, path: []const u8, blob: []const u8) !void {
+        if (self.index >= self.nodes.len) return error.OutOfMemory;
+        self.nodes[self.index] = .{ .blob = blob, .path = path };
+        self.index += 1;
+    }
+
+    pub fn collected(self: *Self) []Self.Node {
+        return self.nodes[0..self.index];
+    }
+};

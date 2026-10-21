@@ -11,10 +11,12 @@ pub const Table = enum {
     accounts,
     storage,
     codes,
+    account_trie,
+    storage_tries,
 
     pub fn options(self: Table) lmdbx.Database.Options {
         return switch (self) {
-            .storage => .{ .dup_sort = true },
+            .storage, .storage_tries => .{ .dup_sort = true },
             else => .{},
         };
     }

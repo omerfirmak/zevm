@@ -57,8 +57,8 @@
             .hash = "clap-0.12.0-oBajB4XpAQCF1WRKnD5KOKPsnwwT_NNdAJ7Ww3irYJac",
         },
         .rlp = .{
-            .url = "git+https://github.com/gballet/zig-rlp.git#133352905de96e21e56366f1b09552683199cb23",
-            .hash = "rlp-0.1.0-7i0JtIZOAQDsrbKZFe1BHInPdhFqiKRIV2-DNnuRGbMp",
+            .url = "git+https://github.com/omerfirmak/zig-rlp.git#aaf1f42647ade4b9f8e74eac9414c3d98ee3157f",
+            .hash = "rlp-0.1.0-7i0JtE9VAQC_bkC70GA6F2dC1BSXiZOLZWI2NRot5ygg",
         },
         .ssz = .{
             .url = "git+https://github.com/omerfirmak/ssz.zig.git#614e40cb5a532f911057bb887db28b768bed1537",

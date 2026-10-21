@@ -13,7 +13,7 @@ const kv = @import("../db/kv.zig");
 const lmdbx = @import("lmdbx");
 const prom = @import("metrics");
 
-const verifyRangeProof = @import("../trie/range_proof.zig").verifyRangeProof;
+const RangeProofVerifier = @import("../trie/range_proof.zig").Verifier;
 const EthDb = @import("../db/eth.zig").Eth;
 const List = @import("../free_list.zig").List;
 const max_inflight_requests = 100;
@@ -455,15 +455,15 @@ pub const Downloader = struct {
             accounts[index] = try list.toOwnedSlice();
         }
 
+        const verifier = try RangeProofVerifier.init(scratch);
         const proof = try proofNodes(scratch, response.proof);
-        const has_more = try verifyRangeProof(
+        const has_more = try verifier.verify(
             scratch,
             request.root,
             request.origin,
             hashes,
             accounts,
             if (response.proof.len > 0) &proof else null,
-            try scratch.create([trie.Trie.stack_size]u8),
         );
         const served = countBelowLimit(hashes, request.limit);
         return .{ .accounts = .{
@@ -477,52 +477,53 @@ pub const Downloader = struct {
 
     fn verifyStorage(
         self: *Self,
-        allocator: std.mem.Allocator,
+        response_arena: std.mem.Allocator,
         request: snap.GetStorageRanges,
         storage_roots: []const [32]u8,
         response: *const snap.StorageRanges,
     ) !ValidationOutcome {
         if (response.slots.len == 0 and response.proof.len == 0) return error.EmptyStorageRanges;
-        var scratch_arena = std.heap.ArenaAllocator.init(self.allocator);
-        defer scratch_arena.deinit();
-        const scratch = scratch_arena.allocator();
-        const proof = try proofNodes(scratch, response.proof);
-        const stack_buffer = try scratch.create([trie.Trie.stack_size]u8);
 
+        const verifier = try RangeProofVerifier.init(self.allocator);
+        defer verifier.deinit(self.allocator);
+
+        const proof = try proofNodes(response_arena, response.proof);
         const served = response.slots[0..@min(response.slots.len, request.account_hashes.len)];
         var result: VerifiedStorage = .{
             .chunk = isStorageChunk(request),
-            .keys = try allocator.alloc([][32]u8, @max(served.len, 1)),
-            .values = try allocator.alloc([][]const u8, @max(served.len, 1)),
+            .keys = try response_arena.alloc([][32]u8, @max(served.len, 1)),
+            .values = try response_arena.alloc([][]const u8, @max(served.len, 1)),
+            .nodes = try response_arena.alloc([]trie.NodeCollector.Node, @max(served.len, 1)),
         };
         var verified: usize = 0;
         if (served.len == 0 and request.account_hashes.len > 0) {
             // without slots, the proof has to show the first account has none from the starting to u256.max
-            _ = try verifyRangeProof(scratch, storage_roots[0], request.starting_hash, &.{}, &.{}, &proof, stack_buffer);
+            _ = try verifier.verify(response_arena, storage_roots[0], request.starting_hash, &.{}, &.{}, &proof);
             result.keys[0] = &.{};
             result.values[0] = &.{};
+            result.nodes[0] = &.{};
             verified = 1;
         }
         for (served, 0..) |slots, index| {
             const origin: [32]u8 = if (index == 0) request.starting_hash else @splat(0);
             const is_last = index + 1 == response.slots.len;
 
-            const keys = try allocator.alloc([32]u8, slots.len);
-            const values = try allocator.alloc([]const u8, slots.len);
+            const keys = try response_arena.alloc([32]u8, slots.len);
+            const values = try response_arena.alloc([]const u8, slots.len);
+            var node_collector = try trie.NodeCollector.init(response_arena, slots.len * 2);
             for (slots, 0..) |slot, slot_index| {
                 keys[slot_index] = slot.hash;
                 values[slot_index] = slot.data;
             }
 
-            const has_more = verifyRangeProof(
-                scratch,
+            const has_more = try verifier.withCollector(&node_collector).verify(
+                response_arena,
                 storage_roots[index],
                 origin,
                 keys,
                 values,
                 if (is_last and response.proof.len > 0) &proof else null,
-                stack_buffer,
-            ) catch break;
+            );
 
             const served_slots = if (index + 1 == request.account_hashes.len)
                 countBelowLimit(keys, request.limit_hash)
@@ -530,6 +531,7 @@ pub const Downloader = struct {
                 keys.len;
             result.keys[index] = keys[0..served_slots];
             result.values[index] = values[0..served_slots];
+            result.nodes[index] = node_collector.collected();
             verified = index + 1;
             if (has_more and served_slots == keys.len) {
                 result.continue_from_slot = origin;
@@ -543,9 +545,10 @@ pub const Downloader = struct {
                 break;
             }
         }
-        result.account_hashes = try allocator.dupe([32]u8, request.account_hashes[0..verified]);
+        result.account_hashes = try response_arena.dupe([32]u8, request.account_hashes[0..verified]);
         result.keys = result.keys[0..verified];
         result.values = result.values[0..verified];
+        result.nodes = result.nodes[0..verified];
         return .{ .storage = result };
     }
 
@@ -1381,8 +1384,11 @@ pub const Downloader = struct {
         errdefer _ = txn.abort() catch |e| {
             log.err("failed to abort txn {}", .{e});
         };
-        for (storage.account_hashes, storage.keys, storage.values) |account_hash, keys, values|
+        for (storage.account_hashes, storage.keys, storage.values, storage.nodes) |account_hash, keys, values, nodes| {
             try self.eth_db.appendStorage(txn, account_hash, keys, values, !storage.chunk);
+            if (nodes.len > 0)
+                try self.eth_db.appendStorageTrie(txn, account_hash, nodes);
+        }
         try self.commitTxn(txn, "storage", txn_start);
     }
 
@@ -1867,6 +1873,7 @@ const VerifiedStorage = struct {
     account_hashes: [][32]u8 = &.{},
     keys: [][][32]u8 = &.{},
     values: [][][]const u8 = &.{},
+    nodes: [][]trie.NodeCollector.Node = &.{},
     continue_from_slot: ?[32]u8 = null,
 };
 
