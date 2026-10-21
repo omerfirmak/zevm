@@ -5,7 +5,7 @@ An alpha EVM implementation in Zig, using threaded code dispatch for opcode exec
 
 ## Requirements
 
-- Zig 0.16.0
+- Zig 0.17.0
 
 ## Building
 
