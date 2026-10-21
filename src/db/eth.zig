@@ -75,16 +75,9 @@ pub const Eth = struct {
         const cursor = try self.kv_store.table(txn, .storage).cursor();
         defer cursor.deinit();
         var buf: [32 + max_value_rlp_len]u8 = undefined;
-        var k: lmdbx.c.MDBX_val = .{ .iov_len = account_hash.len, .iov_base = @constCast(&account_hash) };
-        const flags: c_uint = if (append_key) lmdbx.c.MDBX_APPEND | lmdbx.c.MDBX_APPENDDUP else lmdbx.c.MDBX_APPENDDUP;
+        const flags: lmdbx.Database.SetFlag = if (append_key) lmdbx.Database.SetFlag.AppendDup.with(.Append) else .AppendDup;
         for (slot_hashes, values_rlp) |slot_hash, value_rlp| {
-            const slot = try encodeSlot(&buf, slot_hash, value_rlp);
-            var v: lmdbx.c.MDBX_val = .{ .iov_len = slot.len, .iov_base = @constCast(slot.ptr) };
-            switch (lmdbx.c.mdbx_cursor_put(cursor.ptr, &k, &v, flags)) {
-                lmdbx.c.MDBX_SUCCESS => {},
-                lmdbx.c.MDBX_EKEYMISMATCH => return lmdbx.Error.MDBX_EKEYMISMATCH,
-                else => return error.StorageAppendFailed,
-            }
+            try cursor.put(&account_hash, try encodeSlot(&buf, slot_hash, value_rlp), flags);
         }
     }
 
@@ -92,16 +85,9 @@ pub const Eth = struct {
         const cursor = try self.kv_store.table(txn, .storage).cursor();
         defer cursor.deinit();
 
-        var k: lmdbx.c.MDBX_val = .{ .iov_len = account_hash.len, .iov_base = @constCast(&account_hash) };
-        var v: lmdbx.c.MDBX_val = .{ .iov_len = slot_hash.len, .iov_base = @constCast(&slot_hash) };
-        switch (lmdbx.c.mdbx_cursor_get(cursor.ptr, &k, &v, lmdbx.c.MDBX_GET_BOTH_RANGE)) {
-            lmdbx.c.MDBX_SUCCESS => {
-                const found: [*]const u8 = @ptrCast(v.iov_base);
-                if (v.iov_len >= slot_hash.len and std.mem.eql(u8, found[0..slot_hash.len], &slot_hash))
-                    try cursor.del(.Current);
-            },
-            lmdbx.c.MDBX_NOTFOUND => {},
-            else => return error.StorageSeekFailed,
+        if (try cursor.seekDupLowerBound(&account_hash, &slot_hash)) |res| {
+            if (std.mem.startsWith(u8, res.entry.value, &slot_hash))
+                try cursor.del(.Current);
         }
 
         if (value != 0) {
