@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-BASE="https://pub-760ad8b3dd9547539f829c1ea30f18b5.r2.dev/devnets/glamsterdam-devnet-8"
+BASE="https://pub-afa6b160acfb4919bda1d0e2a00b5b77.r2.dev/testnets/sepolia"
 OUT_DIR="${1:-zk_fixtures}"
 COUNT="${2:-1000}"
 GUEST="./zig-out/bin/zevm-guest"
