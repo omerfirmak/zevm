@@ -581,7 +581,128 @@ pub const Trie = struct {
         if (self.stack) |*stack| return stack.allocator().dupe(u8, value);
         return value;
     }
+
+    fn resolveFromMap(self: *Self, node: *Node, nodes: *const NodesHashMap, depth: usize) anyerror!void {
+        switch (node.*) {
+            .hashed => |hashed| {
+                if (hashed.len != 32) return;
+                const entry = nodes.getEntryContext(hashed.data, .{}) orelse return;
+                try decodeNode(self, node, entry.value_ptr.*, entry.key_ptr);
+                try resolveFromMap(self, node, nodes, depth);
+            },
+            .branch => |branch| {
+                if (depth >= 64) return error.MalformedTrieNode;
+                for (branch.children) |child| {
+                    if (child) |c| try resolveFromMap(self, c, nodes, depth + 1);
+                }
+            },
+            .ext => |ext| {
+                if (depth + ext.key_len > 64) return error.MalformedTrieNode;
+                try resolveFromMap(self, ext.child, nodes, depth + ext.key_len);
+            },
+            .leaf => |leaf| if (depth + leaf.key_len > 64) return error.MalformedTrieNode,
+            .empty => {},
+        }
+    }
+
+    fn decodeNode(self: *Self, node: *Node, encoded: []const u8, node_hash: ?*[32]u8) anyerror!void {
+        var items: [][]const u8 = undefined;
+        _ = try rlp.deserialize([][]const u8, self.allocator, encoded, &items);
+        defer self.allocator.free(items);
+
+        if (items.len == 17) {
+            node.* = Node.Branch.init();
+            node.branch.hash = node_hash;
+            for (items[0..16], 0..) |child_payload, i| {
+                if (child_payload.len == 0) continue;
+                node.branch.children[i] = try decodeChild(self, child_payload);
+            }
+        } else if (items.len == 2) {
+            const key_payload = items[0];
+            const value_payload = items[1];
+
+            var key_buf: [65]u8 = undefined;
+            const decoded = try compactToHex(key_payload, &key_buf);
+
+            if (decoded.is_leaf) {
+                node.* = Node.Leaf.init(decoded.nibbles, value_payload);
+                node.leaf.hash = node_hash;
+            } else {
+                if (value_payload.len == 0) return error.MalformedTrieNode;
+                node.* = Node.Extension.init(decoded.nibbles, try decodeChild(self, value_payload));
+                node.ext.hash = node_hash;
+            }
+        } else {
+            return error.MalformedTrieNode;
+        }
+    }
+
+    fn decodeChild(self: *Self, payload: []const u8) !*Node {
+        const child = try self.createNode();
+        if (payload.len == 32) {
+            child.* = Node.Hashed.init(payload);
+        } else {
+            try decodeNode(self, child, (payload.ptr - 1)[0 .. payload.len + 1], null);
+        }
+        return child;
+    }
 };
+
+fn stackTrieRoot(buffer: *[Trie.stack_size]u8, keys: []const [32]u8, values: [][]const u8, batch_sizes: []const usize) ![32]u8 {
+    var trie = try Trie.initWithStack(std.testing.allocator, buffer);
+    var start: usize = 0;
+    for (batch_sizes) |size| {
+        const end = @min(start + size, keys.len);
+        if (end == start) continue;
+        try trie.updateNoDeletions(keys[start..end], values[start..end]);
+        start = end;
+    }
+    if (start < keys.len) try trie.updateNoDeletions(keys[start..], values[start..]);
+    return trie.rootHash();
+}
+pub const NodeCollector = struct {
+    const Self = @This();
+    pub const Node = struct { path: []const u8, blob: []const u8 };
+
+    nodes: []Self.Node,
+    index: usize = 0,
+
+    pub fn init(allocator: std.mem.Allocator, max_nodes: usize) !Self {
+        return .{ .nodes = try allocator.alloc(Self.Node, max_nodes) };
+    }
+
+    pub fn collect(self: *Self, path: []const u8, blob: []const u8) !void {
+        if (self.index >= self.nodes.len) return error.OutOfMemory;
+        self.nodes[self.index] = .{ .blob = blob, .path = path };
+        self.index += 1;
+    }
+
+    pub fn collected(self: *Self) []Self.Node {
+        return self.nodes[0..self.index];
+    }
+};
+
+pub const NodesHashMap = std.HashMapUnmanaged([32]u8, []const u8, struct {
+    pub fn eql(_: @This(), a: [32]u8, b: [32]u8) bool {
+        return std.mem.eql(u8, &a, &b);
+    }
+    pub fn hash(_: @This(), key: [32]u8) u64 {
+        return std.mem.readInt(u64, key[0..8], .native);
+    }
+}, 80);
+
+pub fn loadFromNodesMap(
+    allocator: std.mem.Allocator,
+    root: [32]u8,
+    nodes: *const NodesHashMap,
+    stack_buffer: ?*[Trie.stack_size]u8,
+) !Trie {
+    var t = if (stack_buffer) |buffer| try Trie.initWithStack(allocator, buffer) else try Trie.init(allocator);
+    if (std.mem.eql(u8, &empty_root_hash, &root)) return t;
+    t.root.* = Node.Hashed.init(&root);
+    try t.resolveFromMap(t.root, nodes, 0);
+    return t;
+}
 
 pub fn writeHexKey(key: []const u8, buf: *[64]u8) []u8 {
     for (key, 0..) |b, i| {
@@ -630,6 +751,26 @@ fn hexToCompact(hex: []u8) []u8 {
 
     hex[0] = first_byte;
     return hex[0..bin_len];
+}
+
+fn compactToHex(compact: []const u8, out_buf: *[65]u8) !struct { is_leaf: bool, nibbles: []u8 } {
+    if (compact.len > 33) return error.MalformedTrieNode;
+    const flags = compact[0] >> 4;
+    const is_leaf = (flags & 0x2) != 0;
+    const odd = (flags & 0x1) != 0;
+
+    var i: usize = 0;
+    if (odd) {
+        out_buf[i] = compact[0] & 0x0F;
+        i += 1;
+    }
+    var j: usize = 1;
+    while (j < compact.len) : (j += 1) {
+        out_buf[i] = compact[j] >> 4;
+        out_buf[i + 1] = compact[j] & 0x0F;
+        i += 2;
+    }
+    return .{ .is_leaf = is_leaf, .nibbles = out_buf[0..i] };
 }
 
 fn verifyCase(cases: []const struct { k: []const u8, v: []const u8 }, expected_hex: *const [64]u8) !void {
@@ -833,19 +974,6 @@ test "delete non-existent key is no-op" {
     try std.testing.expectEqualSlices(u8, &expected, &got);
 }
 
-fn stackTrieRoot(buffer: *[Trie.stack_size]u8, keys: []const [32]u8, values: [][]const u8, batch_sizes: []const usize) ![32]u8 {
-    var trie = try Trie.initWithStack(std.testing.allocator, buffer);
-    var start: usize = 0;
-    for (batch_sizes) |size| {
-        const end = @min(start + size, keys.len);
-        if (end == start) continue;
-        try trie.updateNoDeletions(keys[start..end], values[start..end]);
-        start = end;
-    }
-    if (start < keys.len) try trie.updateNoDeletions(keys[start..], values[start..]);
-    return trie.rootHash();
-}
-
 test "stack trie matches the regular trie and stays bounded" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -913,113 +1041,6 @@ test "stack trie keeps values across batches" {
         @memset(&value, 0);
     }
     try std.testing.expectEqualSlices(u8, &expected, &try trie.rootHash());
-}
-
-pub const NodesHashMap = std.HashMapUnmanaged([32]u8, []const u8, struct {
-    pub fn eql(_: @This(), a: [32]u8, b: [32]u8) bool {
-        return std.mem.eql(u8, &a, &b);
-    }
-    pub fn hash(_: @This(), key: [32]u8) u64 {
-        return std.mem.readInt(u64, key[0..8], .native);
-    }
-}, 80);
-
-pub fn loadFromNodesMap(
-    allocator: std.mem.Allocator,
-    root: [32]u8,
-    nodes: *const NodesHashMap,
-    stack_buffer: ?*[Trie.stack_size]u8,
-) !Trie {
-    var t = if (stack_buffer) |buffer| try Trie.initWithStack(allocator, buffer) else try Trie.init(allocator);
-    if (std.mem.eql(u8, &empty_root_hash, &root)) return t;
-    t.root.* = Node.Hashed.init(&root);
-    try resolveFromMap(&t, t.root, nodes, 0);
-    return t;
-}
-
-fn resolveFromMap(self: *Trie, node: *Node, nodes: *const NodesHashMap, depth: usize) anyerror!void {
-    switch (node.*) {
-        .hashed => |hashed| {
-            if (hashed.len != 32) return;
-            const entry = nodes.getEntryContext(hashed.data, .{}) orelse return;
-            try decodeNode(self, node, entry.value_ptr.*, entry.key_ptr);
-            try resolveFromMap(self, node, nodes, depth);
-        },
-        .branch => |branch| {
-            if (depth >= 64) return error.MalformedTrieNode;
-            for (branch.children) |child| {
-                if (child) |c| try resolveFromMap(self, c, nodes, depth + 1);
-            }
-        },
-        .ext => |ext| {
-            if (depth + ext.key_len > 64) return error.MalformedTrieNode;
-            try resolveFromMap(self, ext.child, nodes, depth + ext.key_len);
-        },
-        .leaf => |leaf| if (depth + leaf.key_len > 64) return error.MalformedTrieNode,
-        .empty => {},
-    }
-}
-
-fn decodeNode(self: *Trie, node: *Node, encoded: []const u8, node_hash: ?*[32]u8) anyerror!void {
-    var items: [][]const u8 = undefined;
-    _ = try rlp.deserialize([][]const u8, self.allocator, encoded, &items);
-    defer self.allocator.free(items);
-
-    if (items.len == 17) {
-        node.* = Node.Branch.init();
-        node.branch.hash = node_hash;
-        for (items[0..16], 0..) |child_payload, i| {
-            if (child_payload.len == 0) continue;
-            node.branch.children[i] = try decodeChild(self, child_payload);
-        }
-    } else if (items.len == 2) {
-        const key_payload = items[0];
-        const value_payload = items[1];
-
-        var key_buf: [65]u8 = undefined;
-        const decoded = try compactToHex(key_payload, &key_buf);
-
-        if (decoded.is_leaf) {
-            node.* = Node.Leaf.init(decoded.nibbles, value_payload);
-            node.leaf.hash = node_hash;
-        } else {
-            if (value_payload.len == 0) return error.MalformedTrieNode;
-            node.* = Node.Extension.init(decoded.nibbles, try decodeChild(self, value_payload));
-            node.ext.hash = node_hash;
-        }
-    } else {
-        return error.MalformedTrieNode;
-    }
-}
-
-fn decodeChild(self: *Trie, payload: []const u8) !*Node {
-    const child = try self.createNode();
-    if (payload.len == 32) {
-        child.* = Node.Hashed.init(payload);
-    } else {
-        try decodeNode(self, child, (payload.ptr - 1)[0 .. payload.len + 1], null);
-    }
-    return child;
-}
-
-fn compactToHex(compact: []const u8, out_buf: *[65]u8) !struct { is_leaf: bool, nibbles: []u8 } {
-    if (compact.len > 33) return error.MalformedTrieNode;
-    const flags = compact[0] >> 4;
-    const is_leaf = (flags & 0x2) != 0;
-    const odd = (flags & 0x1) != 0;
-
-    var i: usize = 0;
-    if (odd) {
-        out_buf[i] = compact[0] & 0x0F;
-        i += 1;
-    }
-    var j: usize = 1;
-    while (j < compact.len) : (j += 1) {
-        out_buf[i] = compact[j] >> 4;
-        out_buf[i + 1] = compact[j] & 0x0F;
-        i += 2;
-    }
-    return .{ .is_leaf = is_leaf, .nibbles = out_buf[0..i] };
 }
 
 test "deleting a leaf requires its remaining sibling preimage" {
@@ -1119,25 +1140,3 @@ test "a write in the same batch keeps the branch from collapsing onto a missing 
     try rlp.serialize([17][]const u8, a, expected_branch, &expected);
     try std.testing.expectEqualSlices(u8, &keccak256(expected.items), &try t.rootHash());
 }
-
-pub const NodeCollector = struct {
-    const Self = @This();
-    pub const Node = struct { path: []const u8, blob: []const u8 };
-
-    nodes: []Self.Node,
-    index: usize = 0,
-
-    pub fn init(allocator: std.mem.Allocator, max_nodes: usize) !Self {
-        return .{ .nodes = try allocator.alloc(Self.Node, max_nodes) };
-    }
-
-    pub fn collect(self: *Self, path: []const u8, blob: []const u8) !void {
-        if (self.index >= self.nodes.len) return error.OutOfMemory;
-        self.nodes[self.index] = .{ .blob = blob, .path = path };
-        self.index += 1;
-    }
-
-    pub fn collected(self: *Self) []Self.Node {
-        return self.nodes[0..self.index];
-    }
-};
