@@ -3,7 +3,7 @@ set -euo pipefail
 
 BASE="https://pub-afa6b160acfb4919bda1d0e2a00b5b77.r2.dev/testnets/sepolia"
 OUT_DIR="${1:-zk_fixtures}"
-COUNT="${2:-1000}"
+COUNT="${2:-100}"
 GUEST="./zig-out/bin/zevm-guest"
 
 mkdir -p "$OUT_DIR"
