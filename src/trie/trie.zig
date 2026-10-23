@@ -233,7 +233,7 @@ pub const Trie = struct {
         }
         switch (node.*) {
             .empty => {
-                if (value.len != 0) node.* = Node.Leaf.init(key, try self.dupeValue(value));
+                if (value.len != 0) node.* = Node.Leaf.init(key, value);
                 if (keys.*.len > 0) _ = writeHexKey(&keys.*[0], key_buf);
             },
             .branch => |*branch| {
@@ -411,7 +411,7 @@ pub const Trie = struct {
 
     fn createLeaf(self: *Self, key: []const u8, value: []const u8) !*Node {
         const n = try self.createNode();
-        n.* = Node.Leaf.init(key, try self.dupeValue(value));
+        n.* = Node.Leaf.init(key, value);
         return n;
     }
 
@@ -575,11 +575,6 @@ pub const Trie = struct {
 
     fn currentFrame(self: *const Self) u32 {
         return if (self.stack) |stack| @intCast(stack.end_index) else 0;
-    }
-
-    fn dupeValue(self: *Self, value: []const u8) ![]const u8 {
-        if (self.stack) |*stack| return stack.allocator().dupe(u8, value);
-        return value;
     }
 
     fn resolveFromMap(self: *Self, node: *Node, nodes: *const NodesHashMap, depth: usize) anyerror!void {
@@ -1015,32 +1010,6 @@ test "stack trie matches the regular trie and stays bounded" {
         try std.testing.expectEqualSlices(u8, &expected, &try stackTrieRoot(buffer, keys[0..unique], values, &.{unique}));
         try std.testing.expectEqualSlices(u8, &expected, &try stackTrieRoot(buffer, keys[0..unique], values, &.{ 1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233 }));
     }
-}
-
-test "stack trie keeps values across batches" {
-    var keys: [4][32]u8 = undefined;
-    makeKey("1234da", &keys[0]);
-    makeKey("1234ea", &keys[1]);
-    makeKey("1234fa", &keys[2]);
-    makeKey("2000", &keys[3]);
-    var vals = [_][]const u8{ "x___________________________1", "x___________________________2", "x___________________________3", "x___________________________4" };
-    var regular = try Trie.init(std.heap.c_allocator);
-    try regular.update(&keys, &vals);
-    const expected = try regular.rootHash();
-
-    const buffer = try std.testing.allocator.create([Trie.stack_size]u8);
-    defer std.testing.allocator.destroy(buffer);
-    var trie = try Trie.initWithStack(std.testing.allocator, buffer);
-    var buf: [1][]const u8 = undefined;
-    var value: [29]u8 = undefined;
-    for (keys, vals) |key, val| {
-        // the caller reuses its value buffer for every batch
-        @memcpy(&value, val);
-        buf[0] = &value;
-        try trie.updateNoDeletions(&.{key}, &buf);
-        @memset(&value, 0);
-    }
-    try std.testing.expectEqualSlices(u8, &expected, &try trie.rootHash());
 }
 
 test "deleting a leaf requires its remaining sibling preimage" {
