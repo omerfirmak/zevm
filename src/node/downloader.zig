@@ -1586,7 +1586,9 @@ pub const Downloader = struct {
             var updated_storage_root: ?[32]u8 = null;
             var account = (try self.eth_db.readAccount(txn, addr_hash)) orelse types.EmptyAccount;
 
-            if (diff.storage.slots.len > 0) {
+            // contract storage is being initialized from scratch, just let the storage download handle it.
+            const empty_unfetched = std.meta.eql(account.storage_hash, types.empty_root_hash) and !self.storageFetchPassed(addr_hash);
+            if (diff.storage.slots.len > 0 and !empty_unfetched) {
                 if (try self.eth_db.openStorageTrie(
                     allocator,
                     txn,
@@ -1650,12 +1652,18 @@ pub const Downloader = struct {
         return std.mem.order(u8, &account_hash, &fetched_until) == .lt;
     }
 
+    fn storageFetchPassed(self: *Self, account_hash: [32]u8) bool {
+        const state = &self.state.?;
+        return switch (state.phase) {
+            .accounts => false,
+            .storage => std.mem.order(u8, &account_hash, &state.storage_fetch_head) == .lt,
+            .codes => true,
+        };
+    }
+
     fn isStorageFetched(self: *Self, account_hash: [32]u8, slot_hash: [32]u8) bool {
         std.debug.assert(self.state_heal != null);
-        const state = &self.state.?;
-        if (state.phase == .accounts) return false;
-        if (state.phase == .storage and
-            std.mem.order(u8, &account_hash, &state.storage_fetch_head) != .lt) return false;
+        if (!self.storageFetchPassed(account_hash)) return false;
 
         for (self.stashed_snap_requests) |request| {
             if (request.msg != .get_storage_ranges) continue;
