@@ -3,6 +3,7 @@
 
 const std = @import("std");
 const rlp = @import("rlp");
+const trie = @import("trie/trie.zig");
 
 // Key type for the global contract state storage
 pub const StorageLookup = struct {
@@ -724,6 +725,55 @@ pub const AccountChanges = struct {
             .code_changes = self.code_changes,
         }, list);
     }
+
+    pub fn readOnly(self: *const AccountChanges) bool {
+        return self.balance_changes.len == 0 and
+            self.code_changes.len == 0 and
+            self.nonce_changes.len == 0 and
+            self.storage_changes.len == 0;
+    }
+
+    pub fn stateDiff(self: *const AccountChanges, allocator: std.mem.Allocator) !struct {
+        storage: struct {
+            slots: [][32]u8,
+            values: []u256,
+        },
+        account: struct {
+            nonce: ?u256,
+            balance: ?u256,
+            code: ?[]const u8,
+        },
+    } {
+        const hashed_slots = try allocator.alloc([32]u8, self.storage_changes.len);
+        const values = try allocator.alloc(u256, self.storage_changes.len);
+
+        for (self.storage_changes, 0..) |slot_changes, index| {
+            var slot_key: [32]u8 = undefined;
+            std.mem.writeInt(u256, &slot_key, slot_changes.key, .big);
+            std.crypto.hash.sha3.Keccak256.hash(&slot_key, &hashed_slots[index], .{});
+
+            values[index] = slot_changes.lastValue();
+        }
+
+        trie.sortPairsByKey(u256, hashed_slots, values);
+        return .{ .storage = .{
+            .slots = hashed_slots,
+            .values = values,
+        }, .account = .{
+            .nonce = if (self.nonce_changes.len > 0)
+                self.nonce_changes[self.nonce_changes.len - 1].nonce
+            else
+                null,
+            .balance = if (self.balance_changes.len > 0)
+                self.balance_changes[self.balance_changes.len - 1].balance
+            else
+                null,
+            .code = if (self.code_changes.len > 0)
+                self.code_changes[self.code_changes.len - 1].code
+            else
+                null,
+        } };
+    }
 };
 
 pub const StorageChange = struct {
@@ -749,4 +799,8 @@ pub const CodeChange = struct {
 pub const SlotChanges = struct {
     key: u256,
     changes: []StorageChange,
+
+    pub fn lastValue(self: *const SlotChanges) u256 {
+        return self.changes[self.changes.len - 1].value;
+    }
 };

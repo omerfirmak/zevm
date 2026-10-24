@@ -8,6 +8,9 @@ const rlp = @import("rlp");
 const lmdbx = @import("lmdbx");
 const trie = @import("../trie/trie.zig");
 
+const StorageTrie = @import("../trie/storage_trie.zig").StorageTrie;
+const StorageTrieResolver = @import("trie.zig").StorageTrieResolver;
+
 pub const Eth = struct {
     const Self = @This();
 
@@ -61,6 +64,16 @@ pub const Eth = struct {
         }, &list);
 
         try table.set(&hash, list.items, .Upsert);
+    }
+
+    pub fn writeCode(self: *Self, txn: kv.Transaction, code: []const u8) ![32]u8 {
+        const codes = self.kv_store.table(txn, .codes);
+        var code_hash: [32]u8 = undefined;
+        std.crypto.hash.sha3.Keccak256.hash(code, &code_hash, .{});
+        codes.set(&code_hash, code, .Create) catch |e| {
+            if (e != lmdbx.Error.MDBX_KEYEXIST) return e;
+        };
+        return code_hash;
     }
 
     const max_value_rlp_len = 33;
@@ -187,6 +200,32 @@ pub const Eth = struct {
         table.delete(&hash) catch |e| {
             if (e != lmdbx.Error.MDBX_NOTFOUND) return e;
         };
+    }
+
+    fn hasStorageTrie(self: *Self, txn: kv.Transaction, addr_hash: [32]u8) !bool {
+        return (try self.readStorageTrie(txn, addr_hash, &[_]u8{})) != null;
+    }
+
+    pub fn openStorageTrie(
+        self: *Self,
+        allocator: std.mem.Allocator,
+        txn: kv.Transaction,
+        addr_hash: [32]u8,
+        root: [32]u8,
+    ) !?StorageTrie {
+        // trie is not-empty, but we dont have a root node for it yet (ie still syncing)
+        if (!std.meta.eql(types.empty_root_hash, root) and
+            !try self.hasStorageTrie(txn, addr_hash)) return null;
+
+        var resolver = try allocator.create(StorageTrieResolver);
+        resolver.* = StorageTrieResolver{
+            .account_hash = addr_hash,
+            .eth = self,
+            .txn = txn,
+        };
+        return StorageTrie.initFromTrie(trie.Trie.init(allocator)
+            .withRoot(root)
+            .withResolver(resolver.resolver()));
     }
 };
 

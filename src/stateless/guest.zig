@@ -298,21 +298,6 @@ fn stateCapacities(comptime spec: Spec, bal: zevm.types.BlockAccessLists, codes:
     return caps;
 }
 
-fn sortPairsByKey(comptime V: type, keys: [][32]u8, values: []V) void {
-    const Ctx = struct {
-        keys: [][32]u8,
-        values: []V,
-        pub fn lessThan(self: @This(), a: usize, b: usize) bool {
-            return std.mem.order(u8, &self.keys[a], &self.keys[b]) == .lt;
-        }
-        pub fn swap(self: @This(), a: usize, b: usize) void {
-            std.mem.swap([32]u8, &self.keys[a], &self.keys[b]);
-            std.mem.swap(V, &self.values[a], &self.values[b]);
-        }
-    };
-    std.sort.pdqContext(0, keys.len, Ctx{ .keys = keys, .values = values });
-}
-
 fn calculateStateRoot(
     allocator: std.mem.Allocator,
     state_trie: *zevm.AccountTrie,
@@ -340,14 +325,13 @@ fn calculateStateRoot(
             const storage_trie = account_tries.getPtr(acc_change_entry.addr) orelse return error.MissingStorageTrie;
             const keys = try allocator.alloc([32]u8, acc_change_entry.storage_changes.len);
             defer allocator.free(keys);
-            const values = try allocator.alloc(?u256, acc_change_entry.storage_changes.len);
+            const values = try allocator.alloc(u256, acc_change_entry.storage_changes.len);
             defer allocator.free(values);
             for (acc_change_entry.storage_changes, keys, values) |slot_change, *k, *v| {
                 k.* = committed_state.keccakOfU256(slot_change.key);
-                const post_value = try state.contract_state.read(.{ .address = acc_change_entry.addr, .slot = slot_change.key });
-                v.* = if (post_value == 0) null else post_value;
+                v.* = try state.contract_state.read(.{ .address = acc_change_entry.addr, .slot = slot_change.key });
             }
-            sortPairsByKey(?u256, keys, values);
+            zevm.trie.sortPairsByKey(u256, keys, values);
             try storage_trie.insert(keys, values);
             post_acc.storage_hash = try storage_trie.rootHash();
         }
@@ -358,7 +342,7 @@ fn calculateStateRoot(
     }
 
     if (n_dirty > 0) {
-        sortPairsByKey(?zevm.types.Account, state_keys[0..n_dirty], state_accounts[0..n_dirty]);
+        zevm.trie.sortPairsByKey(?zevm.types.Account, state_keys[0..n_dirty], state_accounts[0..n_dirty]);
         try state_trie.insert(state_keys[0..n_dirty], state_accounts[0..n_dirty]);
     }
     return state_trie.rootHash();

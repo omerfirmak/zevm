@@ -4,6 +4,7 @@
 const std = @import("std");
 const rlp = @import("rlp");
 const Trie = @import("trie.zig").Trie;
+const NodeCollector = @import("trie.zig").NodeCollector;
 
 pub const StorageTrie = struct {
     inner: Trie,
@@ -14,6 +15,10 @@ pub const StorageTrie = struct {
 
     pub fn initFromTrie(inner: Trie) @This() {
         return .{ .inner = inner };
+    }
+
+    pub fn withCollector(self: @This(), collector: *NodeCollector) @This() {
+        return .{ .inner = self.inner.withCollector(collector) };
     }
 
     pub fn get(self: *const @This(), key: [32]u8) !u256 {
@@ -27,11 +32,11 @@ pub const StorageTrie = struct {
         }
     }
 
-    pub fn insert(self: *@This(), keys: []const [32]u8, values: []const ?u256) !void {
+    pub fn insert(self: *@This(), keys: []const [32]u8, values: []const u256) !void {
         const val_slices = try self.inner.allocator.alloc([]const u8, values.len);
         var has_deletions = false;
-        for (values, val_slices) |value_opt, *s| {
-            if (value_opt) |value| {
+        for (values, val_slices) |value, *s| {
+            if (value > 0) {
                 var buf = std.array_list.Managed(u8).init(self.inner.allocator);
                 try rlp.serialize(u256, self.inner.allocator, value, &buf);
                 s.* = buf.items;

@@ -256,7 +256,7 @@ pub fn computeStateRoot(
         var storage_trie = zevm.StorageTrie.init(gpa);
         if (slot_list.items.len > 0) {
             const storage_keys = try gpa.alloc([32]u8, slot_list.items.len);
-            const storage_vals = try gpa.alloc(?u256, slot_list.items.len);
+            const storage_vals = try gpa.alloc(u256, slot_list.items.len);
             for (slot_list.items, storage_keys, storage_vals) |se, *k, *v| {
                 k.* = se.key;
                 v.* = se.value;

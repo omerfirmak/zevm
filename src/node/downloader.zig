@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 const std = @import("std");
-const Blockchain = @import("blockchain.zig").Blockchain;
 const rlpx = @import("../devp2p/rlpx.zig");
 const eth = @import("../devp2p/eth.zig");
 const snap = @import("../devp2p/snap.zig");
@@ -16,6 +15,7 @@ const prom = @import("metrics");
 const RangeProofVerifier = @import("../trie/range_proof.zig").Verifier;
 const EthDb = @import("../db/eth.zig").Eth;
 const List = @import("../free_list.zig").List;
+const Blockchain = @import("blockchain.zig").Blockchain;
 const max_inflight_requests = 100;
 const max_inflight_requests_per_peer = 2;
 const header_persist_chunk = 1024;
@@ -1561,56 +1561,77 @@ pub const Downloader = struct {
     fn applyBal(self: *Self, bal: types.BlockAccessLists) !void {
         const txn_start = std.Io.Timestamp.now(self.io, .awake);
         const txn = try self.eth_db.kv_store.transaction_rw();
-        defer self.commitTxn(txn, "bal", txn_start) catch unreachable;
-        const codes = self.eth_db.kv_store.table(txn, .codes);
+        errdefer txn.abort() catch unreachable;
+
+        var scratch = std.heap.ArenaAllocator.init(self.allocator);
+        defer scratch.deinit();
+        const allocator = scratch.allocator();
 
         for (bal) |changes| {
-            if (changes.balance_changes.len == 0 and
-                changes.code_changes.len == 0 and
-                changes.nonce_changes.len == 0 and
-                changes.storage_changes.len == 0) continue;
+            if (changes.readOnly()) continue;
 
             var addr_buf: [20]u8 = undefined;
             std.mem.writeInt(u160, &addr_buf, changes.addr, .big);
             var addr_hash: [32]u8 = undefined;
             std.crypto.hash.sha3.Keccak256.hash(&addr_buf, &addr_hash, .{});
             if (!self.isAccountFetched(addr_hash)) continue;
-            var code_hash: [32]u8 = types.empty_code_hash;
-            if (changes.code_changes.len > 0) {
-                const code = changes.code_changes[changes.code_changes.len - 1].code;
-                std.crypto.hash.sha3.Keccak256.hash(code, &code_hash, .{});
-                codes.set(&code_hash, code, .Create) catch |e| {
-                    if (e != lmdbx.Error.MDBX_KEYEXIST) return e;
-                };
+
+            const diff = try changes.stateDiff(allocator);
+            const new_code_hash = if (diff.account.code) |code|
+                try self.eth_db.writeCode(txn, code)
+            else
+                null;
+
+            var updated_storage_root: ?[32]u8 = null;
+            var account = (try self.eth_db.readAccount(txn, addr_hash)) orelse types.EmptyAccount;
+
+            if (diff.storage.slots.len > 0) {
+                if (try self.eth_db.openStorageTrie(
+                    allocator,
+                    txn,
+                    addr_hash,
+                    account.storage_hash,
+                )) |st| {
+                    // per key: up to 64 inner nodes on its path plus removals from collapses
+                    var collector = try trie.NodeCollector.init(allocator, diff.storage.slots.len * 66);
+                    var storage_trie = st.withCollector(&collector);
+                    try storage_trie.insert(diff.storage.slots, diff.storage.values);
+                    updated_storage_root = try storage_trie.rootHash();
+
+                    for (collector.collected()) |node| {
+                        if (node.blob.len == 0)
+                            try self.eth_db.deleteStorageTrieNode(txn, addr_hash, node.path)
+                        else
+                            try self.eth_db.putStorageTrieNode(txn, addr_hash, node.path, node.blob);
+                    }
+                }
+
+                for (diff.storage.slots, diff.storage.values) |slot, value| {
+                    if (!self.isStorageFetched(addr_hash, slot)) continue;
+                    try self.eth_db.writeStorage(txn, addr_hash, slot, value);
+                }
             }
 
-            for (changes.storage_changes) |slot_changes| {
-                if (slot_changes.changes.len == 0) continue;
-                var slot_key: [32]u8 = undefined;
-                std.mem.writeInt(u256, &slot_key, slot_changes.key, .big);
-                var slot_hash: [32]u8 = undefined;
-                std.crypto.hash.sha3.Keccak256.hash(&slot_key, &slot_hash, .{});
-
-                if (!self.isStorageFetched(addr_hash, slot_hash)) continue;
-                try self.eth_db.writeStorage(txn, addr_hash, slot_hash, slot_changes.changes[slot_changes.changes.len - 1].value);
-            }
-
-            if (changes.storage_changes.len > 0) {
+            if (diff.storage.slots.len > 0 and updated_storage_root == null) {
                 try self.state_heal.?.stale_storage_roots.put(self.allocator, addr_hash, {});
             } else {
-                var updated_account = try self.eth_db.readAccount(txn, addr_hash) orelse types.EmptyAccount;
-                if (changes.balance_changes.len > 0)
-                    updated_account.balance = changes.balance_changes[changes.balance_changes.len - 1].balance;
-                if (changes.nonce_changes.len > 0)
-                    updated_account.nonce = changes.nonce_changes[changes.nonce_changes.len - 1].nonce;
-                if (changes.code_changes.len > 0) {
-                    updated_account.code_hash = code_hash;
+                if (diff.account.balance) |new_balance|
+                    account.balance = new_balance;
+                if (diff.account.nonce) |new_nonce|
+                    account.nonce = new_nonce;
+                if (new_code_hash) |code_hash| {
+                    account.code_hash = code_hash;
                 }
-                if (updated_account.isEmpty()) {
+                if (updated_storage_root) |storage_root| {
+                    account.storage_hash = storage_root;
+                }
+                if (account.isEmpty()) {
                     try self.eth_db.deleteAccount(txn, addr_hash);
-                } else try self.eth_db.writeAccount(self.allocator, txn, addr_hash, updated_account);
+                } else try self.eth_db.writeAccount(self.allocator, txn, addr_hash, account);
             }
         }
+
+        try self.commitTxn(txn, "bal", txn_start);
     }
 
     fn isAccountFetched(self: *Self, account_hash: [32]u8) bool {
