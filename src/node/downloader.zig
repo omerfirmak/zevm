@@ -773,9 +773,10 @@ pub const Downloader = struct {
 
     fn reissueSnapRequest(self: *Self, req: *Request(snap.Message)) !void {
         if (self.snapFlushQueueFull()) {
-            const head_node = self.snap_flush_queue.inner.first orelse return error.SnapFlushQueueFull;
-            const head = &@as(*List(QueuedSnapFlush).Node, @alignCast(@fieldParentPtr("node", head_node))).elem;
-            if (!head.isPrecededBy(req.msg, true)) return error.SnapFlushQueueFull;
+            const draining_for_heal = if (self.state_heal) |state_heal| !state_heal.bal_requested else false;
+            const blocked_node = (if (draining_for_heal) self.snap_flush_queue.inner.last else self.snap_flush_queue.inner.first) orelse return error.SnapFlushQueueFull;
+            const blocked = &@as(*List(QueuedSnapFlush).Node, @alignCast(@fieldParentPtr("node", blocked_node))).elem;
+            if (!blocked.isPrecededBy(req.msg, true)) return error.SnapFlushQueueFull;
         }
         return self.sendRequest(self.snap_provider, Self.pickSnapPeer, req);
     }
