@@ -47,8 +47,9 @@ pub const Verifier = struct {
                 if (!std.mem.eql(u8, &root, &trie.empty_root_hash)) return error.BadRangeProof;
                 return false;
             }
-            var t = try trie.Trie.initWithStack(allocator, self.stack_buffer);
-            t.node_collector = self.collector;
+            var t = trie.Trie.init(allocator).withStack(self.stack_buffer);
+            if (self.collector) |collector| t = t.withCollector(collector);
+
             try t.updateNoDeletions(keys, values);
             if (!std.mem.eql(u8, &try t.rootHash(), &root)) return error.BadRangeProof;
             return false;
@@ -58,7 +59,7 @@ pub const Verifier = struct {
 
         if (keys.len == 0) {
             if ((try t.get(origin)) != null) return error.MoreEntriesAvailable;
-            if (try hasRightElement(t.root, origin)) return error.MoreEntriesAvailable;
+            if (try hasRightElement(&t.root, origin)) return error.MoreEntriesAvailable;
             return false;
         }
 
@@ -66,7 +67,7 @@ pub const Verifier = struct {
         try clearInternal(&t, origin, last);
         try t.updateNoDeletions(keys, values);
 
-        const more = try hasRightElement(t.root, last);
+        const more = try hasRightElement(&t.root, last);
 
         if (!std.mem.eql(u8, &try t.rootHash(), &root)) return error.BadRangeProof;
         return more;
@@ -108,7 +109,7 @@ pub fn clearInternal(t: *trie.Trie, left_key: [32]u8, right_key: [32]u8) !void {
     const right = trie.writeHexKey(&right_key, &right_buf);
     if (std.mem.order(u8, left, right) == .gt) return error.InvalidBoundaries;
 
-    var node = t.root;
+    var node = &t.root;
     var parent: ?*trie.Node = null;
     var pos: usize = 0;
     var ord_left: std.math.Order = .eq;

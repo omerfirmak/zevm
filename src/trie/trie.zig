@@ -104,7 +104,7 @@ pub const Trie = struct {
     // Revisit if Node grows or stack tries take values larger than state values.
     pub const stack_size = 512 << 10;
 
-    root: *Node,
+    root: Node,
 
     allocator: std.mem.Allocator,
     resolver: ?NodeResolver = null,
@@ -115,35 +115,51 @@ pub const Trie = struct {
     skipped_deletions: bool = false,
 
     pub const NodeResolver = struct {
+        pub const Resolved = union(enum) {
+            rlp: []const u8,
+            node: Node,
+        };
+
         ptr: *anyopaque,
-        resolveFn: *const fn (ptr: *anyopaque, allocator: std.mem.Allocator, path: []const u8, node_hash: [32]u8) anyerror!?[]const u8,
+        resolveFn: *const fn (ptr: *anyopaque, allocator: std.mem.Allocator, path: []const u8, node_hash: [32]u8) anyerror!?Resolved,
     };
 
-    pub fn init(allocator: std.mem.Allocator) !Self {
-        const root = try allocator.create(Node);
-        root.* = .empty;
+    pub fn init(allocator: std.mem.Allocator) Self {
         return Self{
-            .root = root,
+            .root = .empty,
             .allocator = allocator,
         };
     }
 
-    pub fn initWithStack(allocator: std.mem.Allocator, buffer: *[stack_size]u8) !Self {
-        var stack: std.heap.FixedBufferAllocator = .init(buffer);
-        const root = try stack.allocator().create(Node);
-        root.* = .empty;
-        return .{
-            .root = root,
-            .allocator = allocator,
-            .stack = stack,
-        };
+    pub fn withRoot(self: Self, root: [32]u8) Self {
+        var t = self;
+        t.root = Node.Hashed.init(&root);
+        return t;
+    }
+
+    pub fn withStack(self: Self, buffer: *[stack_size]u8) Self {
+        var t = self;
+        t.stack = std.heap.FixedBufferAllocator.init(buffer);
+        return t;
+    }
+
+    pub fn withResolver(self: Self, resover: NodeResolver) Self {
+        var t = self;
+        t.resolver = resover;
+        return t;
+    }
+
+    pub fn withCollector(self: Self, collector: *NodeCollector) Self {
+        var t = self;
+        t.node_collector = collector;
+        return t;
     }
 
     pub fn get(self: *const Self, key: [32]u8) !?[]const u8 {
         var key_buf: [64]u8 = undefined;
 
         var key_nibbles = writeHexKey(&key, &key_buf);
-        var cur_node = self.root;
+        var cur_node = &self.root;
         while (true) {
             switch (cur_node.*) {
                 .empty => return null,
@@ -193,7 +209,7 @@ pub const Trie = struct {
         var path_buf: [64]u8 = undefined;
         var remaining_keys: []const [32]u8 = keys[1..];
         var remaining_values = values[1..];
-        try self.insert(self.root, key_nibbles, .{
+        try self.insert(&self.root, key_nibbles, .{
             .buf = &path_buf,
             .len = 0,
         }, values[0], &key_buf, &remaining_keys, &remaining_values);
@@ -205,12 +221,12 @@ pub const Trie = struct {
         var path_buf: [64]u8 = undefined;
         var ks: []const [32]u8 = &.{};
         var vs: [][]const u8 = &.{};
-        try self.insert(self.root, nibbles, .{ .buf = &path_buf, .len = 0 }, value, &key_buf, &ks, &vs);
+        try self.insert(&self.root, nibbles, .{ .buf = &path_buf, .len = 0 }, value, &key_buf, &ks, &vs);
     }
 
     pub fn rootHash(self: *Self) ![32]u8 {
         var path_buf: [64]u8 = undefined;
-        try self.hash(self.root, .{ .buf = &path_buf, .len = 0 });
+        try self.hash(&self.root, .{ .buf = &path_buf, .len = 0 });
         return self.root.hashed.data;
     }
 
@@ -419,10 +435,11 @@ pub const Trie = struct {
         const resolver = self.resolver orelse return error.SubTrieNotAvailable;
         if (node.hashed.len != 32) return error.SubTrieNotAvailable;
         const node_hash = node.hashed.data;
-        const encoded = try resolver.resolveFn(resolver.ptr, self.allocator, path.slice(), node_hash) orelse
-            return error.SubTrieNotAvailable;
-        errdefer self.allocator.free(encoded);
-        try decodeNode(self, node, encoded, null);
+        switch (try resolver.resolveFn(resolver.ptr, self.allocator, path.slice(), node_hash) orelse
+            return error.SubTrieNotAvailable) {
+            .rlp => |encoded| try decodeNode(self, node, encoded, null),
+            .node => |n| node.* = n,
+        }
     }
 
     // Collapse a branch that has dropped to 0 or 1 live children after a deletion.
@@ -644,7 +661,7 @@ pub const Trie = struct {
 };
 
 fn stackTrieRoot(buffer: *[Trie.stack_size]u8, keys: []const [32]u8, values: [][]const u8, batch_sizes: []const usize) ![32]u8 {
-    var trie = try Trie.initWithStack(std.testing.allocator, buffer);
+    var trie = Trie.init(std.testing.allocator).withStack(buffer);
     var start: usize = 0;
     for (batch_sizes) |size| {
         const end = @min(start + size, keys.len);
@@ -692,10 +709,10 @@ pub fn loadFromNodesMap(
     nodes: *const NodesHashMap,
     stack_buffer: ?*[Trie.stack_size]u8,
 ) !Trie {
-    var t = if (stack_buffer) |buffer| try Trie.initWithStack(allocator, buffer) else try Trie.init(allocator);
+    var t = if (stack_buffer) |buffer| Trie.init(allocator).withStack(buffer) else Trie.init(allocator);
     if (std.mem.eql(u8, &empty_root_hash, &root)) return t;
-    t.root.* = Node.Hashed.init(&root);
-    try t.resolveFromMap(t.root, nodes, 0);
+    t.root = Node.Hashed.init(&root);
+    try t.resolveFromMap(&t.root, nodes, 0);
     return t;
 }
 
@@ -776,7 +793,7 @@ fn verifyCase(cases: []const struct { k: []const u8, v: []const u8 }, expected_h
         vals[i] = c.v;
     }
 
-    var trie = try Trie.init(std.heap.c_allocator);
+    var trie = Trie.init(std.heap.c_allocator);
     try trie.update(keys[0..cases.len], vals[0..cases.len]);
     const root = try trie.rootHash();
 
@@ -786,7 +803,7 @@ fn verifyCase(cases: []const struct { k: []const u8, v: []const u8 }, expected_h
 }
 
 test "empty trie" {
-    var trie = try Trie.init(std.heap.c_allocator);
+    var trie = Trie.init(std.heap.c_allocator);
 
     const root = try trie.rootHash();
     try std.testing.expectEqualSlices(u8, &empty_root_hash, &root);
@@ -887,13 +904,13 @@ test "in-place leaf update" {
 
     // Trie built with two updates to the same key — second value wins.
     var vals = [_][]const u8{ "first", "second" };
-    var trie = try Trie.init(std.heap.c_allocator);
+    var trie = Trie.init(std.heap.c_allocator);
     try trie.update(&keys, &vals);
     const updated_root = try trie.rootHash();
 
     // Trie built with only the final value — must produce the same root.
     var vals2 = [_][]const u8{"second"};
-    var trie2 = try Trie.init(std.heap.c_allocator);
+    var trie2 = Trie.init(std.heap.c_allocator);
     try trie2.update(keys[0..1], &vals2);
     const expected_root = try trie2.rootHash();
 
@@ -919,7 +936,7 @@ test "delete sole leaf produces empty root" {
     makeKey("ab", &keys[1]); // same key, delete
     var vals = [_][]const u8{ "hello", "" };
 
-    var trie = try Trie.init(std.heap.c_allocator);
+    var trie = Trie.init(std.heap.c_allocator);
     try trie.update(&keys, &vals);
     const root = try trie.rootHash();
 
@@ -933,7 +950,7 @@ test "delete then insert different key in same batch" {
     makeKey("b0", &keys3[2]);
     var vals3 = [_][]const u8{ "value_a", "", "value_b" };
 
-    var trie = try Trie.init(std.heap.c_allocator);
+    var trie = Trie.init(std.heap.c_allocator);
     try trie.update(&keys3, &vals3);
     const got = try trie.rootHash();
 
@@ -941,7 +958,7 @@ test "delete then insert different key in same batch" {
     var keys1: [1][32]u8 = undefined;
     makeKey("b0", &keys1[0]);
     var vals1 = [_][]const u8{"value_b"};
-    var trie2 = try Trie.init(std.heap.c_allocator);
+    var trie2 = Trie.init(std.heap.c_allocator);
     try trie2.update(&keys1, &vals1);
     const expected = try trie2.rootHash();
 
@@ -953,7 +970,7 @@ test "delete non-existent key is no-op" {
     var k: [1][32]u8 = undefined;
     makeKey("b0", &k[0]);
     var v = [_][]const u8{"value_b"};
-    var ref = try Trie.init(std.heap.c_allocator);
+    var ref = Trie.init(std.heap.c_allocator);
     try ref.update(&k, &v);
     const expected = try ref.rootHash();
 
@@ -962,7 +979,7 @@ test "delete non-existent key is no-op" {
     makeKey("a0", &keys2[0]); // delete of non-existent key
     makeKey("b0", &keys2[1]);
     var vals2 = [_][]const u8{ "", "value_b" };
-    var trie = try Trie.init(std.heap.c_allocator);
+    var trie = Trie.init(std.heap.c_allocator);
     try trie.update(&keys2, &vals2);
     const got = try trie.rootHash();
 
@@ -1001,7 +1018,7 @@ test "stack trie matches the regular trie and stays bounded" {
             value.* = buf;
         }
 
-        var regular = try Trie.init(a);
+        var regular = Trie.init(a);
         try regular.updateNoDeletions(keys[0..unique], values);
         const expected = try regular.rootHash();
 
@@ -1044,9 +1061,10 @@ test "deleting a leaf requires its remaining sibling preimage" {
     try store.put(a, hash_b, encoded_b.items);
     var resolved = try loadFromNodesMap(a, root, &nodes, null);
     resolved.resolver = .{ .ptr = &store, .resolveFn = struct {
-        fn resolve(ptr: *anyopaque, _: std.mem.Allocator, path: []const u8, node_hash: [32]u8) anyerror!?[]const u8 {
+        fn resolve(ptr: *anyopaque, _: std.mem.Allocator, path: []const u8, node_hash: [32]u8) anyerror!?Trie.NodeResolver.Resolved {
             try std.testing.expectEqualSlices(u8, &.{1}, path);
-            return @as(*NodesHashMap, @ptrCast(@alignCast(ptr))).get(node_hash);
+            const bytes = @as(*NodesHashMap, @ptrCast(@alignCast(ptr))).get(node_hash) orelse return null;
+            return .{ .rlp = bytes };
         }
     }.resolve };
     try resolved.update(&.{key_a}, &values);

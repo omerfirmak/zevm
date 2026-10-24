@@ -82,6 +82,20 @@ pub const Eth = struct {
         }
     }
 
+    pub fn seekStorage(self: *Self, txn: kv.Transaction, account_hash: [32]u8, start: [32]u8) !?struct { [32]u8, []const u8 } {
+        const cursor = try self.kv_store.table(txn, .storage).cursor();
+        defer cursor.deinit();
+
+        const res = try cursor.seekDupLowerBound(&account_hash, &start) orelse return null;
+        if (res.entry.value.len < 32) return error.MalformedStorageEntry;
+        return .{ res.entry.value[0..32].*, res.entry.value[32..] };
+    }
+
+    pub fn readStorage(self: *Self, txn: kv.Transaction, account_hash: [32]u8, slot_hash: [32]u8) !?[]const u8 {
+        const found, const value = try self.seekStorage(txn, account_hash, slot_hash) orelse return null;
+        return if (std.mem.eql(u8, &found, &slot_hash)) value else null;
+    }
+
     fn encodeTrieNode(buf: *[768]u8, path: []const u8, blob: []const u8) ![]const u8 {
         if (path.len > 64) return error.TrieNodePathTooLong;
         if (blob.len > buf.len - path.len - 1) return error.TrieNodeTooLong;
@@ -102,6 +116,21 @@ pub const Eth = struct {
                 node.blob,
             ), lmdbx.Database.SetFlag.AppendDup.with(.Append));
         }
+    }
+
+    pub fn readStorageTrie(self: *Self, txn: kv.Transaction, account_hash: [32]u8, path: []const u8) !?[]const u8 {
+        if (path.len > 64) return error.TrieNodePathTooLong;
+        var seek_buf: [65]u8 = undefined;
+        @memcpy(seek_buf[0..path.len], path);
+        seek_buf[path.len] = 0xff;
+        const seek = seek_buf[0 .. path.len + 1];
+
+        const cursor = try self.kv_store.table(txn, .storage_tries).cursor();
+        defer cursor.deinit();
+
+        const res = try cursor.seekDupLowerBound(&account_hash, seek) orelse return null;
+        if (!std.mem.startsWith(u8, res.entry.value, seek)) return null;
+        return res.entry.value[seek.len..];
     }
 
     pub fn writeStorage(self: *Self, txn: kv.Transaction, account_hash: [32]u8, slot_hash: [32]u8, value: u256) !void {
