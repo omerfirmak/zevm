@@ -118,6 +118,36 @@ pub const Eth = struct {
         }
     }
 
+    pub fn putStorageTrieNode(self: *Self, txn: kv.Transaction, account_hash: [32]u8, path: []const u8, blob: []const u8) !void {
+        const cursor = try self.kv_store.table(txn, .storage_tries).cursor();
+        defer cursor.deinit();
+        var buf: [768]u8 = undefined;
+        const entry = try encodeTrieNode(&buf, path, blob);
+        const prefix = entry[0 .. path.len + 1];
+
+        if (try cursor.seekDupLowerBound(&account_hash, prefix)) |res| {
+            if (std.mem.startsWith(u8, res.entry.value, prefix))
+                try cursor.del(.Current);
+        }
+        try cursor.put(&account_hash, entry, .Upsert);
+    }
+
+    pub fn deleteStorageTrieNode(self: *Self, txn: kv.Transaction, account_hash: [32]u8, path: []const u8) !void {
+        if (path.len > 64) return error.TrieNodePathTooLong;
+        var seek_buf: [65]u8 = undefined;
+        @memcpy(seek_buf[0..path.len], path);
+        seek_buf[path.len] = 0xff;
+        const seek = seek_buf[0 .. path.len + 1];
+
+        const cursor = try self.kv_store.table(txn, .storage_tries).cursor();
+        defer cursor.deinit();
+
+        if (try cursor.seekDupLowerBound(&account_hash, seek)) |res| {
+            if (std.mem.startsWith(u8, res.entry.value, seek))
+                try cursor.del(.Current);
+        }
+    }
+
     pub fn readStorageTrie(self: *Self, txn: kv.Transaction, account_hash: [32]u8, path: []const u8) !?[]const u8 {
         if (path.len > 64) return error.TrieNodePathTooLong;
         var seek_buf: [65]u8 = undefined;

@@ -293,14 +293,19 @@ pub const Trie = struct {
                     // If a deletion collapsed our child into a leaf/ext, merge this ext's key
                     // into the child's key — adjacent ext+leaf or ext+ext is not a valid MPT shape.
                     switch (ext.child.*) {
-                        .empty => node.* = .empty,
+                        .empty => {
+                            try self.collectRemoved(path);
+                            node.* = .empty;
+                        },
                         .leaf => |child_leaf| {
+                            try self.collectRemoved(path);
                             var new_key: [65]u8 = undefined;
                             @memcpy(new_key[0..ext.key_len], ext.key[0..ext.key_len]);
                             @memcpy(new_key[ext.key_len..][0..child_leaf.key_len], child_leaf.key[0..child_leaf.key_len]);
                             node.* = Node.Leaf.init(new_key[0 .. ext.key_len + child_leaf.key_len], child_leaf.val);
                         },
                         .ext => |child_ext| {
+                            try self.collectRemoved(path.appendSlice(ext.key[0..ext.key_len]));
                             var new_key: [65]u8 = undefined;
                             @memcpy(new_key[0..ext.key_len], ext.key[0..ext.key_len]);
                             @memcpy(new_key[ext.key_len..][0..child_ext.key_len], child_ext.key[0..child_ext.key_len]);
@@ -456,6 +461,7 @@ pub const Trie = struct {
         }
 
         if (count == 0) {
+            try self.collectRemoved(path);
             node.* = .empty;
             return;
         }
@@ -464,12 +470,14 @@ pub const Trie = struct {
 
         switch (remaining_child.*) {
             .leaf => |leaf| {
+                try self.collectRemoved(path);
                 var new_key: [65]u8 = undefined;
                 new_key[0] = remaining_nibble;
                 @memcpy(new_key[1..][0..leaf.key_len], leaf.key[0..leaf.key_len]);
                 node.* = Node.Leaf.init(new_key[0 .. leaf.key_len + 1], leaf.val);
             },
             .ext => |ext| {
+                try self.collectRemoved(path.append(remaining_nibble));
                 var new_key: [65]u8 = undefined;
                 new_key[0] = remaining_nibble;
                 @memcpy(new_key[1..][0..ext.key_len], ext.key[0..ext.key_len]);
@@ -487,6 +495,12 @@ pub const Trie = struct {
             },
             .empty => unreachable,
         }
+    }
+
+    // Reports a branch or extension that no longer exists at `path` as an empty blob.
+    fn collectRemoved(self: *Self, path: Path) !void {
+        if (self.node_collector) |collector|
+            try collector.collect(try self.allocator.dupe(u8, path.slice()), &.{});
     }
 
     // Wrapper for child node values in RLP encoding. Hashed children (32 bytes)
