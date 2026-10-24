@@ -9,8 +9,8 @@ const Trie = @import("trie.zig").Trie;
 pub const AccountTrie = struct {
     inner: Trie,
 
-    pub fn init(allocator: std.mem.Allocator) !@This() {
-        return .{ .inner = try Trie.init(allocator) };
+    pub fn init(allocator: std.mem.Allocator) @This() {
+        return .{ .inner = Trie.init(allocator) };
     }
 
     pub fn initFromTrie(inner: Trie) @This() {

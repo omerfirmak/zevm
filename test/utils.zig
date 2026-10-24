@@ -253,7 +253,7 @@ pub fn computeStateRoot(
         }.lt);
 
         // Insert into storage trie and reclaim FBA memory after.
-        var storage_trie = try zevm.StorageTrie.init(gpa);
+        var storage_trie = zevm.StorageTrie.init(gpa);
         if (slot_list.items.len > 0) {
             const storage_keys = try gpa.alloc([32]u8, slot_list.items.len);
             const storage_vals = try gpa.alloc(?u256, slot_list.items.len);
@@ -275,7 +275,7 @@ pub fn computeStateRoot(
         k.* = ae.key;
         a.* = ae.account;
     }
-    var account_trie = try zevm.AccountTrie.init(gpa);
+    var account_trie = zevm.AccountTrie.init(gpa);
     try account_trie.insert(acct_keys, accounts);
 
     return account_trie.rootHash();

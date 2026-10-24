@@ -321,7 +321,7 @@ pub fn computeRoot(comptime T: type, gpa: std.mem.Allocator, items: []const T) !
     var arena = std.heap.ArenaAllocator.init(gpa);
     defer arena.deinit();
     const allocator = arena.allocator();
-    var trie = try Trie.init(allocator);
+    var trie = Trie.init(allocator);
 
     // Insert in nibble-sorted key order
     const ranges = [3][2]usize{ .{ 1, @min(0x80, n) }, .{ 0, @min(1, n) }, .{ 0x80, n } };
