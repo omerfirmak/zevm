@@ -159,17 +159,27 @@ pub const Eth = struct {
         return buf[0 .. path.len + 1 + blob.len];
     }
 
-    pub fn appendStorageTrie(self: *Self, txn: kv.Transaction, account_hash: [32]u8, nodes: []const trie.NodeCollector.Node) !void {
+    pub fn appendStorageTrie(self: *Self, txn: kv.Transaction, account_hash: [32]u8, nodes: []const trie.NodeCollector.Node, append_key: bool) !void {
         const cursor = try self.kv_store.table(txn, .storage_tries).cursor();
         defer cursor.deinit();
         var buf: [768]u8 = undefined;
+        const flags: lmdbx.Database.SetFlag = if (append_key) lmdbx.Database.SetFlag.AppendDup.with(.Append) else .AppendDup;
         for (nodes) |node| {
             try cursor.put(&account_hash, try encodeTrieNode(
                 &buf,
                 node.path,
                 node.blob,
-            ), lmdbx.Database.SetFlag.AppendDup.with(.Append));
+            ), flags);
         }
+    }
+
+    pub fn deleteStorageTrieFrom(self: *Self, txn: kv.Transaction, account_hash: [32]u8, path: []const u8) !void {
+        var seek_buf: [65]u8 = undefined;
+        const seek = try trieNodeKey(&seek_buf, path);
+
+        const cursor = try self.kv_store.table(txn, .storage_tries).cursor();
+        defer cursor.deinit();
+        while (try cursor.seekDupLowerBound(&account_hash, seek) != null) try cursor.del(.Current);
     }
 
     pub fn putStorageTrieNode(self: *Self, txn: kv.Transaction, account_hash: [32]u8, path: []const u8, blob: []const u8) !void {
@@ -218,9 +228,20 @@ pub const Eth = struct {
         return res.entry.value[seek.len..];
     }
 
-    pub fn putAccountTrieNode(self: *Self, txn: kv.Transaction, path: []const u8, blob: []const u8) !void {
+    pub fn appendAccountTrie(self: *Self, txn: kv.Transaction, nodes: []const trie.NodeCollector.Node) !void {
+        const cursor = try self.kv_store.table(txn, .account_trie).cursor();
+        defer cursor.deinit();
         var key_buf: [65]u8 = undefined;
-        try self.kv_store.table(txn, .account_trie).set(try trieNodeKey(&key_buf, path), blob, .Upsert);
+        for (nodes) |node| try cursor.put(try trieNodeKey(&key_buf, node.path), node.blob, .Append);
+    }
+
+    pub fn deleteAccountTrieFrom(self: *Self, txn: kv.Transaction, path: []const u8) !void {
+        var key_buf: [65]u8 = undefined;
+        const key = try trieNodeKey(&key_buf, path);
+
+        const cursor = try self.kv_store.table(txn, .account_trie).cursor();
+        defer cursor.deinit();
+        while (try cursor.seekLowerBound(key) != null) try cursor.del(.Current);
     }
 
     pub fn readAccountTrie(self: *Self, txn: kv.Transaction, path: []const u8) !?[]const u8 {

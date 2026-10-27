@@ -26,6 +26,8 @@ const arena_retain_limit = (32 << 20) - 64;
 const max_snap_flush_queue_bytes = 2048 << 20;
 const max_snap_flush_seconds = 0.5;
 const expected_code_count = 20_000_000;
+const hash_window_size = 32 << 10;
+const hash_window_nodes = 2 * hash_window_size + 128;
 
 const log = std.log.scoped(.downloader);
 
@@ -57,7 +59,7 @@ pub const Downloader = struct {
     snap_flush_queue_bytes: usize = 0,
 
     validated_responses: std.Io.Queue(ValidatedResponse),
-    validation_group: std.Io.Group = .init,
+    task_group: std.Io.Group = .init,
 
     sync_target: SyncTarget,
     sync_target_mutex: std.Io.Mutex = .init,
@@ -72,6 +74,7 @@ pub const Downloader = struct {
             accounts,
             storage,
             codes,
+            hashing,
         } = .accounts,
 
         account_fetch_head: u256 = 0,
@@ -79,6 +82,7 @@ pub const Downloader = struct {
         storage_fetch_head: [32]u8 = @splat(0),
         code_hashes: std.AutoArrayHashMapUnmanaged([32]u8, void) = .empty,
         code_fetch_head: usize = 0,
+        hash_head: [32]u8 = @splat(0),
     } = null,
     state_heal: ?struct {
         next_pivot: types.BlockHeader,
@@ -151,7 +155,7 @@ pub const Downloader = struct {
 
         var buf: [4]msg = undefined;
         var select: std.Io.Select(msg) = .init(self.io, &buf);
-        defer self.validation_group.cancel(self.io);
+        defer self.task_group.cancel(self.io);
 
         try select.concurrent(.eth, eth.Provider.next, .{ self.eth_provider, self.io, self.eth_arena.allocator(), self.allocator });
         try select.concurrent(.snap, snap.Provider.next, .{ self.snap_provider, self.io, self.snap_arena.allocator(), self.allocator });
@@ -272,7 +276,11 @@ pub const Downloader = struct {
 
     fn startValidation(self: *Self, arena: *std.heap.ArenaAllocator, response: @FieldType(ValidatedResponse, "resp")) !void {
         defer arena.* = .init(self.allocator);
-        self.validation_group.concurrent(self.io, validate, .{ self, arena.*, response }) catch validate(self, arena.*, response);
+        self.task_group.concurrent(
+            self.io,
+            validate,
+            .{ self, arena.*, response },
+        ) catch validate(self, arena.*, response);
     }
 
     fn validate(self: *Self, arena: std.heap.ArenaAllocator, response: @FieldType(ValidatedResponse, "resp")) void {
@@ -1067,7 +1075,7 @@ pub const Downloader = struct {
     }
 
     fn updatePivot(self: *Self) !void {
-        if (self.state == null) return;
+        if (self.state == null or self.state.?.phase == .hashing) return;
 
         const head_height = self.syncTarget().number;
         const new_pivot_height = if (head_height > 32) head_height - 32 else 0;
@@ -1121,6 +1129,12 @@ pub const Downloader = struct {
             .accounts => {},
             .storage => try self.advanceStorageDownload(),
             .codes => try self.advanceCodesDownload(),
+            .hashing => {
+                if (self.task_group.token.load(.acquire) != null) return;
+                self.state = null;
+                log.info("state download done", .{});
+                return;
+            },
         }
 
         if (self.state.?.pivot.number > 0 and self.inflight_snap_requests.empty() and
@@ -1136,11 +1150,137 @@ pub const Downloader = struct {
                 },
                 .codes => {
                     state.code_hashes.deinit(std.heap.page_allocator);
-                    self.state = null;
-                    log.info("state download done", .{});
+                    state.phase = .hashing;
+                    try self.task_group.concurrent(self.io, hashTrieTask, .{ self, null, state.pivot.state_root });
                 },
+                .hashing => unreachable,
             }
         }
+    }
+
+    fn hashTrieTask(self: *Self, owner: ?[32]u8, expected_root: [32]u8) void {
+        self.hashTrie(owner, expected_root) catch |err| {
+            if (owner) |account| std.debug.panic("downloader: hashing storage trie of {x} failed: {}", .{ account, err });
+            std.debug.panic("downloader: hashing account trie failed: {}", .{err});
+        };
+    }
+
+    fn hashTrie(self: *Self, owner: ?[32]u8, expected_root: [32]u8) !void {
+        var root = types.empty_root_hash;
+        var from: ?[32]u8 = @splat(0);
+        while (from) |start| {
+            var arena = std.heap.ArenaAllocator.init(self.allocator);
+            defer arena.deinit();
+            const allocator = arena.allocator();
+            var storage_jobs = std.array_list.Managed([2][32]u8).init(allocator);
+
+            from, root, const nodes = if (owner) |account|
+                try self.updateStorageWindow(allocator, account, start, root)
+            else
+                try self.updateAccountWindow(allocator, start, root, &storage_jobs);
+            if (owner == null) if (from) |head| {
+                self.state.?.hash_head = head;
+            };
+            if (from == null and !std.meta.eql(root, expected_root)) return error.RootMismatch;
+            if (nodes.len > 0) {
+                const txn = try self.eth_db.kv_store.transaction_rw();
+                errdefer txn.abort() catch unreachable;
+                if (owner) |account| {
+                    try self.eth_db.deleteStorageTrieFrom(txn, account, nodes[0].path);
+                    try self.eth_db.appendStorageTrie(txn, account, nodes, false);
+                } else {
+                    try self.eth_db.deleteAccountTrieFrom(txn, nodes[0].path);
+                    try self.eth_db.appendAccountTrie(txn, nodes);
+                }
+                try txn.commit();
+            }
+
+            for (storage_jobs.items) |job| self.task_group.async(self.io, hashTrieTask, .{ self, job[0], job[1] });
+        }
+    }
+
+    fn updateStorageWindow(
+        self: *Self,
+        allocator: std.mem.Allocator,
+        account_hash: [32]u8,
+        start: [32]u8,
+        root: [32]u8,
+    ) !struct { ?[32]u8, [32]u8, []trie.NodeCollector.Node } {
+        const txn = try self.eth_db.kv_store.transaction_ro();
+        defer txn.abort() catch unreachable;
+
+        const keys = try allocator.alloc([32]u8, hash_window_size);
+        const values = try allocator.alloc(u256, hash_window_size);
+        const count = try self.eth_db.readStorageRange(txn, account_hash, start, keys, values);
+
+        const collector = try allocator.create(trie.NodeCollector);
+        collector.* = try .init(allocator, hash_window_nodes);
+        var storage_trie = (try self.eth_db.openStorageTrie(allocator, txn, account_hash, root) orelse return error.MissingTrieRoot)
+            .withCollector(collector);
+        if (count > 0) try storage_trie.updateNoDeletions(keys[0..count], values[0..count]);
+        return .{ if (count < keys.len) null else nextKey(keys[count - 1]), try storage_trie.rootHash(), collector.collected() };
+    }
+
+    fn updateAccountWindow(
+        self: *Self,
+        allocator: std.mem.Allocator,
+        start: [32]u8,
+        root: [32]u8,
+        storage_jobs: *std.array_list.Managed([2][32]u8),
+    ) !struct { ?[32]u8, [32]u8, []trie.NodeCollector.Node } {
+        const txn = try self.eth_db.kv_store.transaction_ro();
+        defer txn.abort() catch unreachable;
+
+        const keys = try allocator.alloc([32]u8, hash_window_size);
+        const accounts = try allocator.alloc(types.Account, hash_window_size);
+        const count = try self.eth_db.readAccountRange(txn, start, keys, accounts);
+        try self.queueStorageJobs(txn, keys[0..count], accounts[0..count], storage_jobs);
+
+        const collector = try allocator.create(trie.NodeCollector);
+        collector.* = try .init(allocator, hash_window_nodes);
+        var account_trie = try self.eth_db.openAccountTrie(allocator, txn, root) orelse return error.MissingTrieRoot;
+        account_trie.inner.node_collector = collector;
+        if (count > 0) try account_trie.updateNoDeletions(keys[0..count], accounts[0..count]);
+        return .{ if (count < keys.len) null else nextKey(keys[count - 1]), try account_trie.rootHash(), collector.collected() };
+    }
+
+    fn queueStorageJobs(
+        self: *Self,
+        txn: kv.Transaction,
+        hashes: []const [32]u8,
+        accounts: []const types.Account,
+        storage_jobs: *std.array_list.Managed([2][32]u8),
+    ) !void {
+        if (hashes.len == 0) return;
+        const tries = try self.eth_db.kv_store.table(txn, .storage_tries).cursor();
+        defer tries.deinit();
+        const storage = try self.eth_db.kv_store.table(txn, .storage).cursor();
+        defer storage.deinit();
+
+        var trie_head: ?[32]u8 = if (try tries.seekLowerBound(&hashes[0])) |res| res.entry.key[0..32].* else null;
+        for (hashes, accounts) |hash, account| {
+            if (std.meta.eql(account.storage_hash, types.empty_root_hash)) continue;
+            if (try hasStorageTrie(tries, &trie_head, hash)) continue;
+            if (try storage.seekLowerBound(&hash)) |res|
+                if (std.mem.eql(u8, res.entry.key, &hash) and try storage.count() == 1) continue;
+            try storage_jobs.append(.{ hash, account.storage_hash });
+        }
+    }
+
+    fn hasStorageTrie(tries: kv.Iterator, head: *?[32]u8, account_hash: [32]u8) !bool {
+        while (head.*) |trie_account| {
+            if (std.mem.order(u8, &trie_account, &account_hash) != .lt) return std.meta.eql(trie_account, account_hash);
+            head.* = if (try tries.nextNoDup()) |next| next.key[0..32].* else null;
+        }
+        return false;
+    }
+
+    fn nextKey(key: [32]u8) ?[32]u8 {
+        const value = std.mem.readInt(u256, &key, .big);
+        if (value == std.math.maxInt(u256)) return null;
+        var next: [32]u8 = undefined;
+        std.mem.writeInt(u256, &next, value + 1, .big);
+        return next;
     }
 
     fn requestAccountRange(self: *Self, req: *Request(snap.Message), state_root: [32]u8, origin: u256, limit: u256) void {
@@ -1388,7 +1528,7 @@ pub const Downloader = struct {
         for (storage.account_hashes, storage.keys, storage.values, storage.nodes) |account_hash, keys, values, nodes| {
             try self.eth_db.appendStorage(txn, account_hash, keys, values, !storage.chunk);
             if (nodes.len > 0)
-                try self.eth_db.appendStorageTrie(txn, account_hash, nodes);
+                try self.eth_db.appendStorageTrie(txn, account_hash, nodes, true);
         }
         try self.commitTxn(txn, "storage", txn_start);
     }
@@ -1657,7 +1797,7 @@ pub const Downloader = struct {
         return switch (state.phase) {
             .accounts => false,
             .storage => std.mem.order(u8, &account_hash, &state.storage_fetch_head) == .lt,
-            .codes => true,
+            .codes, .hashing => true,
         };
     }
 
@@ -1785,6 +1925,7 @@ pub const Downloader = struct {
                     .accounts => self.progress.account_keyspace,
                     .storage => self.progress.storage_keyspace,
                     .codes => self.progress.code_keyspace,
+                    .hashing => std.mem.readInt(u256, &state.hash_head, .big),
                 }),
                 self.inflight_snap_requests.inner.len(),
                 self.state_heal != null,
