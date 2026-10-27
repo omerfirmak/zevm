@@ -9,7 +9,9 @@ const lmdbx = @import("lmdbx");
 const trie = @import("../trie/trie.zig");
 
 const StorageTrie = @import("../trie/storage_trie.zig").StorageTrie;
+const AccountTrie = @import("../trie/account_trie.zig").AccountTrie;
 const StorageTrieResolver = @import("trie.zig").StorageTrieResolver;
+const AccountTrieResolver = @import("trie.zig").AccountTrieResolver;
 
 pub const Eth = struct {
     const Self = @This();
@@ -24,6 +26,14 @@ pub const Eth = struct {
         const table = self.kv_store.table(txn, .accounts);
         const bytes = try table.get(&hash) orelse return null;
         return try decodeAccount(bytes);
+    }
+
+    pub fn seekAccount(self: *Self, txn: kv.Transaction, start: [32]u8) !?struct { [32]u8, types.Account } {
+        const cursor = try self.kv_store.table(txn, .accounts).cursor();
+        defer cursor.deinit();
+
+        const res = try cursor.seekLowerBound(&start) orelse return null;
+        return .{ res.entry.key[0..32].*, try decodeAccount(res.entry.value) };
     }
 
     pub fn decodeAccount(rlp_bytes: []const u8) !types.Account {
@@ -145,12 +155,16 @@ pub const Eth = struct {
         try cursor.put(&account_hash, entry, .Upsert);
     }
 
-    pub fn deleteStorageTrieNode(self: *Self, txn: kv.Transaction, account_hash: [32]u8, path: []const u8) !void {
+    fn trieNodeKey(buf: *[65]u8, path: []const u8) ![]const u8 {
         if (path.len > 64) return error.TrieNodePathTooLong;
+        @memcpy(buf[0..path.len], path);
+        buf[path.len] = 0xff;
+        return buf[0 .. path.len + 1];
+    }
+
+    pub fn deleteStorageTrieNode(self: *Self, txn: kv.Transaction, account_hash: [32]u8, path: []const u8) !void {
         var seek_buf: [65]u8 = undefined;
-        @memcpy(seek_buf[0..path.len], path);
-        seek_buf[path.len] = 0xff;
-        const seek = seek_buf[0 .. path.len + 1];
+        const seek = try trieNodeKey(&seek_buf, path);
 
         const cursor = try self.kv_store.table(txn, .storage_tries).cursor();
         defer cursor.deinit();
@@ -162,11 +176,8 @@ pub const Eth = struct {
     }
 
     pub fn readStorageTrie(self: *Self, txn: kv.Transaction, account_hash: [32]u8, path: []const u8) !?[]const u8 {
-        if (path.len > 64) return error.TrieNodePathTooLong;
         var seek_buf: [65]u8 = undefined;
-        @memcpy(seek_buf[0..path.len], path);
-        seek_buf[path.len] = 0xff;
-        const seek = seek_buf[0 .. path.len + 1];
+        const seek = try trieNodeKey(&seek_buf, path);
 
         const cursor = try self.kv_store.table(txn, .storage_tries).cursor();
         defer cursor.deinit();
@@ -174,6 +185,16 @@ pub const Eth = struct {
         const res = try cursor.seekDupLowerBound(&account_hash, seek) orelse return null;
         if (!std.mem.startsWith(u8, res.entry.value, seek)) return null;
         return res.entry.value[seek.len..];
+    }
+
+    pub fn putAccountTrieNode(self: *Self, txn: kv.Transaction, path: []const u8, blob: []const u8) !void {
+        var key_buf: [65]u8 = undefined;
+        try self.kv_store.table(txn, .account_trie).set(try trieNodeKey(&key_buf, path), blob, .Upsert);
+    }
+
+    pub fn readAccountTrie(self: *Self, txn: kv.Transaction, path: []const u8) !?[]const u8 {
+        var key_buf: [65]u8 = undefined;
+        return self.kv_store.table(txn, .account_trie).get(try trieNodeKey(&key_buf, path));
     }
 
     pub fn writeStorage(self: *Self, txn: kv.Transaction, account_hash: [32]u8, slot_hash: [32]u8, value: u256) !void {
@@ -204,6 +225,20 @@ pub const Eth = struct {
 
     fn hasStorageTrie(self: *Self, txn: kv.Transaction, addr_hash: [32]u8) !bool {
         return (try self.readStorageTrie(txn, addr_hash, &[_]u8{})) != null;
+    }
+
+    pub fn openAccountTrie(self: *Self, allocator: std.mem.Allocator, txn: kv.Transaction, root: [32]u8) !?AccountTrie {
+        if (!std.meta.eql(types.empty_root_hash, root) and
+            try self.readAccountTrie(txn, &[_]u8{}) == null) return null;
+
+        var resolver = try allocator.create(AccountTrieResolver);
+        resolver.* = AccountTrieResolver{
+            .eth = self,
+            .txn = txn,
+        };
+        return AccountTrie.initFromTrie(trie.Trie.init(allocator)
+            .withRoot(root)
+            .withResolver(resolver.resolver()));
     }
 
     pub fn openStorageTrie(
