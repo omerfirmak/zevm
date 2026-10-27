@@ -1598,7 +1598,7 @@ pub const Downloader = struct {
                     // per key: up to 64 inner nodes on its path plus removals from collapses
                     var collector = try trie.NodeCollector.init(allocator, diff.storage.slots.len * 66);
                     var storage_trie = st.withCollector(&collector);
-                    try storage_trie.insert(diff.storage.slots, diff.storage.values);
+                    try storage_trie.update(diff.storage.slots, diff.storage.values);
                     updated_storage_root = try storage_trie.rootHash();
 
                     for (collector.collected()) |node| {

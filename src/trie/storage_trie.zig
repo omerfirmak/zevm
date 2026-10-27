@@ -32,20 +32,33 @@ pub const StorageTrie = struct {
         }
     }
 
-    pub fn insert(self: *@This(), keys: []const [32]u8, values: []const u256) !void {
+    pub fn update(self: *@This(), keys: []const [32]u8, values: []const u256) !void {
         const val_slices = try self.inner.allocator.alloc([]const u8, values.len);
         var has_deletions = false;
         for (values, val_slices) |value, *s| {
             if (value > 0) {
-                var buf = std.array_list.Managed(u8).init(self.inner.allocator);
-                try rlp.serialize(u256, self.inner.allocator, value, &buf);
-                s.* = buf.items;
+                s.* = try self.encode(value);
             } else {
                 s.* = &.{};
                 has_deletions = true;
             }
         }
         if (has_deletions) try self.inner.update(keys, val_slices) else try self.inner.updateNoDeletions(keys, val_slices);
+    }
+
+    pub fn updateNoDeletions(self: *@This(), keys: []const [32]u8, values: []const u256) !void {
+        const val_slices = try self.inner.allocator.alloc([]const u8, values.len);
+        for (values, val_slices) |value, *s| {
+            std.debug.assert(value > 0);
+            s.* = try self.encode(value);
+        }
+        try self.inner.updateNoDeletions(keys, val_slices);
+    }
+
+    fn encode(self: *@This(), value: u256) ![]const u8 {
+        var buf = std.array_list.Managed(u8).init(self.inner.allocator);
+        try rlp.serialize(u256, self.inner.allocator, value, &buf);
+        return buf.items;
     }
 
     pub fn rootHash(self: *@This()) ![32]u8 {

@@ -332,7 +332,7 @@ fn calculateStateRoot(
                 v.* = try state.contract_state.read(.{ .address = acc_change_entry.addr, .slot = slot_change.key });
             }
             zevm.trie.sortPairsByKey(u256, keys, values);
-            try storage_trie.insert(keys, values);
+            try storage_trie.update(keys, values);
             post_acc.storage_hash = try storage_trie.rootHash();
         }
 
@@ -343,7 +343,7 @@ fn calculateStateRoot(
 
     if (n_dirty > 0) {
         zevm.trie.sortPairsByKey(?zevm.types.Account, state_keys[0..n_dirty], state_accounts[0..n_dirty]);
-        try state_trie.insert(state_keys[0..n_dirty], state_accounts[0..n_dirty]);
+        try state_trie.update(state_keys[0..n_dirty], state_accounts[0..n_dirty]);
     }
     return state_trie.rootHash();
 }

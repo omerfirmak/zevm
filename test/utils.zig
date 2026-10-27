@@ -261,7 +261,7 @@ pub fn computeStateRoot(
                 k.* = se.key;
                 v.* = se.value;
             }
-            try storage_trie.insert(storage_keys, storage_vals);
+            try storage_trie.update(storage_keys, storage_vals);
         }
         ae.account.storage_hash = try storage_trie.rootHash();
     }
@@ -276,7 +276,7 @@ pub fn computeStateRoot(
         a.* = ae.account;
     }
     var account_trie = zevm.AccountTrie.init(gpa);
-    try account_trie.insert(acct_keys, accounts);
+    try account_trie.update(acct_keys, accounts);
 
     return account_trie.rootHash();
 }
