@@ -36,6 +36,21 @@ pub const Eth = struct {
         return .{ res.entry.key[0..32].*, try decodeAccount(res.entry.value) };
     }
 
+    pub fn readAccountRange(self: *Self, txn: kv.Transaction, start: [32]u8, hashes: [][32]u8, accounts: []types.Account) !usize {
+        const cursor = try self.kv_store.table(txn, .accounts).cursor();
+        defer cursor.deinit();
+
+        var count: usize = 0;
+        var entry = if (try cursor.seekLowerBound(&start)) |res| res.entry else null;
+        while (entry) |account| : (entry = if (try cursor.goToNext() != null) try cursor.getCurrentEntry() else null) {
+            if (count == hashes.len) break;
+            hashes[count] = account.key[0..32].*;
+            accounts[count] = try decodeAccount(account.value);
+            count += 1;
+        }
+        return count;
+    }
+
     pub fn decodeAccount(rlp_bytes: []const u8) !types.Account {
         var acc: SlimAccount = undefined;
         _ = try rlp.deserialize(SlimAccount, undefined, rlp_bytes, &acc);
@@ -112,6 +127,22 @@ pub const Eth = struct {
         const res = try cursor.seekDupLowerBound(&account_hash, &start) orelse return null;
         if (res.entry.value.len < 32) return error.MalformedStorageEntry;
         return .{ res.entry.value[0..32].*, res.entry.value[32..] };
+    }
+
+    pub fn readStorageRange(self: *Self, txn: kv.Transaction, account_hash: [32]u8, start: [32]u8, slot_hashes: [][32]u8, values: []u256) !usize {
+        const cursor = try self.kv_store.table(txn, .storage).cursor();
+        defer cursor.deinit();
+
+        var count: usize = 0;
+        var entry = if (try cursor.seekDupLowerBound(&account_hash, &start)) |res| res.entry.value else null;
+        while (entry) |slot| : (entry = if (try cursor.nextDup()) |next| next.value else null) {
+            if (count == slot_hashes.len) break;
+            if (slot.len < 32) return error.MalformedStorageEntry;
+            slot_hashes[count] = slot[0..32].*;
+            _ = try rlp.deserialize(u256, undefined, slot[32..], &values[count]);
+            count += 1;
+        }
+        return count;
     }
 
     pub fn readStorage(self: *Self, txn: kv.Transaction, account_hash: [32]u8, slot_hash: [32]u8) !?[]const u8 {
