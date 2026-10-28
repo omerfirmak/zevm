@@ -75,6 +75,7 @@ pub const Downloader = struct {
             storage,
             codes,
             hashing,
+            catchup,
         } = .accounts,
 
         account_fetch_head: u256 = 0,
@@ -1075,7 +1076,10 @@ pub const Downloader = struct {
     }
 
     fn updatePivot(self: *Self) !void {
-        if (self.state == null or self.state.?.phase == .codes or self.state.?.phase == .hashing) return;
+        switch ((self.state orelse return).phase) {
+            .accounts, .storage => {},
+            .codes, .hashing, .catchup => return,
+        }
 
         const head_height = self.syncTarget().number;
         const new_pivot_height = if (head_height > 32) head_height - 32 else 0;
@@ -1085,28 +1089,7 @@ pub const Downloader = struct {
             const new_pivot = try self.readHeader(new_pivot_height) orelse return;
 
             if (cur_pivot.number != 0) {
-                const no_reorg = self.headerIsInTargetChain(cur_pivot) catch |e| {
-                    if (e == error.Maybe) return;
-                    return e;
-                };
-                std.debug.assert(no_reorg);
-
-                if (self.state_heal) |*state_heal| {
-                    state_heal.target_pivot = try self.readHeader(new_pivot_height) orelse unreachable;
-                    log.info("state heal: target moved to {}", .{new_pivot_height});
-                } else {
-                    self.state_heal = .{
-                        .target_pivot = try self.readHeader(new_pivot_height) orelse unreachable,
-                        .next_pivot = try self.readHeader(cur_pivot.number + 1) orelse unreachable,
-                        .start_number = cur_pivot.number,
-                        .started_at = std.Io.Clock.now(.real, self.io),
-                    };
-                    log.info("state heal: started, pivot {} -> {} ({} blocks)", .{
-                        cur_pivot.number,
-                        new_pivot_height,
-                        new_pivot_height - cur_pivot.number,
-                    });
-                }
+                if (!try self.startStateHeal(cur_pivot, new_pivot)) return;
             }
 
             log.debug("new pivot {}, old {}", .{ new_pivot, cur_pivot });
@@ -1120,6 +1103,33 @@ pub const Downloader = struct {
         }
     }
 
+    // false while headers up to the target are still missing
+    fn startStateHeal(self: *Self, cur_pivot: types.BlockHeader, target_pivot: types.BlockHeader) !bool {
+        const no_reorg = self.headerIsInTargetChain(cur_pivot) catch |e| {
+            if (e == error.Maybe) return false;
+            return e;
+        };
+        std.debug.assert(no_reorg);
+
+        if (self.state_heal) |*state_heal| {
+            state_heal.target_pivot = target_pivot;
+            log.info("state heal: target moved to {}", .{target_pivot.number});
+        } else {
+            self.state_heal = .{
+                .target_pivot = target_pivot,
+                .next_pivot = try self.readHeader(cur_pivot.number + 1) orelse unreachable,
+                .start_number = cur_pivot.number,
+                .started_at = std.Io.Clock.now(.real, self.io),
+            };
+            log.info("state heal: started, pivot {} -> {} ({} blocks)", .{
+                cur_pivot.number,
+                target_pivot.number,
+                target_pivot.number - cur_pivot.number,
+            });
+        }
+        return true;
+    }
+
     fn advanceStateDownload(self: *Self) !void {
         if (self.state_heal != null) return; // state download is paused
 
@@ -1131,6 +1141,19 @@ pub const Downloader = struct {
             .codes => try self.advanceCodesDownload(),
             .hashing => {
                 if (self.task_group.token.load(.acquire) != null) return;
+                log.info("hashing done", .{});
+                state.phase = .catchup;
+                return;
+            },
+            .catchup => {
+                const target = self.syncTarget();
+                if (state.pivot.number < target.number) {
+                    const new_pivot = try self.readHeader(target.number) orelse return;
+                    if (!try self.startStateHeal(state.pivot, new_pivot)) return;
+                    state.pivot = new_pivot;
+                    return;
+                }
+
                 self.state = null;
                 log.info("state download done", .{});
                 return;
@@ -1153,7 +1176,7 @@ pub const Downloader = struct {
                     state.code_hashes.deinit(std.heap.page_allocator);
                     state.phase = .hashing;
                 },
-                .hashing => unreachable,
+                .hashing, .catchup => unreachable,
             }
         }
     }
@@ -1819,7 +1842,7 @@ pub const Downloader = struct {
         return switch (state.phase) {
             .accounts => false,
             .storage => std.mem.order(u8, &account_hash, &state.storage_fetch_head) == .lt,
-            .codes, .hashing => true,
+            .codes, .hashing, .catchup => true,
         };
     }
 
@@ -1940,7 +1963,7 @@ pub const Downloader = struct {
                 self.inflight_eth_requests.inner.len(),
             });
         }
-        if (self.state) |state| {
+        if (self.state) |state| if (state.phase != .catchup) {
             var hashing_buf: [32]u8 = undefined;
             log.info("state download: pivot {}, {t} {d:.2}%{s}, inflight requests {}, healing {}", .{
                 state.pivot.number,
@@ -1950,6 +1973,7 @@ pub const Downloader = struct {
                     .storage => self.progress.storage_keyspace,
                     .codes => self.progress.code_keyspace,
                     .hashing => std.mem.readInt(u256, &state.hash_head, .big),
+                    .catchup => unreachable,
                 }),
                 if (state.phase == .codes)
                     std.fmt.bufPrint(
@@ -1962,7 +1986,7 @@ pub const Downloader = struct {
                 self.inflight_snap_requests.inner.len(),
                 self.state_heal != null,
             });
-        }
+        };
         if (self.state_heal) |state_heal| {
             const healed = state_heal.next_pivot.number - 1 - state_heal.start_number;
             const total = state_heal.target_pivot.number - state_heal.start_number;
