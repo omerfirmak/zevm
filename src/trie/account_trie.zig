@@ -5,6 +5,7 @@ const std = @import("std");
 const rlp = @import("rlp");
 const types = @import("../types.zig");
 const Trie = @import("trie.zig").Trie;
+const NodeCollector = @import("trie.zig").NodeCollector;
 
 pub const AccountTrie = struct {
     inner: Trie,
@@ -15,6 +16,10 @@ pub const AccountTrie = struct {
 
     pub fn initFromTrie(inner: Trie) @This() {
         return .{ .inner = inner };
+    }
+
+    pub fn withCollector(self: @This(), collector: *NodeCollector) @This() {
+        return .{ .inner = self.inner.withCollector(collector) };
     }
 
     pub fn get(self: *const @This(), key: [32]u8) !types.Account {
@@ -45,6 +50,14 @@ pub const AccountTrie = struct {
             }
         }
         if (has_deletions) try self.inner.update(keys, val_slices) else try self.inner.updateNoDeletions(keys, val_slices);
+    }
+
+    pub fn updateUnsorted(self: *@This(), keys: []const [32]u8, accounts: []const ?types.Account) !void {
+        const val_slices = try self.inner.allocator.alloc([]const u8, accounts.len);
+        for (accounts, val_slices) |account_opt, *s| {
+            s.* = if (account_opt) |account| try self.encode(account) else &.{};
+        }
+        try self.inner.update(keys, val_slices);
     }
 
     pub fn updateNoDeletions(self: *@This(), keys: []const [32]u8, accounts: []const types.Account) !void {

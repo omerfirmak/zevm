@@ -1238,8 +1238,8 @@ pub const Downloader = struct {
 
         const collector = try allocator.create(trie.NodeCollector);
         collector.* = try .init(allocator, hash_window_nodes);
-        var account_trie = try self.eth_db.openAccountTrie(allocator, txn, root) orelse return error.MissingTrieRoot;
-        account_trie.inner.node_collector = collector;
+        var account_trie = (try self.eth_db.openAccountTrie(allocator, txn, root) orelse return error.MissingTrieRoot)
+            .withCollector(collector);
         if (count > 0) try account_trie.updateNoDeletions(keys[0..count], accounts[0..count]);
         return .{ if (count < keys.len) null else nextKey(keys[count - 1]), try account_trie.rootHash(), collector.collected() };
     }
@@ -1708,6 +1708,13 @@ pub const Downloader = struct {
         defer scratch.deinit();
         const allocator = scratch.allocator();
 
+        const parent = try self.readHeader(self.state_heal.?.next_pivot.number - 1) orelse unreachable;
+        var account_collector = try trie.NodeCollector.init(allocator, bal.len * 66);
+        var account_trie = if (try self.eth_db.openAccountTrie(allocator, txn, parent.state_root)) |at|
+            at.withCollector(&account_collector)
+        else
+            null;
+
         for (bal) |changes| {
             if (changes.readOnly()) continue;
 
@@ -1729,23 +1736,19 @@ pub const Downloader = struct {
             // contract storage is being initialized from scratch, just let the storage download handle it.
             const empty_unfetched = std.meta.eql(account.storage_hash, types.empty_root_hash) and !self.storageFetchPassed(addr_hash);
             if (diff.storage.slots.len > 0 and !empty_unfetched) {
-                if (try self.eth_db.openStorageTrie(
-                    allocator,
-                    txn,
-                    addr_hash,
-                    account.storage_hash,
-                )) |st| {
-                    // per key: up to 64 inner nodes on its path plus removals from collapses
-                    var collector = try trie.NodeCollector.init(allocator, diff.storage.slots.len * 66);
-                    var storage_trie = st.withCollector(&collector);
-                    try storage_trie.update(diff.storage.slots, diff.storage.values);
-                    updated_storage_root = try storage_trie.rootHash();
-
-                    for (collector.collected()) |node| {
-                        if (node.blob.len == 0)
-                            try self.eth_db.deleteStorageTrieNode(txn, addr_hash, node.path)
-                        else
-                            try self.eth_db.putStorageTrieNode(txn, addr_hash, node.path, node.blob);
+                if (self.isStorageFetched(addr_hash, null)) {
+                    if (try self.eth_db.openStorageTrie(
+                        allocator,
+                        txn,
+                        addr_hash,
+                        account.storage_hash,
+                    )) |st| {
+                        // per key: up to 64 inner nodes on its path plus removals from collapses
+                        var collector = try trie.NodeCollector.init(allocator, diff.storage.slots.len * 66);
+                        var storage_trie = st.withCollector(&collector);
+                        try storage_trie.update(diff.storage.slots, diff.storage.values);
+                        updated_storage_root = try storage_trie.rootHash();
+                        try self.eth_db.commitStorageTrieNodes(txn, addr_hash, &collector);
                     }
                 }
 
@@ -1768,10 +1771,29 @@ pub const Downloader = struct {
                 if (updated_storage_root) |storage_root| {
                     account.storage_hash = storage_root;
                 }
+                if (account_trie) |*at| try at.updateUnsorted(&.{addr_hash}, &.{if (account.isEmpty())
+                    null
+                else
+                    account});
                 if (account.isEmpty()) {
                     try self.eth_db.deleteAccount(txn, addr_hash);
                 } else try self.eth_db.writeAccount(self.allocator, txn, addr_hash, account);
             }
+        }
+
+        if (account_trie) |*at| {
+            const root = try at.rootHash();
+            const expected_root = self.state_heal.?.next_pivot.state_root;
+            std.debug.assert(self.state_heal.?.stale_storage_roots.count() == 0);
+            if (!std.meta.eql(root, expected_root)) {
+                log.err("state heal: account trie root {x} mismatch, expected {x} at block {}", .{
+                    root,
+                    expected_root,
+                    self.state_heal.?.next_pivot.number,
+                });
+                return error.RootMismatch;
+            }
+            try self.eth_db.commitAccountTrieNodes(txn, &account_collector);
         }
 
         try self.commitTxn(txn, "bal", txn_start);
@@ -1801,7 +1823,7 @@ pub const Downloader = struct {
         };
     }
 
-    fn isStorageFetched(self: *Self, account_hash: [32]u8, slot_hash: [32]u8) bool {
+    fn isStorageFetched(self: *Self, account_hash: [32]u8, slot_hash: ?[32]u8) bool {
         std.debug.assert(self.state_heal != null);
         if (!self.storageFetchPassed(account_hash)) return false;
 
@@ -1810,9 +1832,10 @@ pub const Downloader = struct {
             const storage_request = request.msg.get_storage_ranges;
             for (storage_request.account_hashes, 0..) |requested_account, index| {
                 if (!std.meta.eql(requested_account, account_hash)) continue;
+                const slot = slot_hash orelse return false;
                 if (index > 0) return false;
-                if (std.mem.order(u8, &slot_hash, &storage_request.starting_hash) != .lt and
-                    std.mem.order(u8, &slot_hash, &storage_request.limit_hash) != .gt) return false;
+                if (std.mem.order(u8, &slot, &storage_request.starting_hash) != .lt and
+                    std.mem.order(u8, &slot, &storage_request.limit_hash) != .gt) return false;
             }
         }
         return true;

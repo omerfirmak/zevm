@@ -244,6 +244,36 @@ pub const Eth = struct {
         while (try cursor.seekLowerBound(key) != null) try cursor.del(.Current);
     }
 
+    pub fn putAccountTrieNode(self: *Self, txn: kv.Transaction, path: []const u8, blob: []const u8) !void {
+        var key_buf: [65]u8 = undefined;
+        try self.kv_store.table(txn, .account_trie).set(try trieNodeKey(&key_buf, path), blob, .Upsert);
+    }
+
+    pub fn deleteAccountTrieNode(self: *Self, txn: kv.Transaction, path: []const u8) !void {
+        var key_buf: [65]u8 = undefined;
+        self.kv_store.table(txn, .account_trie).delete(try trieNodeKey(&key_buf, path)) catch |e| {
+            if (e != lmdbx.Error.MDBX_NOTFOUND) return e;
+        };
+    }
+
+    pub fn commitStorageTrieNodes(self: *Self, txn: kv.Transaction, account_hash: [32]u8, collector: *trie.NodeCollector) !void {
+        for (collector.collected()) |node| {
+            if (node.blob.len == 0)
+                try self.deleteStorageTrieNode(txn, account_hash, node.path)
+            else
+                try self.putStorageTrieNode(txn, account_hash, node.path, node.blob);
+        }
+    }
+
+    pub fn commitAccountTrieNodes(self: *Self, txn: kv.Transaction, collector: *trie.NodeCollector) !void {
+        for (collector.collected()) |node| {
+            if (node.blob.len == 0)
+                try self.deleteAccountTrieNode(txn, node.path)
+            else
+                try self.putAccountTrieNode(txn, node.path, node.blob);
+        }
+    }
+
     pub fn readAccountTrie(self: *Self, txn: kv.Transaction, path: []const u8) !?[]const u8 {
         var key_buf: [65]u8 = undefined;
         return self.kv_store.table(txn, .account_trie).get(try trieNodeKey(&key_buf, path));
@@ -276,7 +306,11 @@ pub const Eth = struct {
     }
 
     fn hasStorageTrie(self: *Self, txn: kv.Transaction, addr_hash: [32]u8) !bool {
-        return (try self.readStorageTrie(txn, addr_hash, &[_]u8{})) != null;
+        if ((try self.readStorageTrie(txn, addr_hash, &[_]u8{})) != null) return true;
+        const cursor = try self.kv_store.table(txn, .storage).cursor();
+        defer cursor.deinit();
+        const res = try cursor.seekLowerBound(&addr_hash) orelse return false;
+        return std.mem.eql(u8, res.entry.key, &addr_hash) and try cursor.count() == 1; // a single slot trie
     }
 
     pub fn openAccountTrie(self: *Self, allocator: std.mem.Allocator, txn: kv.Transaction, root: [32]u8) !?AccountTrie {
