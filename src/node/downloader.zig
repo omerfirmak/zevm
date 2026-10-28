@@ -1075,7 +1075,7 @@ pub const Downloader = struct {
     }
 
     fn updatePivot(self: *Self) !void {
-        if (self.state == null or self.state.?.phase == .hashing) return;
+        if (self.state == null or self.state.?.phase == .codes or self.state.?.phase == .hashing) return;
 
         const head_height = self.syncTarget().number;
         const new_pivot_height = if (head_height > 32) head_height - 32 else 0;
@@ -1147,11 +1147,11 @@ pub const Downloader = struct {
                 .storage => {
                     state.code_hashes.sortUnstable(CodeHashOrder{ .keys = state.code_hashes.keys() });
                     state.phase = .codes;
+                    try self.task_group.concurrent(self.io, hashTrieTask, .{ self, null, state.pivot.state_root });
                 },
                 .codes => {
                     state.code_hashes.deinit(std.heap.page_allocator);
                     state.phase = .hashing;
-                    try self.task_group.concurrent(self.io, hashTrieTask, .{ self, null, state.pivot.state_root });
                 },
                 .hashing => unreachable,
             }
@@ -1918,7 +1918,8 @@ pub const Downloader = struct {
             });
         }
         if (self.state) |state| {
-            log.info("state download: pivot {}, {t} {d:.2}%, inflight requests {}, healing {}", .{
+            var hashing_buf: [32]u8 = undefined;
+            log.info("state download: pivot {}, {t} {d:.2}%{s}, inflight requests {}, healing {}", .{
                 state.pivot.number,
                 state.phase,
                 keyspacePercent(switch (state.phase) {
@@ -1927,6 +1928,14 @@ pub const Downloader = struct {
                     .codes => self.progress.code_keyspace,
                     .hashing => std.mem.readInt(u256, &state.hash_head, .big),
                 }),
+                if (state.phase == .codes)
+                    std.fmt.bufPrint(
+                        &hashing_buf,
+                        ", hashing {d:.2}%",
+                        .{keyspacePercent(std.mem.readInt(u256, &state.hash_head, .big))},
+                    ) catch ""
+                else
+                    "",
                 self.inflight_snap_requests.inner.len(),
                 self.state_heal != null,
             });
