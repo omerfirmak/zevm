@@ -614,13 +614,15 @@ pub const Downloader = struct {
             };
         }
 
-        if (head.number == 0 and self.header == null) {
-            self.header = .{
-                .requested_header_head = 0,
-                .requested_header_tail = std.math.maxInt(u64),
-            };
-            self.state = .{ .pivot = try self.bc.readHeader(0) orelse unreachable };
-            try self.state.?.code_hashes.ensureTotalCapacity(std.heap.page_allocator, expected_code_count);
+        if (self.header == null) self.header = .{
+            .requested_header_head = 0,
+            .requested_header_tail = std.math.maxInt(u64),
+        };
+        if (self.state == null) {
+            if (head.number == 0) {
+                self.state = .{ .pivot = try self.bc.readHeader(0) orelse unreachable };
+                try self.state.?.code_hashes.ensureTotalCapacity(std.heap.page_allocator, expected_code_count);
+            } else self.state = .{ .pivot = try self.bc.headHeader(), .phase = .catchup };
         }
 
         try self.updatePivot();
@@ -966,6 +968,7 @@ pub const Downloader = struct {
         }
 
         try self.clearDownloadedHeaders();
+        self.header = null;
     }
 
     fn persistDownloadedHeaderChain(
@@ -1952,8 +1955,7 @@ pub const Downloader = struct {
         }
 
         const target = self.syncTarget();
-        const head_number = if (self.bc.head()) |head| head.number else |_| target.number;
-        if (target.number > head_number) {
+        if (self.header != null) {
             const total_headers = target.number - target.cutoff_number + 1;
             log.info("header download: {d:.2}% ({}/{} headers), target {}, inflight requests {}", .{
                 @as(f64, @floatFromInt(self.progress.headers)) / @as(f64, @floatFromInt(total_headers)) * 100,
