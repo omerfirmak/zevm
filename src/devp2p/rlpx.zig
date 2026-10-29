@@ -259,18 +259,23 @@ pub const Server = struct {
     }
 
     fn listenPeers(self: *Self) !void {
+        // cancelation is only taken while awaiting completions, the handlers swallow errors from best-effort calls
+        const cancel_protection = self.io.swapCancelProtection(.blocked);
+        defer _ = self.io.swapCancelProtection(cancel_protection);
         var busy_start = std.Io.Timestamp.now(self.io, .awake);
         while (true) {
             self.checkPeerStatus();
             try self.drainWriteQueue();
 
-            self.io.checkCancel() catch break;
             const wait_start = std.Io.Timestamp.now(self.io, .awake);
             self.metrics.loop_busy_seconds.incrBy(secondsSince(self.io, busy_start));
+            _ = self.io.swapCancelProtection(.unblocked);
+            self.io.checkCancel() catch break;
             const awaited = self.batch.awaitConcurrent(self.io, .{ .duration = .{
                 .clock = .real,
                 .raw = .fromMilliseconds(250),
             } });
+            _ = self.io.swapCancelProtection(.blocked);
             busy_start = std.Io.Timestamp.now(self.io, .awake);
             self.metrics.loop_wait_seconds.incrBy(secondsSince(self.io, wait_start));
             awaited catch |e| switch (e) {
@@ -282,9 +287,7 @@ pub const Server = struct {
                 (if (completed.index < self.slots.len)
                     self.onReadCompletion(completed)
                 else
-                    self.onWriteCompletion(completed)) catch |e| {
-                    if (e == std.Io.Cancelable.Canceled) return e;
-                };
+                    self.onWriteCompletion(completed)) catch {};
             }
         }
     }

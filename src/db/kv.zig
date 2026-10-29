@@ -68,6 +68,10 @@ pub const Store = struct {
         return .{ .env = env, .dbis = dbis };
     }
 
+    pub fn deinit(self: *Store) !void {
+        try self.env.deinit();
+    }
+
     pub fn transaction_ro(self: *const Store) !Transaction {
         return try self.env.transaction(.{ .mode = .ReadOnly });
     }

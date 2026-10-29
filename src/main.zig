@@ -26,6 +26,7 @@ const RpcServer = @import("rpc/jsonrpc.zig").Server;
 const RpcHttpServer = @import("rpc/http.zig").HttpServer;
 const jwt = @import("rpc/jwt.zig");
 const metrics = @import("metrics.zig");
+const Shutdown = @import("signals.zig").Shutdown;
 
 pub const std_options: std.Options = .{
     .log_level = .info,
@@ -130,8 +131,32 @@ fn openDataSubdir(io: std.Io, allocator: std.mem.Allocator, datadir: std.Io.Dir,
 }
 
 pub fn main(init: std.process.Init) !void {
+    var shutdown = try Shutdown.init();
+    defer shutdown.deinit(init.io);
+
     const opts = try Options.parse(init) orelse return;
 
+    const Event = union(enum) {
+        node: @typeInfo(@TypeOf(runNode)).@"fn".return_type.?,
+        signal: @typeInfo(@TypeOf(Shutdown.wait)).@"fn".return_type.?,
+    };
+    var buf: [2]Event = undefined;
+    var select: std.Io.Select(Event) = .init(init.io, &buf);
+    defer select.cancelDiscard();
+    try select.concurrent(.node, runNode, .{ init, opts });
+    try select.concurrent(.signal, Shutdown.wait, .{ &shutdown, init.io });
+
+    switch (try select.await()) {
+        .node => |res| try res,
+        .signal => |res| {
+            std.log.info("received {t}, shutting down", .{try res});
+            // a second signal kills the process
+            shutdown.unblock();
+        },
+    }
+}
+
+fn runNode(init: std.process.Init, opts: Options) !void {
     const kp = std.crypto.sign.ecdsa.EcdsaSecp256k1Sha256.KeyPair.generate(init.io);
 
     var slabs = SlabAllocator.init(init.arena.allocator());
@@ -142,6 +167,7 @@ pub fn main(init: std.process.Init) !void {
     const mdbx_path = try openDataSubdir(init.io, init.arena.allocator(), datadir, "mdbx");
 
     var fs = try FileStorage.init(init.io, slabs.allocator(), static_path);
+    defer fs.deinit(init.io, slabs.allocator()) catch |e| std.log.err("closing file storage failed: {}", .{e});
     var bc = try Blockchain.init(init.io, slabs.allocator(), opts.config, &fs);
 
     var id_filter = forks.IdFilter.init(bc.genesisHash(), &bc.cfg.fork_schedule);
@@ -172,7 +198,8 @@ pub fn main(init: std.process.Init) !void {
     var rlpx_thread = try init.io.concurrent(rlpx.Server.run, .{&rlpx_server});
     defer rlpx_thread.cancel(init.io) catch {};
 
-    const dialer = Dialer.init(&rlpx_server, &id_filter, &bc);
+    var dialer = Dialer.init(&rlpx_server, &id_filter, &bc);
+    defer dialer.deinit(init.io);
 
     var server = try discv5.Server.init(
         slabs.allocator(),
@@ -186,6 +213,7 @@ pub fn main(init: std.process.Init) !void {
     defer discv_thread.cancel(init.io) catch {};
 
     var store = try kv.Store.init(slabs.allocator(), mdbx_path);
+    defer store.deinit() catch |e| std.log.err("closing mdbx failed: {}", .{e});
     var eth_db = EthDb.init(&store);
 
     var downloader = try Downloader.init(

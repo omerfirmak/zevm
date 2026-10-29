@@ -11,6 +11,7 @@ pub const Dialer = struct {
     server: *rlpx.Server,
     filter: *const IdFilter,
     bc: *Blockchain,
+    dials: std.Io.Group = .init,
 
     pub fn init(server: *rlpx.Server, filter: *const IdFilter, bc: *Blockchain) Dialer {
         return .{
@@ -20,14 +21,22 @@ pub const Dialer = struct {
         };
     }
 
-    pub fn dial(self: *const Dialer, io: std.Io, record: enr.Record) void {
+    pub fn deinit(self: *Dialer, io: std.Io) void {
+        self.dials.cancel(io);
+    }
+
+    pub fn dial(self: *Dialer, io: std.Io, record: enr.Record) void {
         const head = self.bc.headHeader() catch return;
         const remote = record.eth orelse return;
         if (record.tcpAddr() != null and
             self.filter.check(remote, head.number, head.timestamp) and
             self.server.candidatePeer(record))
         {
-            _ = io.concurrent(rlpx.Server.dial, .{ self.server, record }) catch return;
+            self.dials.concurrent(io, dialTask, .{ self.server, record }) catch return;
         }
+    }
+
+    fn dialTask(server: *rlpx.Server, record: enr.Record) void {
+        server.dial(record) catch {};
     }
 };

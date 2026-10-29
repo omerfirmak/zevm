@@ -53,7 +53,7 @@ pub const HttpServer = struct {
         };
         defer stream.close(self.io);
         defer _ = self.arena.reset(.retain_capacity);
-        self.serve(stream) catch {};
+        self.serve(stream) catch |e| if (e == error.Canceled) return e;
     }
 
     fn serve(self: *Self, stream: std.Io.net.Stream) !void {

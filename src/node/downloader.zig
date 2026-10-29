@@ -157,6 +157,7 @@ pub const Downloader = struct {
         var buf: [4]msg = undefined;
         var select: std.Io.Select(msg) = .init(self.io, &buf);
         defer self.task_group.cancel(self.io);
+        defer select.cancelDiscard();
 
         try select.concurrent(.eth, eth.Provider.next, .{ self.eth_provider, self.io, self.eth_arena.allocator(), self.allocator });
         try select.concurrent(.snap, snap.Provider.next, .{ self.snap_provider, self.io, self.snap_arena.allocator(), self.allocator });
@@ -168,6 +169,8 @@ pub const Downloader = struct {
             const wait_start = std.Io.Timestamp.now(self.io, .awake);
             self.metrics.loop_busy_seconds.incrBy(secondsSince(self.io, busy_start));
             const event = try select.await();
+            const cancel_protection = self.io.swapCancelProtection(.blocked);
+            defer _ = self.io.swapCancelProtection(cancel_protection);
             busy_start = std.Io.Timestamp.now(self.io, .awake);
             self.metrics.loop_wait_seconds.incrBy(secondsSince(self.io, wait_start));
 
@@ -1186,6 +1189,7 @@ pub const Downloader = struct {
 
     fn hashTrieTask(self: *Self, owner: ?[32]u8, expected_root: [32]u8) void {
         self.hashTrie(owner, expected_root) catch |err| {
+            if (err == error.Canceled) return self.io.recancel();
             if (owner) |account| std.debug.panic("downloader: hashing storage trie of {x} failed: {}", .{ account, err });
             std.debug.panic("downloader: hashing account trie failed: {}", .{err});
         };
@@ -1195,6 +1199,7 @@ pub const Downloader = struct {
         var root = types.empty_root_hash;
         var from: ?[32]u8 = @splat(0);
         while (from) |start| {
+            try self.io.checkCancel();
             var arena = std.heap.ArenaAllocator.init(self.allocator);
             defer arena.deinit();
             const allocator = arena.allocator();

@@ -91,9 +91,9 @@ pub const Server = struct {
     sessions: cache.StringCache(Session),
     table: Table,
 
-    dialer: *const Dialer,
+    dialer: *Dialer,
 
-    pub fn init(allocator: std.mem.Allocator, io: std.Io, identity: Ecdsa.KeyPair, port: u16, bootnodes: []const enr.Record, dialer: *const Dialer) !Self {
+    pub fn init(allocator: std.mem.Allocator, io: std.Io, identity: Ecdsa.KeyPair, port: u16, bootnodes: []const enr.Record, dialer: *Dialer) !Self {
         const self_id = nodeId(identity.public_key.toUncompressedSec1()[1..65].*);
         var s = Server{
             .allocator = allocator,
@@ -127,21 +127,23 @@ pub const Server = struct {
 
     pub fn run(self: *Self) !void {
         log.info("starting to listen on {}", .{self.socket.address});
-        try self.flushSends();
+        const cancel_protection = self.io.swapCancelProtection(.blocked);
+        defer _ = self.io.swapCancelProtection(cancel_protection);
+        self.flushSends();
 
         var next_walk: std.Io.Clock.Timestamp = .fromNow(self.io, .{ .raw = .zero, .clock = .real });
         while (true) {
             if (next_walk.durationFromNow(self.io).raw.toNanoseconds() <= 0) {
                 if (self.startWalking()) {
                     next_walk = .fromNow(self.io, .{ .raw = .fromSeconds(300), .clock = .real });
-                } else |e| {
-                    if (e == std.Io.Cancelable.Canceled) break;
+                } else |_| {
                     next_walk = .fromNow(self.io, .{ .raw = .fromSeconds(1), .clock = .real });
                 }
-                self.flushSends() catch |e| if (e == std.Io.Cancelable.Canceled) break;
+                self.flushSends();
             }
 
             @memset(&self.rx_msgs, .init);
+            _ = self.io.swapCancelProtection(.unblocked);
             const receive_err, const received = self.socket.receiveManyTimeout(
                 self.io,
                 &self.rx_msgs,
@@ -149,17 +151,17 @@ pub const Server = struct {
                 .{},
                 .{ .duration = .{ .raw = .fromSeconds(15), .clock = .real } },
             );
+            _ = self.io.swapCancelProtection(.blocked);
             for (self.rx_msgs[0..received]) |*msg| {
                 if (msg.flags.trunc or msg.flags.ctrunc or msg.flags.errqueue) continue;
 
                 const res = self.handlePacket(msg.data, msg.from) catch |e| {
-                    if (e == std.Io.Cancelable.Canceled) return;
                     log.debug("handlePacket errored with {} for {x} from {}", .{ e, msg.data, msg.from });
                     continue;
                 };
-                if (res) |packet| self.queueSend(msg.from, packet) catch |e| if (e == std.Io.Cancelable.Canceled) return;
+                if (res) |packet| self.queueSend(msg.from, packet);
             }
-            self.flushSends() catch |e| if (e == std.Io.Cancelable.Canceled) break;
+            self.flushSends();
 
             if (receive_err) |e| {
                 if (e == std.Io.Cancelable.Canceled) break;
@@ -172,7 +174,7 @@ pub const Server = struct {
         }
     }
 
-    fn queueSend(self: *Self, addr: std.Io.net.IpAddress, packet: []const u8) !void {
+    fn queueSend(self: *Self, addr: std.Io.net.IpAddress, packet: []const u8) void {
         std.debug.assert(packet.ptr == self.tx_buf);
         self.tx_addrs[self.tx_count] = addr;
         self.tx_msgs[self.tx_count] = .{
@@ -185,14 +187,13 @@ pub const Server = struct {
         self.tx_buf = &self.tx_bufs[self.tx_count];
     }
 
-    fn flushSends(self: *Self) !void {
+    fn flushSends(self: *Self) void {
         defer {
             self.tx_count = 0;
             self.tx_buf = &self.tx_bufs[0];
         }
         if (self.tx_count == 0) return;
         self.socket.sendMany(self.io, self.tx_msgs[0..self.tx_count], .{}) catch |e| {
-            if (e == std.Io.Cancelable.Canceled) return e;
             log.debug("sendMany errored with {} for {} packets", .{ e, self.tx_count });
         };
     }
@@ -267,7 +268,7 @@ pub const Server = struct {
         if (buf.len < 39 + authdata_size) return error.BufferTooShort;
         std.crypto.core.modes.ctr(@TypeOf(enc), enc, buf[16 .. 39 + authdata_size], buf[16 .. 39 + authdata_size], iv.*, .big);
         const auth_data = buf[39 .. 39 + authdata_size];
-        switch (@as(Flags, @enumFromInt(header.flag))) {
+        switch (@as(Flags, @fromBackingInt(@intCast(header.flag)))) {
             .Message => {
                 if (authdata_size != 32) return error.InvalidAuthDataSize;
                 return try self.handleMessage(auth_data[0..32], header.nonce, buf[0 .. 39 + authdata_size], buf[39 + authdata_size ..], from);
@@ -306,9 +307,9 @@ pub const Server = struct {
         try Aes128Gcm.decrypt(pt, pt, tag, ad, nonce, session.read_key);
 
         const typ = pt[0];
-        if (typ == 0 or typ > @intFromEnum(Messages.Nodes)) return error.UnknownMessage;
+        if (typ == 0 or typ > @backingInt(Messages.Nodes)) return error.UnknownMessage;
         const body = pt[1..];
-        return switch (@as(Messages, @enumFromInt(typ))) {
+        return switch (@as(Messages, @fromBackingInt(@intCast(typ)))) {
             .Ping => self.handlePing(src_id.*, session.write_key, from, body),
             .Pong => handlePong(body),
             .FindNode => self.handleFindNode(src_id.*, session.write_key, body),
@@ -372,10 +373,7 @@ pub const Server = struct {
             res.record.verify(res.sig_hash) catch continue;
             _ = self.visit(res.record.pubkey);
 
-            self.findNodes(res.record) catch |e| {
-                if (e == std.Io.Cancelable.Canceled) return e;
-                continue;
-            };
+            self.findNodes(res.record) catch continue;
         }
 
         return null;
@@ -436,12 +434,12 @@ pub const Server = struct {
         if (self.sessions.get(&session_id.encode())) |session_entry| {
             defer session_entry.release();
 
-            try self.queueSend(addr, try self.encodePacket(record.node_id.?, .Message, nonce, &self.id, FindNode{
+            self.queueSend(addr, try self.encodePacket(record.node_id.?, .Message, nonce, &self.id, FindNode{
                 .request_id = &self.nextRequestId(),
                 .distances = &.{ 256, 255, 254, 253 },
             }, session_entry.value.write_key));
         } else {
-            try self.queueSend(addr, try self.encodePacket(record.node_id.?, .Message, nonce, &self.id, Ping{
+            self.queueSend(addr, try self.encodePacket(record.node_id.?, .Message, nonce, &self.id, Ping{
                 .request_id = &self.nextRequestId(),
                 .enr_seq = 1,
             }, undefined));
@@ -465,7 +463,7 @@ pub const Server = struct {
         const hdr = self.tx_buf[16..39];
         @memcpy(hdr[0..6], "discv5");
         std.mem.writeInt(u16, hdr[6..8], 0x0001, .big);
-        hdr[8] = @intFromEnum(flag);
+        hdr[8] = @backingInt(flag);
         @memcpy(hdr[9..21], &nonce);
         std.mem.writeInt(u16, hdr[21..23], @intCast(authdata.len), .big);
 
@@ -475,7 +473,7 @@ pub const Server = struct {
         defer body.deinit();
         try body.ensureTotalCapacity(1280);
 
-        try body.append(@intFromEnum(switch (@TypeOf(message)) {
+        try body.append(@backingInt(switch (@TypeOf(message)) {
             Ping => Messages.Ping,
             Pong => Messages.Pong,
             FindNode => Messages.FindNode,
