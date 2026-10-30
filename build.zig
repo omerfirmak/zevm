@@ -351,6 +351,30 @@ pub fn build(b: *std.Build) void {
     }
     blockchain_test_step.dependOn(&run_blockchain_tests.step);
 
+    // Transaction tests
+    const transaction_test_step = b.step("transaction-tests", "Run transaction validation tests");
+    const transaction_tests = b.addTest(.{
+        .name = "zevm-transaction-test",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test/transaction_tests.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+        .use_llvm = true,
+    });
+    transaction_tests.root_module.link_libcpp = true;
+    transaction_tests.root_module.addImport("zevm", test_zevm_mod);
+    b.installArtifact(transaction_tests);
+    const run_transaction_tests = b.addRunArtifact(transaction_tests);
+    run_transaction_tests.setCwd(b.path("."));
+    if (b.option([]const u8, "transaction-test", "Path to a specific transaction test JSON file")) |path| {
+        run_transaction_tests.setEnvironmentVariable("TRANSACTION_TEST", path);
+    }
+    if (fork_option) |f| {
+        run_transaction_tests.setEnvironmentVariable("FORK", f);
+    }
+    transaction_test_step.dependOn(&run_transaction_tests.step);
+
     // zkEVM tests
     const guest_options = b.addOptions();
     guest_options.addOption(u64, "chain_id", 1);
