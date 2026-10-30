@@ -9,6 +9,7 @@ const curve = @import("crypto/curve.zig");
 const SpinLockOnce = @import("sync.zig").SpinLockOnce;
 const bls12 = @import("crypto/blst.zig");
 const kzg = @import("ckzg");
+const kzg_point = @import("crypto/kzg_point.zig");
 const mcl = @import("mcl");
 const zkvm = @import("zkvm");
 const Ripemd160 = @import("crypto/ripemd160.zig").Ripemd160;
@@ -54,18 +55,6 @@ pub const Precompiles = enum(u9) {
     bls12_map_fp2_to_g2 = 0x11,
     p256verify = 0x100,
 };
-
-var kzg_setup: kzg.Settings = .{};
-var kzg_once: SpinLockOnce(loadKzgSetup) = .{};
-fn loadKzgSetup() void {
-    const ts = @import("trusted_setup");
-    kzg_setup = kzg.Settings.loadTrustedSetup(
-        ts.g1_monomial_bytes,
-        ts.g1_lagrange_bytes,
-        ts.g2_monomial_bytes,
-        0,
-    ) catch unreachable;
-}
 
 var mcl_once: SpinLockOnce(mcl_init) = .{};
 fn mcl_init() void {
@@ -868,9 +857,7 @@ pub fn Handlers(comptime fork: Spec) type {
                 const c_z: *const kzg.Bytes32 = @ptrCast(z[0..32]);
                 const c_y: *const kzg.Bytes32 = @ptrCast(y[0..32]);
 
-                kzg_once.call();
-                const valid = kzg_setup.verifyKzgProof(c_commitment, c_z, c_y, c_proof) catch return invalid_input;
-                if (!valid) return invalid_input;
+                if (!kzg_point.verify(c_commitment, c_z, c_y, c_proof)) return invalid_input;
             }
 
             const field_elements_per_blob = 4096;
