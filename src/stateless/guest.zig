@@ -66,7 +66,6 @@ pub fn verify(allocator: std.mem.Allocator, input: types.StatelessInput) !void {
     if (headers.len == 0) return error.MissingParentHeader;
     const parent = &headers[headers.len - 1];
     var block = try makeBlock(allocator, &input.new_payload_request, input.chain_id);
-    try validateVersionedHashes(&block, input.new_payload_request.versioned_hashes.constSlice());
 
     var ancestors: [256]u256 = @splat(0);
     const n = @min(header_hashes.len, 256);
@@ -102,26 +101,6 @@ pub fn verify(allocator: std.mem.Allocator, input: types.StatelessInput) !void {
     }
 }
 
-fn validateVersionedHashes(
-    block: *const zevm.processor.PreprocessedBlock,
-    declared: []const [32]u8,
-) !void {
-    var i: usize = 0;
-    for (block.block.transactions) |*tx| {
-        const hashes = switch (tx.*) {
-            .blob => |*t| t.blob_hashes,
-            else => continue,
-        };
-        for (hashes) |*hash| {
-            if (i >= declared.len or !std.mem.eql(u8, hash[0..], declared[i][0..])) {
-                return error.InvalidVersionedHashes;
-            }
-            i += 1;
-        }
-    }
-    if (i != declared.len) return error.InvalidVersionedHashes;
-}
-
 fn assertAccountCodeIsInWitness(committed: *const CommittedState, addr: u160) !void {
     const acc = try committed.account(addr);
     if (std.mem.eql(u8, &acc.code_hash, &zevm.types.empty_code_hash)) return;
@@ -133,35 +112,13 @@ fn makeBlock(
     request: *const types.NewPayloadRequest,
     chain_id: u64,
 ) !zevm.processor.PreprocessedBlock {
-    const payload = &request.execution_payload;
+    const p = &request.execution_payload;
 
-    const txs = try allocator.alloc(zevm.types.Transaction, payload.transactions.len());
-    const raw_txs = try allocator.alloc(rlp.RawValue, payload.transactions.len());
-    defer allocator.free(raw_txs);
-    const body_txs = try allocator.alloc(rlp.RawValue, payload.transactions.len());
-    defer allocator.free(body_txs);
-    defer for (body_txs, raw_txs) |body, raw| {
-        if (body.value.ptr != raw.value.ptr) allocator.free(body.value);
-    };
-    for (payload.transactions.constSlice(), 0..) |*raw, i| {
-        _ = try txs[i].decodeFromRLP(allocator, raw.constSlice());
-        const bytes = raw.constSlice();
-        raw_txs[i] = .{ .value = bytes };
-        if (bytes.len > 0 and bytes[0] <= 0x7f) {
-            var wrapped = std.array_list.Managed(u8).init(allocator);
-            errdefer wrapped.deinit();
-            try rlp.serialize([]const u8, allocator, bytes, &wrapped);
-            body_txs[i] = .{ .value = try wrapped.toOwnedSlice() };
-        } else {
-            body_txs[i] = .{ .value = bytes };
-        }
-    }
+    const txs = try allocator.alloc([]const u8, p.transactions.len());
+    for (p.transactions.constSlice(), txs) |*raw, *dst| dst.* = raw.constSlice();
 
-    const senders = try allocator.alloc(u160, payload.transactions.len());
-    for (txs, senders) |*tx, *sender| sender.* = try zevm.processor.recoverTxSender(allocator, tx, chain_id);
-
-    const withdrawals = try allocator.alloc(zevm.types.Withdrawal, payload.withdrawals.len());
-    for (payload.withdrawals.constSlice(), withdrawals) |*src, *dst| {
+    const withdrawals = try allocator.alloc(zevm.types.Withdrawal, p.withdrawals.len());
+    for (p.withdrawals.constSlice(), withdrawals) |*src, *dst| {
         dst.* = .{
             .index = src.index,
             .validator_index = src.validator_index,
@@ -170,92 +127,58 @@ fn makeBlock(
         };
     }
 
-    if (payload.base_fee_per_gas > std.math.maxInt(u64)) return error.BaseFeeTooLarge;
-
-    var bal: zevm.types.BlockAccessLists = undefined;
-    _ = try rlp.deserialize(zevm.types.BlockAccessLists, allocator, request.execution_payload.block_access_list.constSlice(), &bal);
-    const bal_hash = zevm.crypto.hash.keccak256(request.execution_payload.block_access_list.constSlice());
-    var extra_data: zevm.types.ExtraData = undefined;
-    const extra_data_slice = payload.extra_data.constSlice();
-    @memcpy(extra_data.buf[0..extra_data_slice.len], extra_data_slice);
-    extra_data.len = extra_data_slice.len;
-
-    const header = zevm.types.BlockHeader{
-        .parent_hash = payload.parent_hash,
-        .ommers_hash = zevm.types.empty_ommers_hash,
-        .beneficiary = payload.fee_recipient,
-        .state_root = payload.state_root,
-        .transactions_root = try zevm.processor.computeRoot(rlp.RawValue, allocator, raw_txs),
-        .receipts_root = payload.receipts_root,
-        .logs_bloom = payload.logs_bloom,
-        .difficulty = 0, // post-merge: always 0
-        .number = payload.block_number,
-        .gas_limit = payload.gas_limit,
-        .gas_used = payload.gas_used,
-        .timestamp = payload.timestamp,
-        .extra_data = extra_data,
-        .mix_hash = payload.prev_randao,
-        .nonce = @splat(0), // post-merge: always zero
-        .base_fee_per_gas = @intCast(payload.base_fee_per_gas),
-        .withdrawals_root = try zevm.processor.computeRoot(zevm.types.Withdrawal, allocator, withdrawals),
-        .blob_gas_used = payload.blob_gas_used,
-        .excess_blob_gas = payload.excess_blob_gas,
-        .parent_beacon_block_root = request.parent_beacon_block_root,
-        .requests_hash = try computeRequestsHash(allocator, &request.execution_requests),
-        .block_access_list_hash = bal_hash,
-        .slot_number = payload.slot_number,
-    };
-
-    if (!std.mem.eql(u8, &header.hash(), &payload.block_hash)) return error.InvalidBlockHash;
-
-    var encoded = std.array_list.Managed(u8).init(allocator);
-    defer encoded.deinit();
-    try rlp.serialize(struct {
-        header: zevm.types.BlockHeader,
-        transactions: []rlp.RawValue,
-        uncles: []zevm.types.BlockHeader,
-        withdrawals: []zevm.types.Withdrawal,
-    }, allocator, .{
-        .header = header,
-        .transactions = body_txs,
-        .uncles = &.{},
+    const payload: zevm.engine.ExecutionPayload = .{
+        .parent_hash = p.parent_hash,
+        .fee_recipient = p.fee_recipient,
+        .state_root = p.state_root,
+        .receipts_root = p.receipts_root,
+        .logs_bloom = p.logs_bloom,
+        .prev_randao = p.prev_randao,
+        .block_number = p.block_number,
+        .gas_limit = p.gas_limit,
+        .gas_used = p.gas_used,
+        .timestamp = p.timestamp,
+        .extra_data = p.extra_data.constSlice(),
+        .base_fee_per_gas = p.base_fee_per_gas,
+        .block_hash = p.block_hash,
+        .transactions = txs,
         .withdrawals = withdrawals,
-    }, &encoded);
-
-    return zevm.processor.PreprocessedBlock{
-        .block = .{
-            .header = header,
-            .transactions = txs,
-            .uncles = &.{},
-            .withdrawals = withdrawals,
-        },
-        .rlp_size = encoded.items.len,
-        .bal = bal,
-        .senders = senders,
+        .blob_gas_used = p.blob_gas_used,
+        .excess_blob_gas = p.excess_blob_gas,
+        .block_access_list = p.block_access_list.constSlice(),
+        .slot_number = p.slot_number,
     };
+
+    return payload.toBlock(
+        allocator,
+        request.versioned_hashes.constSlice(),
+        request.parent_beacon_block_root,
+        try flattenRequests(allocator, &request.execution_requests),
+        chain_id,
+    );
 }
 
-fn computeRequestsHash(allocator: std.mem.Allocator, requests: *const types.ExecutionRequests) ![32]u8 {
-    var hashes: [5 * 32]u8 = undefined;
-    var n: usize = 0;
-    inline for (.{
+fn flattenRequests(allocator: std.mem.Allocator, requests: *const types.ExecutionRequests) ![]const []const u8 {
+    const fields = .{
         .{ 0x00, "deposits" },
         .{ 0x01, "withdrawals" },
         .{ 0x02, "consolidations" },
         .{ 0x03, "builder_deposits" },
         .{ 0x04, "builder_exits" },
-    }) |entry| {
+    };
+    const out = try allocator.alloc([]const u8, fields.len);
+    var n: usize = 0;
+    inline for (fields) |entry| {
         const items = @field(requests, entry[1]).constSlice();
         if (items.len > 0) {
             var buf: std.ArrayList(u8) = .empty;
-            defer buf.deinit(allocator);
             try buf.append(allocator, entry[0]);
             for (items) |item| try ssz.serialize(@TypeOf(item), item, &buf, allocator);
-            hashes[n * 32 ..][0..32].* = zevm.crypto.hash.sha256(buf.items);
+            out[n] = buf.items;
             n += 1;
         }
     }
-    return zevm.crypto.hash.sha256(hashes[0 .. n * 32]);
+    return out[0..n];
 }
 
 fn stateCapacities(comptime spec: Spec, bal: zevm.types.BlockAccessLists, codes: anytype, txs: []const zevm.types.Transaction, num_withdrawals: usize, gas_limit: u64) Spec.StateCapacities {

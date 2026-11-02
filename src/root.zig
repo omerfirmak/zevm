@@ -13,6 +13,7 @@ pub const Trie = trie.Trie;
 pub const range_proof = @import("trie/range_proof.zig");
 
 pub const processor = @import("processor/processor.zig");
+pub const engine = @import("node/engine.zig");
 
 pub const types = @import("types.zig");
 pub const Fork = @import("forks.zig").Fork;
