@@ -51,6 +51,27 @@ jobs:
       - name: Run blockchain tests
         run: zig build blockchain-tests -Doptimize=ReleaseSafe -Dfork=${{ matrix.fork }}
 
+  # engine-tests:
+  #   runs-on: ubuntu-24.04
+  #   strategy:
+  #     fail-fast: false
+  #     matrix:
+  #       fork: [Amsterdam]
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #       with:
+  #         submodules: recursive
+
+  #     - uses: mlugg/setup-zig@v2
+  #       with:
+  #         version: 0.17.0
+
+  #     - name: Download and extract blockchain engine test fixtures
+  #       run: curl -L https://github.com/ethereum/execution-specs/releases/download/tests%40v21.0.2/fixtures.tar.gz | tar -xz
+
+  #     - name: Run blockchain engine tests
+  #       run: zig build engine-tests -Doptimize=ReleaseSafe -Dfork=${{ matrix.fork }}
+
   state-tests:
     runs-on: ubuntu-24.04
     strategy:
