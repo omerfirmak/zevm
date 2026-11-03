@@ -7,7 +7,53 @@ const rlp = @import("rlp");
 const processor = @import("../processor/processor.zig");
 const crypto = @import("../evm/crypto/hash.zig");
 
-pub const Engine = struct {};
+const CommittedState = @import("../evm/committed_state.zig").CommittedState;
+
+pub const PayloadStatus = struct {
+    pub const Status = enum { valid, invalid, syncing, accepted };
+
+    status: Status,
+    latest_valid_hash: ?[32]u8 = null,
+    validation_error: ?anyerror = null,
+};
+
+pub const ForkchoiceState = struct {
+    head_block_hash: [32]u8,
+    safe_block_hash: [32]u8,
+    finalized_block_hash: [32]u8,
+};
+
+pub const Engine = struct {
+    const Self = @This();
+
+    pub fn newPayload(
+        self: *Self,
+        allocator: std.mem.Allocator,
+        payload: *const ExecutionPayload,
+        versioned_hashes: []const [32]u8,
+        parent_beacon_block_root: [32]u8,
+        execution_requests: []const []const u8,
+    ) !PayloadStatus {
+        _ = self;
+        _ = allocator;
+        _ = payload;
+        _ = versioned_hashes;
+        _ = parent_beacon_block_root;
+        _ = execution_requests;
+        return error.NotImplemented;
+    }
+
+    pub fn forkchoiceUpdated(
+        self: *Self,
+        allocator: std.mem.Allocator,
+        state: ForkchoiceState,
+    ) !PayloadStatus {
+        _ = self;
+        _ = allocator;
+        _ = state;
+        return error.NotImplemented;
+    }
+};
 
 pub const ExecutionPayload = struct {
     parent_hash: [32]u8,

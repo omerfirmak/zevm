@@ -501,6 +501,11 @@ const exception_map = .{
     .{ "BlockException.INCORRECT_BLOCK_FORMAT", error.InvalidBal },
     .{ "BlockException.BLOCK_ACCESS_LIST_GAS_LIMIT_EXCEEDED", error.InvalidBal },
     .{ "BlockException.INVALID_BAL_HASH", error.MismatchedBalHash },
+    // Engine API exceptions (engine.ExecutionPayload.toBlock)
+    .{ "BlockException.INVALID_BLOCK_HASH", error.InvalidBlockHash },
+    .{ "BlockException.INVALID_REQUESTS", error.InvalidExecutionRequests },
+    .{ "TransactionException.TYPE_3_TX_INVALID_BLOB_VERSIONED_HASH", error.InvalidVersionedHashes },
+    .{ "BlockException.EXTRA_DATA_TOO_BIG", error.ExtraDataTooLong },
 };
 
 pub fn mapException(name: []const u8) ?anyerror {

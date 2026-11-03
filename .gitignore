@@ -3,3 +3,4 @@ zig-pkg
 .zig-cache
 datadir
 monitoring
+fixtures

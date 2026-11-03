@@ -351,6 +351,31 @@ pub fn build(b: *std.Build) void {
     }
     blockchain_test_step.dependOn(&run_blockchain_tests.step);
 
+    // Blockchain engine tests
+    const engine_test_step = b.step("engine-tests", "Run EVM blockchain engine tests");
+    const engine_tests = b.addTest(.{
+        .name = "zevm-engine-test",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test/blockchain_tests_engine.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+        .use_llvm = true,
+    });
+    engine_tests.root_module.link_libcpp = true;
+    engine_tests.root_module.addImport("zevm", test_zevm_mod);
+    engine_tests.stack_size = 64 * 1024 * 1024;
+    b.installArtifact(engine_tests);
+    const run_engine_tests = b.addRunArtifact(engine_tests);
+    run_engine_tests.setCwd(b.path("."));
+    if (b.option([]const u8, "engine-test", "Path to a specific blockchain engine test JSON file")) |path| {
+        run_engine_tests.setEnvironmentVariable("ENGINE_TEST", path);
+    }
+    if (fork_option) |f| {
+        run_engine_tests.setEnvironmentVariable("FORK", f);
+    }
+    engine_test_step.dependOn(&run_engine_tests.step);
+
     // zkEVM tests
     const guest_options = b.addOptions();
     guest_options.addOption(u64, "chain_id", 1);
