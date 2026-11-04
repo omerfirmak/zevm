@@ -129,13 +129,15 @@ fn prepareBlock(
 
     const txns = if (block_entry.transactions) |ts| ts else block_entry.rlp_decoded.?.transactions.?;
     var senders = try arena.alloc(u160, txns.len);
-    for (block.transactions, 0..) |tx, i| senders[i] = try zevm.processor.recoverTxSender(arena, &tx, 1);
+    const chain_id = 1;
+    for (block.transactions, 0..) |tx, i| senders[i] = try zevm.processor.recoverTxSender(arena, &tx, chain_id);
 
     return .{
         .block = block,
         .rlp_size = block_entry.rlp.value.len,
         .bal = bal,
         .senders = senders,
+        .chain_id = chain_id,
     };
 }
 
@@ -246,7 +248,7 @@ fn runBlockchainTestFile(io: std.Io, allocator: std.mem.Allocator, dir: std.Io.D
 
         switch (fork_enum) {
             inline .Osaka, .BPO1, .BPO2, .Amsterdam => |f| {
-                runBlockchainTest(allocator, &test_case, zevm.processor.Spec.fromFork(f, 1)) catch |err| {
+                runBlockchainTest(allocator, &test_case, zevm.processor.Spec.fromFork(f)) catch |err| {
                     std.debug.print("{s}: FAIL: {}\n", .{ name, err });
                     any_failed = true;
                 };

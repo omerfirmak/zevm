@@ -64,6 +64,7 @@ pub const PreprocessedBlock = struct {
     rlp_size: usize,
     bal: ?types.BlockAccessLists, // assumed to be pre-validated against the header
     senders: []u160,
+    chain_id: u64,
 };
 
 pub fn processBlock(
@@ -83,7 +84,7 @@ pub fn processBlock(
 
     const num_logs_per_tx = try gpa.alloc(usize, p_block.block.transactions.len);
     defer gpa.free(num_logs_per_tx);
-    var context = contextFromBlock(spec, &p_block.block);
+    var context = contextFromBlock(spec, p_block.chain_id, &p_block.block);
 
     var vm: evm.EVM = undefined;
     try vm.init(gpa, &context, .{});
@@ -398,11 +399,12 @@ pub fn validateBlock(comptime spec: Spec, p_block: *const PreprocessedBlock, par
 
 pub fn contextFromBlock(
     comptime spec: Spec,
+    chain_id: u64,
     block: *const types.Block,
 ) evm.Context {
     const h = &block.header;
     return .{
-        .chainid = spec.chain_id,
+        .chainid = chain_id,
         .number = h.number,
         .coinbase = std.mem.readInt(u160, &h.beneficiary, .big),
         .time = h.timestamp,

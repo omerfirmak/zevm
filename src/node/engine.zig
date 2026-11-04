@@ -174,6 +174,7 @@ pub const ExecutionPayload = struct {
             .rlp_size = encoded.items.len,
             .bal = bal,
             .senders = senders,
+            .chain_id = chain_id,
         };
         try validateVersionedHashes(&block, versioned_hashes);
         return block;

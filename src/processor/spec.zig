@@ -7,7 +7,6 @@ const Fork = @import("../forks.zig").Fork;
 
 pub const Spec = struct {
     fork: Fork,
-    chain_id: u64,
 
     base_fee_max_change_denominator: u64,
     base_fee_elasticity_multiplier: u64,
@@ -21,16 +20,14 @@ pub const Spec = struct {
     max_blobs_per_block: u64,
     blob_base_fee_update_fraction: u64,
 
-    pub fn fromFork(comptime fork: Fork, comptime chain_id: u64) Spec {
-        return override(switch (fork) {
+    pub fn fromFork(comptime fork: Fork) Spec {
+        return switch (fork) {
             .Osaka => Osaka,
             .BPO1 => BPO1,
             .BPO2 => BPO2,
             .Amsterdam => Amsterdam,
             else => @compileError("no processor Spec implemented for fork ." ++ @tagName(fork)),
-        }, .{
-            .chain_id = chain_id,
-        });
+        };
     }
 
     pub fn evmSpec(comptime self: Spec) EvmSpec {
@@ -40,7 +37,6 @@ pub const Spec = struct {
 
 pub const Osaka: Spec = .{
     .fork = .Osaka,
-    .chain_id = 1,
     .base_fee_elasticity_multiplier = 2,
     .base_fee_max_change_denominator = 8,
     .gas_limit_adjustment_factor = 1024,
