@@ -36,4 +36,8 @@ const EmptyCommittedState = struct {
     pub fn code(_: *const @This(), _: [32]u8) ![]const u8 {
         return @This().Errors.NotFound;
     }
+
+    pub fn blockHash(_: *const @This(), _: u64) !u256 {
+        return error.MissingAncestorHash;
+    }
 };

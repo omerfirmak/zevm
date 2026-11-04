@@ -19,6 +19,8 @@ pub const CommittedState = struct {
     codes: evm.trie.NodesHashMap,
     state_trie: evm.AccountTrie,
     account_tries: std.AutoHashMapUnmanaged(u160, evm.StorageTrie),
+    header_hashes: []const [32]u8,
+    parent_number: u64,
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -26,6 +28,8 @@ pub const CommittedState = struct {
         state: ProgressiveList(List(u8, MAX_BYTES_PER_WITNESS_NODE)),
         bytecodes: ProgressiveList(List(u8, MAX_BYTES_PER_CODE)),
         bal: *const evm.types.BlockAccessLists,
+        header_hashes: []const [32]u8,
+        parent_number: u64,
     ) !CommittedState {
         var codes: evm.trie.NodesHashMap = .empty;
         try codes.ensureTotalCapacityContext(allocator, @intCast(bytecodes.len()), .{});
@@ -62,6 +66,8 @@ pub const CommittedState = struct {
             .codes = codes,
             .state_trie = state_trie,
             .account_tries = account_tries,
+            .header_hashes = header_hashes,
+            .parent_number = parent_number,
         };
     }
 
@@ -76,6 +82,13 @@ pub const CommittedState = struct {
 
     pub fn code(self: *const @This(), hash: [32]u8) Errors![]const u8 {
         return self.codes.get(hash) orelse return Errors.InvalidWitness;
+    }
+
+    pub fn blockHash(self: *const @This(), number: u64) !u256 {
+        if (number > self.parent_number) return error.MissingAncestorHash;
+        const depth = self.parent_number - number;
+        if (depth >= self.header_hashes.len) return error.MissingAncestorHash;
+        return std.mem.readInt(u256, &self.header_hashes[self.header_hashes.len - 1 - depth], .big);
     }
 };
 

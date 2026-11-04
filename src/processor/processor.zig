@@ -71,7 +71,6 @@ pub fn processBlock(
     comptime spec: Spec,
     p_block: *PreprocessedBlock,
     parent: *const types.BlockHeader,
-    ancestors: [256]u256,
     state: *State,
 ) !void {
     try validateBlock(spec, p_block, parent);
@@ -84,7 +83,7 @@ pub fn processBlock(
 
     const num_logs_per_tx = try gpa.alloc(usize, p_block.block.transactions.len);
     defer gpa.free(num_logs_per_tx);
-    var context = contextFromBlock(spec, &p_block.block, ancestors);
+    var context = contextFromBlock(spec, &p_block.block);
 
     var vm: evm.EVM = undefined;
     try vm.init(gpa, &context, .{});
@@ -400,7 +399,6 @@ pub fn validateBlock(comptime spec: Spec, p_block: *const PreprocessedBlock, par
 pub fn contextFromBlock(
     comptime spec: Spec,
     block: *const types.Block,
-    ancestors: [256]u256,
 ) evm.Context {
     const h = &block.header;
     return .{
@@ -413,7 +411,6 @@ pub fn contextFromBlock(
         .gas_limit = h.gas_limit,
         .blob_base_fee = blobBaseFee(h.excess_blob_gas.?, spec.blob_base_fee_update_fraction),
         .max_blobs_per_block = spec.max_blobs_per_block,
-        .ancestors = ancestors,
         .slotnum = block.header.slot_number orelse 0,
     };
 }

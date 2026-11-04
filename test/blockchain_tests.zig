@@ -149,11 +149,7 @@ fn runBlockchainTest(gpa: std.mem.Allocator, test_case: *const BlockchainTest, c
         break :blk block;
     };
 
-    // ancestor_chain[k] = parent_hash of the block that is k+1 levels below the current parent.
-    // Invariant: ancestors[0] for the next block = prepared.block.header.parent_hash (read directly);
-    //            ancestors[k] for k>=1 = ancestor_chain[k-1].
-    var ancestor_chain: [255][32]u8 = undefined;
-    var ancestor_chain_len: usize = 0;
+    try committed.block_hashes.put(parent.header.number, std.mem.readInt(u256, &parent.header.hash(), .big));
 
     var prep_arena = std.heap.ArenaAllocator.init(gpa);
     defer prep_arena.deinit();
@@ -169,11 +165,6 @@ fn runBlockchainTest(gpa: std.mem.Allocator, test_case: *const BlockchainTest, c
 
         const validate_err: ?anyerror, const prepared: ?zevm.processor.PreprocessedBlock = blk: {
             var p = parse_result catch |e| break :blk .{ e, null };
-            var ancestors = @as([256]u256, @splat(0));
-            ancestors[0] = std.mem.readInt(u256, &p.block.header.parent_hash, .big);
-            for (0..@min(ancestor_chain_len, 255)) |k| {
-                ancestors[k + 1] = std.mem.readInt(u256, &ancestor_chain[k], .big);
-            }
 
             if (p.bal) |bal| {
                 const computed = try utils.computeBalHash(arena.allocator(), bal);
@@ -189,7 +180,6 @@ fn runBlockchainTest(gpa: std.mem.Allocator, test_case: *const BlockchainTest, c
                 spec,
                 &p,
                 &parent.header,
-                ancestors,
                 &state,
             )) |_| null else |err| err;
 
@@ -218,10 +208,7 @@ fn runBlockchainTest(gpa: std.mem.Allocator, test_case: *const BlockchainTest, c
         }
 
         const ok = prepared.?;
-        const new_len = @min(ancestor_chain_len + 1, 255);
-        std.mem.copyBackwards([32]u8, ancestor_chain[1..new_len], ancestor_chain[0 .. new_len - 1]);
-        ancestor_chain[0] = ok.block.header.parent_hash;
-        ancestor_chain_len = new_len;
+        try committed.block_hashes.put(ok.block.header.number, std.mem.readInt(u256, &ok.block.header.hash(), .big));
 
         parent = ok.block;
     }

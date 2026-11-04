@@ -161,8 +161,9 @@ fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []con
 
         const arena_allocator = arena.allocator();
 
-        var ancestors = @as([256]u256, @splat(0));
-        if (test_case.env.previousHash) |h| ancestors[0] = h.value;
+        if (test_case.env.previousHash) |h| {
+            if (test_case.env.currentNumber.value > 0) try committed.block_hashes.put(test_case.env.currentNumber.value - 1, h.value);
+        }
         var context = evm.Context{
             .chainid = 1,
             .number = test_case.env.currentNumber.value,
@@ -173,7 +174,6 @@ fn runStateTest(gpa: std.mem.Allocator, test_case: *const StateTest, fork: []con
             .basefee = test_case.env.currentBaseFee.?.value,
             .blob_base_fee = if (test_case.env.currentExcessBlobGas) |ebg| zevm.blobBaseFee(ebg.value, blob_update_fraction) else 0,
             .max_blobs_per_block = max_blobs,
-            .ancestors = ancestors,
             .slotnum = if (test_case.env.slotNumber) |s| s.value else 0,
         };
 
