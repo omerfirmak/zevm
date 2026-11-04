@@ -54,4 +54,8 @@ pub const CommittedState = struct {
         if (std.mem.eql(u8, &hash, &code_hash)) return &bytecode;
         return Errors.NotFound;
     }
+
+    pub fn blockHash(_: *const @This(), _: u64) !u256 {
+        return error.MissingAncestorHash;
+    }
 };

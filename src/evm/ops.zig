@@ -559,8 +559,7 @@ pub fn Ops(comptime cfg: Config) type {
             if (requested > std.math.maxInt(u64) or requested >= current or current - requested > 256) {
                 args[0] = 0;
             } else {
-                args[0] = frame.evm.context.ancestors[@as(usize, @intCast(current - @as(u64, @truncate(requested)) - 1))];
-                if (args[0] == 0) return evm.Errors.MissingAncestorHash;
+                args[0] = try frame.state.committed_state.blockHash(@intCast(requested));
             }
             return next(next_ip, gas, fork.constantGas(.BLOCKHASH), new_stack_head, frame);
         }

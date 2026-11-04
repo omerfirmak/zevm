@@ -67,13 +67,7 @@ pub fn verify(allocator: std.mem.Allocator, input: types.StatelessInput) !void {
     const parent = &headers[headers.len - 1];
     var block = try makeBlock(allocator, &input.new_payload_request, input.chain_id);
 
-    var ancestors: [256]u256 = @splat(0);
-    const n = @min(header_hashes.len, 256);
-    for (0..n) |k| {
-        ancestors[k] = std.mem.readInt(u256, &header_hashes[header_hashes.len - 1 - k], .big);
-    }
-
-    var committed = try CommittedState.init(allocator, parent.state_root, input.witness.state, input.witness.codes, &block.bal.?);
+    var committed = try CommittedState.init(allocator, parent.state_root, input.witness.state, input.witness.codes, &block.bal.?, header_hashes, parent.number);
     var state = try zevm.state.State.init(
         allocator,
         &committed,
@@ -85,7 +79,6 @@ pub fn verify(allocator: std.mem.Allocator, input: types.StatelessInput) !void {
         zevm.processor.Spec.fromFork(spec.fork, @import("build_options").chain_id),
         &block,
         parent,
-        ancestors,
         &state,
     );
 

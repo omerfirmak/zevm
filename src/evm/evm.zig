@@ -70,8 +70,6 @@ pub const Context = struct {
     // EIP-4844
     blob_base_fee: u256,
     max_blobs_per_block: u64,
-
-    ancestors: [256]u256,
 };
 
 pub const Frame = struct {
