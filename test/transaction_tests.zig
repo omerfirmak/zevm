@@ -28,7 +28,9 @@ fn validateTransaction(arena: std.mem.Allocator, tx_bytes: []const u8, chain_id:
     // typed transactions report the payload size, without the type byte
     const envelope_len: usize = if (tx_bytes[0] < 0x80) 1 else 0;
     if (consumed + envelope_len != tx_bytes.len) return error.InvalidSerializedLength;
-    return zevm.processor.recoverTxSender(arena, &tx, chain_id);
+    const sender = try zevm.processor.recoverTxSender(arena, &tx, chain_id);
+    if (tx == .set_code and tx.set_code.auth_list.len == 0) return error.EmptyAuthorizationList;
+    return sender;
 }
 
 fn runTransactionTest(gpa: std.mem.Allocator, test_case: *const TransactionTest, fork: []const u8) !void {
