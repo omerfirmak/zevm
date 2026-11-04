@@ -220,7 +220,7 @@ pub const AuthorizationTuple = struct {
     chain_id: u256,
     address: [20]u8,
     nonce: u64,
-    v: u64,
+    v: u8,
     r: u256,
     s: u256,
 };
