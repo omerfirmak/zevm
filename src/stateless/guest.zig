@@ -51,7 +51,7 @@ fn serialize_ssz_result(allocator: std.mem.Allocator, res: types.StatelessValida
 }
 
 pub fn verify(allocator: std.mem.Allocator, input: types.StatelessInput) !void {
-    const spec = comptime zevm.processor.Spec.fromFork(.Amsterdam, @import("build_options").chain_id);
+    const spec = comptime zevm.processor.Spec.fromFork(.Amsterdam);
     const headers = try allocator.alloc(zevm.types.BlockHeader, input.witness.headers.len());
     const header_hashes = try allocator.alloc([32]u8, input.witness.headers.len());
     for (input.witness.headers.constSlice(), 0..) |*header_bytes, i| {
@@ -76,7 +76,7 @@ pub fn verify(allocator: std.mem.Allocator, input: types.StatelessInput) !void {
 
     try zevm.processor.processBlock(
         allocator,
-        zevm.processor.Spec.fromFork(spec.fork, @import("build_options").chain_id),
+        spec,
         &block,
         parent,
         &state,
