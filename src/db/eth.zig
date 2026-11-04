@@ -348,6 +348,39 @@ pub const Eth = struct {
             .withRoot(root)
             .withResolver(resolver.resolver()));
     }
+
+    pub fn applyBal(
+        self: *Self,
+        allocator: std.mem.Allocator,
+        txn: kv.Transaction,
+        bal: types.BlockAccessLists,
+        storage_roots: []const ?[32]u8,
+    ) !void {
+        std.debug.assert(storage_roots.len == bal.len);
+        for (bal, storage_roots) |changes, storage_root| {
+            if (changes.readOnly()) continue;
+
+            var addr_buf: [20]u8 = undefined;
+            std.mem.writeInt(u160, &addr_buf, changes.addr, .big);
+            var addr_hash: [32]u8 = undefined;
+            std.crypto.hash.sha3.Keccak256.hash(&addr_buf, &addr_hash, .{});
+
+            const diff = try changes.stateDiff(allocator);
+            for (diff.storage.slots, diff.storage.values) |slot, value| {
+                try self.writeStorage(txn, addr_hash, slot, value);
+            }
+
+            var account = (try self.readAccount(txn, addr_hash)) orelse types.EmptyAccount;
+            if (diff.account.balance) |balance| account.balance = balance;
+            if (diff.account.nonce) |nonce| account.nonce = nonce;
+            if (diff.account.code) |code| account.code_hash = try self.writeCode(txn, code);
+            if (storage_root) |root| account.storage_hash = root;
+
+            if (account.isEmpty()) {
+                try self.deleteAccount(txn, addr_hash);
+            } else try self.writeAccount(allocator, txn, addr_hash, account);
+        }
+    }
 };
 
 const SlimAccount = struct {
