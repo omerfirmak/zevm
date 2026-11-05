@@ -88,6 +88,7 @@ pub const Storage = struct {
     }
 
     pub fn deinit(self: *Self, io: std.Io, _: std.mem.Allocator) !void {
+        defer self.datadir.close(io);
         defer self.file_pool.deinit();
         for (self.ranges, 0..) |range, index| {
             if (range) |r| {
