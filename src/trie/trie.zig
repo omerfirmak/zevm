@@ -633,30 +633,26 @@ pub const Trie = struct {
     }
 
     fn decodeNode(self: *Self, node: *Node, encoded: []const u8, node_hash: ?*[32]u8) anyerror!void {
-        var items: [][]const u8 = undefined;
-        _ = try rlp.deserialize([][]const u8, self.allocator, encoded, &items);
+        var items: []rlp.RawValue = undefined;
+        _ = try rlp.deserialize([]rlp.RawValue, self.allocator, encoded, &items);
         defer self.allocator.free(items);
 
         if (items.len == 17) {
             node.* = Node.Branch.init();
             node.branch.hash = node_hash;
-            for (items[0..16], 0..) |child_payload, i| {
-                if (child_payload.len == 0) continue;
-                node.branch.children[i] = try decodeChild(self, child_payload);
+            for (items[0..16], 0..) |item, i| {
+                node.branch.children[i] = try decodeChild(self, item.value);
             }
         } else if (items.len == 2) {
-            const key_payload = items[0];
-            const value_payload = items[1];
-
             var key_buf: [65]u8 = undefined;
-            const decoded = try compactToHex(key_payload, &key_buf);
+            const decoded = try compactToHex(try stringPayload(self, items[0].value), &key_buf);
 
             if (decoded.is_leaf) {
-                node.* = Node.Leaf.init(decoded.nibbles, value_payload);
+                node.* = Node.Leaf.init(decoded.nibbles, try stringPayload(self, items[1].value));
                 node.leaf.hash = node_hash;
             } else {
-                if (value_payload.len == 0) return error.MalformedTrieNode;
-                node.* = Node.Extension.init(decoded.nibbles, try decodeChild(self, value_payload));
+                const child = try decodeChild(self, items[1].value) orelse return error.MalformedTrieNode;
+                node.* = Node.Extension.init(decoded.nibbles, child);
                 node.ext.hash = node_hash;
             }
         } else {
@@ -664,13 +660,23 @@ pub const Trie = struct {
         }
     }
 
-    fn decodeChild(self: *Self, payload: []const u8) !*Node {
+    fn stringPayload(self: *Self, raw: []const u8) ![]const u8 {
+        var payload: []const u8 = undefined;
+        _ = try rlp.deserialize([]const u8, self.allocator, raw, &payload);
+        return payload;
+    }
+
+    fn decodeChild(self: *Self, raw: []const u8) !?*Node {
+        const payload = stringPayload(self, raw) catch |err| {
+            if (err != error.RlpExpectedString) return err;
+            const child = try self.createNode();
+            try decodeNode(self, child, raw, null);
+            return child;
+        };
+        if (payload.len == 0) return null;
+        if (payload.len != 32) return error.MalformedTrieNode;
         const child = try self.createNode();
-        if (payload.len == 32) {
-            child.* = Node.Hashed.init(payload);
-        } else {
-            try decodeNode(self, child, (payload.ptr - 1)[0 .. payload.len + 1], null);
-        }
+        child.* = Node.Hashed.init(payload);
         return child;
     }
 };
