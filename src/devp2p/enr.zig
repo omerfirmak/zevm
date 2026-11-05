@@ -92,21 +92,28 @@ pub fn decodeAndVerify(bytes: []const u8) !Record {
     return res.record;
 }
 
+fn stringPayload(raw: []const u8) ![]const u8 {
+    var payload: []const u8 = undefined;
+    _ = try rlp.deserialize([]const u8, undefined, raw, &payload);
+    return payload;
+}
+
 pub fn decode(bytes: []const u8) !struct { record: Record, sig_hash: [32]u8 } {
     var scratch: [2048]u8 = undefined;
     var fba = std.heap.FixedBufferAllocator.init(&scratch);
     const alloc = fba.allocator();
 
-    var items: [][]const u8 = undefined;
-    _ = try rlp.deserialize([][]const u8, alloc, bytes, &items);
+    var items: []rlp.RawValue = undefined;
+    _ = try rlp.deserialize([]rlp.RawValue, alloc, bytes, &items);
     if (items.len < 2 or items.len % 2 != 0) return error.MalformedRecord;
 
-    const sig = items[0];
+    const sig = try stringPayload(items[0].value);
     if (sig.len != 64) return error.InvalidSignature;
-    if (items[1].len > 8) return error.InvalidSeq;
+    const seq = try stringPayload(items[1].value);
+    if (seq.len > 8) return error.InvalidSeq;
 
     var rec: Record = .{
-        .seq = std.mem.readVarInt(u64, items[1], .big),
+        .seq = std.mem.readVarInt(u64, seq, .big),
         .sig = sig[0..64].*,
         .pubkey = undefined,
     };
@@ -114,8 +121,14 @@ pub fn decode(bytes: []const u8) !struct { record: Record, sig_hash: [32]u8 } {
     var have_pubkey = false;
     var i: usize = 2;
     while (i + 1 < items.len) : (i += 2) {
-        const k = items[i];
-        const v = items[i + 1];
+        const k = try stringPayload(items[i].value);
+        if (std.mem.eql(u8, k, "eth")) {
+            var ids: []ForkId = undefined;
+            _ = rlp.deserialize([]ForkId, alloc, items[i + 1].value, &ids) catch continue;
+            if (ids.len > 0) rec.eth = ids[0];
+            continue;
+        }
+        const v = stringPayload(items[i + 1].value) catch continue;
         if (std.mem.eql(u8, k, "id")) {
             if (!std.mem.eql(u8, v, "v4")) return error.UnsupportedIdentityScheme;
         } else if (std.mem.eql(u8, k, "secp256k1")) {
@@ -130,10 +143,6 @@ pub fn decode(bytes: []const u8) !struct { record: Record, sig_hash: [32]u8 } {
         } else if (std.mem.eql(u8, k, "tcp")) {
             if (v.len > 2) return error.InvalidPort;
             rec.tcp = std.mem.readVarInt(u16, v, .big);
-        } else if (std.mem.eql(u8, k, "eth")) {
-            var id: ForkId = undefined;
-            _ = rlp.deserialize(ForkId, undefined, v, &id) catch continue;
-            rec.eth = id;
         }
     }
     if (!have_pubkey) return error.MissingPubkey;
