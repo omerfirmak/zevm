@@ -3,6 +3,15 @@
 
 const std = @import("std");
 
+comptime {
+    // crypto/kzg_point.zig intentionally initializes only the settings field
+    // read by verify_kzg_proof. Re-audit that C implementation on upgrades
+    // or when supplying a local dependency override.
+    const ckzg = @import("build.zig.zon").dependencies.ckzg_4844;
+    if (!std.mem.eql(u8, ckzg.hash, "ckzg_4844-0.0.0-I7LPWAM3EQCiMdXQ8r65-BJAfGXcIe2y3JbBDSPieyyf"))
+        @compileError("re-audit the KZG point verifier before updating c-kzg");
+}
+
 const Deps = struct {
     secp256k1_mod: *std.Build.Module,
     secp256k1_lib: *std.Build.Step.Compile,
