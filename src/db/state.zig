@@ -14,11 +14,21 @@ pub const CommittedState = struct {
 
     eth: *EthDb,
     txn: kv.Transaction,
+    storage_cursor: kv.Cursor,
 
     blockchain: *Blockchain,
 
-    pub fn init(eth: *EthDb, txn: kv.Transaction, blockchain: *Blockchain) Self {
-        return .{ .eth = eth, .txn = txn, .blockchain = blockchain };
+    pub fn init(eth: *EthDb, txn: kv.Transaction, blockchain: *Blockchain) !Self {
+        return .{
+            .eth = eth,
+            .txn = txn,
+            .storage_cursor = try eth.kv_store.table(txn, .storage).cursor(),
+            .blockchain = blockchain,
+        };
+    }
+
+    pub fn deinit(self: *Self) void {
+        self.storage_cursor.deinit();
     }
 
     pub fn account(self: *const Self, addr: u160) !types.Account {
@@ -32,7 +42,7 @@ pub const CommittedState = struct {
 
     pub fn storage(self: *const Self, key: types.StorageLookup) !u256 {
         const value_rlp = try self.eth.readStorage(
-            self.txn,
+            self.storage_cursor,
             keccakOfU160(key.address),
             keccakOfU256(key.slot),
         ) orelse return 0;

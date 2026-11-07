@@ -1232,6 +1232,7 @@ pub const Downloader = struct {
         collector.* = try .init(allocator, hash_window_nodes);
         var storage_trie = (try self.eth_db.openStorageTrie(allocator, txn, account_hash, root) orelse return error.MissingTrieRoot)
             .withCollector(collector);
+        defer self.eth_db.closeStorageTrie(&storage_trie);
         if (count > 0) try storage_trie.updateNoDeletions(keys[0..count], values[0..count]);
         return .{ if (count < keys.len) null else nextKey(keys[count - 1]), try storage_trie.rootHash(), collector.collected() };
     }
@@ -1255,6 +1256,7 @@ pub const Downloader = struct {
         collector.* = try .init(allocator, hash_window_nodes);
         var account_trie = (try self.eth_db.openAccountTrie(allocator, txn, root) orelse return error.MissingTrieRoot)
             .withCollector(collector);
+        defer self.eth_db.closeAccountTrie(&account_trie);
         if (count > 0) try account_trie.updateNoDeletions(keys[0..count], accounts[0..count]);
         return .{ if (count < keys.len) null else nextKey(keys[count - 1]), try account_trie.rootHash(), collector.collected() };
     }
@@ -1282,7 +1284,7 @@ pub const Downloader = struct {
         }
     }
 
-    fn hasStorageTrie(tries: kv.Iterator, head: *?[32]u8, account_hash: [32]u8) !bool {
+    fn hasStorageTrie(tries: kv.Cursor, head: *?[32]u8, account_hash: [32]u8) !bool {
         while (head.*) |trie_account| {
             if (std.mem.order(u8, &trie_account, &account_hash) != .lt) return std.meta.eql(trie_account, account_hash);
             head.* = if (try tries.nextNoDup()) |next| next.key[0..32].* else null;
@@ -1737,6 +1739,7 @@ pub const Downloader = struct {
             at.withCollector(&account_collector)
         else
             null;
+        defer if (account_trie) |*at| self.eth_db.closeAccountTrie(at);
 
         for (bal) |changes| {
             if (changes.readOnly()) continue;
@@ -1831,6 +1834,7 @@ pub const Downloader = struct {
         // per key: up to 64 inner nodes on its path plus removals from collapses
         var collector = try trie.NodeCollector.init(allocator, slots.len * 66);
         var storage_trie = st.withCollector(&collector);
+        defer self.eth_db.closeStorageTrie(&storage_trie);
         try storage_trie.update(slots, values);
         const new_root = try storage_trie.rootHash();
         try self.eth_db.commitStorageTrieNodes(txn, addr_hash, &collector);

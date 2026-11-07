@@ -5,7 +5,7 @@ const std = @import("std");
 const lmdbx = @import("lmdbx");
 
 pub const Transaction = lmdbx.Transaction;
-pub const Iterator = lmdbx.Cursor;
+pub const Cursor = lmdbx.Cursor;
 
 pub const Table = enum {
     accounts,

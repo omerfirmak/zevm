@@ -28,10 +28,7 @@ pub const Eth = struct {
         return try decodeAccount(bytes);
     }
 
-    pub fn seekAccount(self: *Self, txn: kv.Transaction, start: [32]u8) !?struct { [32]u8, types.Account } {
-        const cursor = try self.kv_store.table(txn, .accounts).cursor();
-        defer cursor.deinit();
-
+    pub fn seekAccount(_: *Self, cursor: kv.Cursor, start: [32]u8) !?struct { [32]u8, types.Account } {
         const res = try cursor.seekLowerBound(&start) orelse return null;
         return .{ res.entry.key[0..32].*, try decodeAccount(res.entry.value) };
     }
@@ -120,10 +117,7 @@ pub const Eth = struct {
         }
     }
 
-    pub fn seekStorage(self: *Self, txn: kv.Transaction, account_hash: [32]u8, start: [32]u8) !?struct { [32]u8, []const u8 } {
-        const cursor = try self.kv_store.table(txn, .storage).cursor();
-        defer cursor.deinit();
-
+    pub fn seekStorage(_: *Self, cursor: kv.Cursor, account_hash: [32]u8, start: [32]u8) !?struct { [32]u8, []const u8 } {
         const res = try cursor.seekDupLowerBound(&account_hash, &start) orelse return null;
         if (res.entry.value.len < 32) return error.MalformedStorageEntry;
         return .{ res.entry.value[0..32].*, res.entry.value[32..] };
@@ -145,8 +139,8 @@ pub const Eth = struct {
         return count;
     }
 
-    pub fn readStorage(self: *Self, txn: kv.Transaction, account_hash: [32]u8, slot_hash: [32]u8) !?[]const u8 {
-        const found, const value = try self.seekStorage(txn, account_hash, slot_hash) orelse return null;
+    pub fn readStorage(self: *Self, cursor: kv.Cursor, account_hash: [32]u8, slot_hash: [32]u8) !?[]const u8 {
+        const found, const value = try self.seekStorage(cursor, account_hash, slot_hash) orelse return null;
         return if (std.mem.eql(u8, &found, &slot_hash)) value else null;
     }
 
@@ -216,12 +210,9 @@ pub const Eth = struct {
         }
     }
 
-    pub fn readStorageTrie(self: *Self, txn: kv.Transaction, account_hash: [32]u8, path: []const u8) !?[]const u8 {
+    pub fn readStorageTrie(_: *Self, cursor: kv.Cursor, account_hash: [32]u8, path: []const u8) !?[]const u8 {
         var seek_buf: [65]u8 = undefined;
         const seek = try trieNodeKey(&seek_buf, path);
-
-        const cursor = try self.kv_store.table(txn, .storage_tries).cursor();
-        defer cursor.deinit();
 
         const res = try cursor.seekDupLowerBound(&account_hash, seek) orelse return null;
         if (!std.mem.startsWith(u8, res.entry.value, seek)) return null;
@@ -306,7 +297,10 @@ pub const Eth = struct {
     }
 
     fn hasStorageTrie(self: *Self, txn: kv.Transaction, addr_hash: [32]u8) !bool {
-        if ((try self.readStorageTrie(txn, addr_hash, &[_]u8{})) != null) return true;
+        const tries = try self.kv_store.table(txn, .storage_tries).cursor();
+        defer tries.deinit();
+
+        if ((try self.readStorageTrie(tries, addr_hash, &[_]u8{})) != null) return true;
         const cursor = try self.kv_store.table(txn, .storage).cursor();
         defer cursor.deinit();
         const res = try cursor.seekLowerBound(&addr_hash) orelse return false;
@@ -318,13 +312,16 @@ pub const Eth = struct {
             try self.readAccountTrie(txn, &[_]u8{}) == null) return null;
 
         var resolver = try allocator.create(AccountTrieResolver);
-        resolver.* = AccountTrieResolver{
-            .eth = self,
-            .txn = txn,
-        };
+        errdefer allocator.destroy(resolver);
+        resolver.* = try AccountTrieResolver.init(self, txn);
         return AccountTrie.initFromTrie(trie.Trie.init(allocator)
             .withRoot(root)
             .withResolver(resolver.resolver()));
+    }
+
+    pub fn closeAccountTrie(_: *Self, account_trie: *const AccountTrie) void {
+        const resolver: *AccountTrieResolver = @ptrCast(@alignCast(account_trie.inner.resolver.?.ptr));
+        resolver.deinit();
     }
 
     pub fn openStorageTrie(
@@ -339,14 +336,16 @@ pub const Eth = struct {
             !try self.hasStorageTrie(txn, addr_hash)) return null;
 
         var resolver = try allocator.create(StorageTrieResolver);
-        resolver.* = StorageTrieResolver{
-            .account_hash = addr_hash,
-            .eth = self,
-            .txn = txn,
-        };
+        errdefer allocator.destroy(resolver);
+        resolver.* = try StorageTrieResolver.init(self, txn, addr_hash);
         return StorageTrie.initFromTrie(trie.Trie.init(allocator)
             .withRoot(root)
             .withResolver(resolver.resolver()));
+    }
+
+    pub fn closeStorageTrie(_: *Self, storage_trie: *const StorageTrie) void {
+        const resolver: *StorageTrieResolver = @ptrCast(@alignCast(storage_trie.inner.resolver.?.ptr));
+        resolver.deinit();
     }
 
     pub fn applyBal(
