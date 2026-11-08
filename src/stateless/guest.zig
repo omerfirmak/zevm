@@ -244,21 +244,21 @@ fn calculateStateRoot(
             const values = try allocator.alloc(u256, acc_change_entry.storage_changes.len);
             defer allocator.free(values);
             for (acc_change_entry.storage_changes, keys, values) |slot_change, *k, *v| {
-                k.* = committed_state.keccakOfU256(slot_change.key);
+                k.* = zevm.types.keccakOfU256(slot_change.key);
                 v.* = try state.contract_state.read(.{ .address = acc_change_entry.addr, .slot = slot_change.key });
             }
-            zevm.trie.sortPairsByKey(u256, keys, values);
+            zevm.types.sortPairsByHash(u256, keys, values);
             try storage_trie.update(keys, values);
             post_acc.storage_hash = try storage_trie.rootHash();
         }
 
-        state_keys[n_dirty] = committed_state.keccakOfU160(acc_change_entry.addr);
+        state_keys[n_dirty] = zevm.types.keccakOfU160(acc_change_entry.addr);
         state_accounts[n_dirty] = if (post_acc.isEmpty()) null else post_acc;
         n_dirty += 1;
     }
 
     if (n_dirty > 0) {
-        zevm.trie.sortPairsByKey(?zevm.types.Account, state_keys[0..n_dirty], state_accounts[0..n_dirty]);
+        zevm.types.sortPairsByHash(?zevm.types.Account, state_keys[0..n_dirty], state_accounts[0..n_dirty]);
         try state_trie.update(state_keys[0..n_dirty], state_accounts[0..n_dirty]);
     }
     return state_trie.rootHash();

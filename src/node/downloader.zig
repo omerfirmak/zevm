@@ -1741,33 +1741,32 @@ pub const Downloader = struct {
             null;
         defer if (account_trie) |*at| self.eth_db.closeAccountTrie(at);
 
-        for (bal) |changes| {
+        const hashed = try types.HashedBlockAccessLists.init(allocator, bal);
+        for (hashed.changes, hashed.account_hashes, hashed.slot_hashes) |changes, addr_hash, slot_hashes| {
             if (changes.readOnly()) continue;
-
-            var addr_buf: [20]u8 = undefined;
-            std.mem.writeInt(u160, &addr_buf, changes.addr, .big);
-            var addr_hash: [32]u8 = undefined;
-            std.crypto.hash.sha3.Keccak256.hash(&addr_buf, &addr_hash, .{});
             if (!self.isAccountFetched(addr_hash)) continue;
 
-            const diff = try changes.stateDiff(allocator);
-            const new_code_hash = if (diff.account.code) |code| try self.eth_db.writeCode(txn, code) else null;
+            const values = try allocator.alloc(u256, changes.storage_changes.len);
+            for (changes.storage_changes, values) |slot, *value| value.* = slot.lastValue();
+
+            const diff = try changes.accountDiff();
+            const new_code_hash = if (diff.code) |code| try self.eth_db.writeCode(txn, code) else null;
             var account = (try self.eth_db.readAccount(txn, addr_hash)) orelse types.EmptyAccount;
-            const storage_root = if (diff.storage.slots.len > 0 and self.isStorageFetched(addr_hash, null))
-                try self.updateStorageTrie(allocator, txn, addr_hash, account.storage_hash, diff.storage.slots, diff.storage.values)
+            const storage_root = if (slot_hashes.len > 0 and self.isStorageFetched(addr_hash, null))
+                try self.updateStorageTrie(allocator, txn, addr_hash, account.storage_hash, slot_hashes, values)
             else
                 null;
 
-            for (diff.storage.slots, diff.storage.values) |slot, value| {
+            for (slot_hashes, values) |slot, value| {
                 if (self.isStorageFetched(addr_hash, slot)) try self.eth_db.writeStorage(txn, addr_hash, slot, value);
             }
-            if (diff.storage.slots.len > 0 and storage_root == null) {
+            if (slot_hashes.len > 0 and storage_root == null) {
                 try self.state_heal.?.stale_storage_roots.put(self.allocator, addr_hash, {});
                 continue;
             }
 
-            if (diff.account.balance) |balance| account.balance = balance;
-            if (diff.account.nonce) |nonce| account.nonce = nonce;
+            if (diff.balance) |balance| account.balance = balance;
+            if (diff.nonce) |nonce| account.nonce = nonce;
             if (new_code_hash) |code_hash| account.code_hash = code_hash;
             if (storage_root) |root| account.storage_hash = root;
 

@@ -737,21 +737,6 @@ pub fn loadFromNodesMap(
     return t;
 }
 
-pub fn sortPairsByKey(comptime V: type, keys: [][32]u8, values: []V) void {
-    const Ctx = struct {
-        keys: [][32]u8,
-        values: []V,
-        pub fn lessThan(self: @This(), a: usize, b: usize) bool {
-            return std.mem.order(u8, &self.keys[a], &self.keys[b]) == .lt;
-        }
-        pub fn swap(self: @This(), a: usize, b: usize) void {
-            std.mem.swap([32]u8, &self.keys[a], &self.keys[b]);
-            std.mem.swap(V, &self.values[a], &self.values[b]);
-        }
-    };
-    std.sort.pdqContext(0, keys.len, Ctx{ .keys = keys, .values = values });
-}
-
 pub fn writeHexKey(key: []const u8, buf: *[64]u8) []u8 {
     for (key, 0..) |b, i| {
         buf[i * 2] = b / 16;

@@ -32,7 +32,7 @@ pub const CommittedState = struct {
     }
 
     pub fn account(self: *const Self, addr: u160) !types.Account {
-        return try self.eth.readAccount(self.txn, keccakOfU160(addr)) orelse .{
+        return try self.eth.readAccount(self.txn, types.keccakOfU160(addr)) orelse .{
             .nonce = 0,
             .balance = 0,
             .code_hash = types.empty_code_hash,
@@ -43,8 +43,8 @@ pub const CommittedState = struct {
     pub fn storage(self: *const Self, key: types.StorageLookup) !u256 {
         const value_rlp = try self.eth.readStorage(
             self.storage_cursor,
-            keccakOfU160(key.address),
-            keccakOfU256(key.slot),
+            types.keccakOfU160(key.address),
+            types.keccakOfU256(key.slot),
         ) orelse return 0;
 
         var value: u256 = undefined;
@@ -61,19 +61,3 @@ pub const CommittedState = struct {
         return std.mem.readInt(u256, &header.hash(), .big);
     }
 };
-
-pub fn keccakOfU160(v: u160) [32]u8 {
-    var buf: [20]u8 = undefined;
-    std.mem.writeInt(u160, &buf, v, .big);
-    var out: [32]u8 = undefined;
-    std.crypto.hash.sha3.Keccak256.hash(&buf, &out, .{});
-    return out;
-}
-
-pub fn keccakOfU256(v: u256) [32]u8 {
-    var buf: [32]u8 = undefined;
-    std.mem.writeInt(u256, &buf, v, .big);
-    var out: [32]u8 = undefined;
-    std.crypto.hash.sha3.Keccak256.hash(&buf, &out, .{});
-    return out;
-}

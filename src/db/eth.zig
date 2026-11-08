@@ -352,27 +352,22 @@ pub const Eth = struct {
         self: *Self,
         allocator: std.mem.Allocator,
         txn: kv.Transaction,
-        bal: types.BlockAccessLists,
+        bal: types.HashedBlockAccessLists,
         storage_roots: []const ?[32]u8,
     ) !void {
-        std.debug.assert(storage_roots.len == bal.len);
-        for (bal, storage_roots) |changes, storage_root| {
+        std.debug.assert(storage_roots.len == bal.changes.len);
+        for (bal.changes, bal.account_hashes, bal.slot_hashes, storage_roots) |changes, addr_hash, slot_hashes, storage_root| {
             if (changes.readOnly()) continue;
 
-            var addr_buf: [20]u8 = undefined;
-            std.mem.writeInt(u160, &addr_buf, changes.addr, .big);
-            var addr_hash: [32]u8 = undefined;
-            std.crypto.hash.sha3.Keccak256.hash(&addr_buf, &addr_hash, .{});
-
-            const diff = try changes.stateDiff(allocator);
-            for (diff.storage.slots, diff.storage.values) |slot, value| {
-                try self.writeStorage(txn, addr_hash, slot, value);
+            for (changes.storage_changes, slot_hashes) |slot, slot_hash| {
+                try self.writeStorage(txn, addr_hash, slot_hash, slot.lastValue());
             }
 
+            const diff = try changes.accountDiff();
             var account = (try self.readAccount(txn, addr_hash)) orelse types.EmptyAccount;
-            if (diff.account.balance) |balance| account.balance = balance;
-            if (diff.account.nonce) |nonce| account.nonce = nonce;
-            if (diff.account.code) |code| account.code_hash = try self.writeCode(txn, code);
+            if (diff.balance) |balance| account.balance = balance;
+            if (diff.nonce) |nonce| account.nonce = nonce;
+            if (diff.code) |code| account.code_hash = try self.writeCode(txn, code);
             if (storage_root) |root| account.storage_hash = root;
 
             if (account.isEmpty()) {

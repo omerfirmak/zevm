@@ -3,6 +3,7 @@
 
 const std = @import("std");
 const evm = @import("zevm");
+const types = evm.types;
 const ssz_utils = @import("ssz").utils;
 const List = ssz_utils.List;
 const ProgressiveList = ssz_utils.ProgressiveList;
@@ -55,7 +56,7 @@ pub const CommittedState = struct {
         try account_tries.ensureTotalCapacity(allocator, @intCast(bal.len));
 
         for (bal.*) |entry| {
-            const storage_hash = (try state_trie.get(keccakOfU160(entry.addr))).storage_hash;
+            const storage_hash = (try state_trie.get(types.keccakOfU160(entry.addr))).storage_hash;
             account_tries.putAssumeCapacity(entry.addr, evm.StorageTrie.initFromTrie(
                 try evm.trie.loadFromNodesMap(allocator, storage_hash, &nodes, null),
             ));
@@ -72,12 +73,12 @@ pub const CommittedState = struct {
     }
 
     pub fn account(self: *const @This(), addr: u160) Errors!evm.types.Account {
-        return self.state_trie.get(keccakOfU160(addr)) catch return Errors.InvalidWitness;
+        return self.state_trie.get(types.keccakOfU160(addr)) catch return Errors.InvalidWitness;
     }
 
     pub fn storage(self: *const @This(), lookup: evm.types.StorageLookup) Errors!u256 {
         const account_trie = self.account_tries.get(lookup.address) orelse return Errors.InvalidWitness;
-        return account_trie.get(keccakOfU256(lookup.slot)) catch Errors.InvalidWitness;
+        return account_trie.get(types.keccakOfU256(lookup.slot)) catch Errors.InvalidWitness;
     }
 
     pub fn code(self: *const @This(), hash: [32]u8) Errors![]const u8 {
@@ -91,15 +92,3 @@ pub const CommittedState = struct {
         return std.mem.readInt(u256, &self.header_hashes[self.header_hashes.len - 1 - depth], .big);
     }
 };
-
-pub fn keccakOfU160(v: u160) [32]u8 {
-    var buf: [20]u8 = undefined;
-    std.mem.writeInt(u160, &buf, v, .big);
-    return evm.crypto.hash.keccak256(&buf);
-}
-
-pub fn keccakOfU256(v: u256) [32]u8 {
-    var buf: [32]u8 = undefined;
-    std.mem.writeInt(u256, &buf, v, .big);
-    return evm.crypto.hash.keccak256(&buf);
-}

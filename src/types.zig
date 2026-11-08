@@ -681,6 +681,52 @@ test "block with blob tx decode" {
 
 pub const BlockAccessLists = []AccountChanges;
 
+pub const HashedBlockAccessLists = struct {
+    account_hashes: [][32]u8,
+    slot_hashes: [][][32]u8,
+    changes: []AccountChanges,
+
+    pub fn init(allocator: std.mem.Allocator, bal: BlockAccessLists) !HashedBlockAccessLists {
+        const changes = bal;
+        const account_hashes = try allocator.alloc([32]u8, changes.len);
+        const slot_hashes = try allocator.alloc([][32]u8, changes.len);
+
+        for (changes, 0..) |*account, index|
+            account_hashes[index] = keccakOfU160(account.addr);
+        sortPairsByHash(AccountChanges, account_hashes, changes);
+
+        for (changes, 0..) |*account, index| {
+            const slots = try allocator.alloc([32]u8, account.storage_changes.len);
+            for (account.storage_changes, 0..) |slot, slot_index| {
+                slots[slot_index] = keccakOfU256(slot.key);
+            }
+            sortPairsByHash(SlotChanges, slots, account.storage_changes);
+            slot_hashes[index] = slots;
+        }
+
+        return .{
+            .account_hashes = account_hashes,
+            .slot_hashes = slot_hashes,
+            .changes = changes,
+        };
+    }
+};
+
+pub fn sortPairsByHash(comptime V: type, keys: [][32]u8, values: []V) void {
+    const Ctx = struct {
+        keys: [][32]u8,
+        values: []V,
+        pub fn lessThan(self: @This(), a: usize, b: usize) bool {
+            return std.mem.order(u8, &self.keys[a], &self.keys[b]) == .lt;
+        }
+        pub fn swap(self: @This(), a: usize, b: usize) void {
+            std.mem.swap([32]u8, &self.keys[a], &self.keys[b]);
+            std.mem.swap(V, &self.values[a], &self.values[b]);
+        }
+    };
+    std.sort.pdqContext(0, keys.len, Ctx{ .keys = keys, .values = values });
+}
+
 pub const AccountChanges = struct {
     addr: u160,
     storage_changes: []SlotChanges,
@@ -733,33 +779,8 @@ pub const AccountChanges = struct {
             self.storage_changes.len == 0;
     }
 
-    pub fn stateDiff(self: *const AccountChanges, allocator: std.mem.Allocator) !struct {
-        storage: struct {
-            slots: [][32]u8,
-            values: []u256,
-        },
-        account: struct {
-            nonce: ?u256,
-            balance: ?u256,
-            code: ?[]const u8,
-        },
-    } {
-        const hashed_slots = try allocator.alloc([32]u8, self.storage_changes.len);
-        const values = try allocator.alloc(u256, self.storage_changes.len);
-
-        for (self.storage_changes, 0..) |slot_changes, index| {
-            var slot_key: [32]u8 = undefined;
-            std.mem.writeInt(u256, &slot_key, slot_changes.key, .big);
-            std.crypto.hash.sha3.Keccak256.hash(&slot_key, &hashed_slots[index], .{});
-
-            values[index] = slot_changes.lastValue();
-        }
-
-        trie.sortPairsByKey(u256, hashed_slots, values);
-        return .{ .storage = .{
-            .slots = hashed_slots,
-            .values = values,
-        }, .account = .{
+    pub fn accountDiff(self: *const AccountChanges) !struct { nonce: ?u256, balance: ?u256, code: ?[]const u8 } {
+        return .{
             .nonce = if (self.nonce_changes.len > 0)
                 self.nonce_changes[self.nonce_changes.len - 1].nonce
             else
@@ -772,7 +793,7 @@ pub const AccountChanges = struct {
                 self.code_changes[self.code_changes.len - 1].code
             else
                 null,
-        } };
+        };
     }
 };
 
@@ -804,3 +825,19 @@ pub const SlotChanges = struct {
         return self.changes[self.changes.len - 1].value;
     }
 };
+
+pub fn keccakOfU160(v: u160) [32]u8 {
+    var buf: [20]u8 = undefined;
+    std.mem.writeInt(u160, &buf, v, .big);
+    var out: [32]u8 = undefined;
+    std.crypto.hash.sha3.Keccak256.hash(&buf, &out, .{});
+    return out;
+}
+
+pub fn keccakOfU256(v: u256) [32]u8 {
+    var buf: [32]u8 = undefined;
+    std.mem.writeInt(u256, &buf, v, .big);
+    var out: [32]u8 = undefined;
+    std.crypto.hash.sha3.Keccak256.hash(&buf, &out, .{});
+    return out;
+}
