@@ -28,9 +28,9 @@ pub const Eth = struct {
         return try decodeAccount(bytes);
     }
 
-    pub fn seekAccount(_: *Self, cursor: kv.Cursor, start: [32]u8) !?struct { [32]u8, types.Account } {
+    pub fn seekAccount(_: *Self, cursor: kv.Cursor, start: [32]u8) !?struct { hash: [32]u8, account: types.Account } {
         const res = try cursor.seekLowerBound(&start) orelse return null;
-        return .{ res.entry.key[0..32].*, try decodeAccount(res.entry.value) };
+        return .{ .hash = res.entry.key[0..32].*, .account = try decodeAccount(res.entry.value) };
     }
 
     pub fn readAccountRange(self: *Self, txn: kv.Transaction, start: [32]u8, hashes: [][32]u8, accounts: []types.Account) !usize {
@@ -265,9 +265,15 @@ pub const Eth = struct {
         }
     }
 
-    pub fn readAccountTrie(self: *Self, txn: kv.Transaction, path: []const u8) !?[]const u8 {
+    pub fn readAccountTrie(_: *Self, cursor: kv.Cursor, path: []const u8) !?[]const u8 {
         var key_buf: [65]u8 = undefined;
-        return self.kv_store.table(txn, .account_trie).get(try trieNodeKey(&key_buf, path));
+        const res = try cursor.seekLowerBound(try trieNodeKey(&key_buf, path)) orelse return null;
+        return if (res.exact) res.entry.value else null;
+    }
+
+    pub fn hasAccountTrie(self: *Self, txn: kv.Transaction) !bool {
+        var key_buf: [65]u8 = undefined;
+        return try self.kv_store.table(txn, .account_trie).get(try trieNodeKey(&key_buf, &.{})) != null;
     }
 
     pub fn writeStorage(self: *Self, txn: kv.Transaction, account_hash: [32]u8, slot_hash: [32]u8, value: u256) !void {
@@ -296,7 +302,7 @@ pub const Eth = struct {
         };
     }
 
-    fn hasStorageTrie(self: *Self, txn: kv.Transaction, addr_hash: [32]u8) !bool {
+    pub fn hasStorageTrie(self: *Self, txn: kv.Transaction, addr_hash: [32]u8) !bool {
         const tries = try self.kv_store.table(txn, .storage_tries).cursor();
         defer tries.deinit();
 
@@ -307,10 +313,7 @@ pub const Eth = struct {
         return std.mem.eql(u8, res.entry.key, &addr_hash) and try cursor.count() == 1; // a single slot trie
     }
 
-    pub fn openAccountTrie(self: *Self, allocator: std.mem.Allocator, txn: kv.Transaction, root: [32]u8) !?AccountTrie {
-        if (!std.meta.eql(types.empty_root_hash, root) and
-            try self.readAccountTrie(txn, &[_]u8{}) == null) return null;
-
+    pub fn openAccountTrie(self: *Self, allocator: std.mem.Allocator, txn: kv.Transaction, root: [32]u8) !AccountTrie {
         var resolver = try allocator.create(AccountTrieResolver);
         errdefer allocator.destroy(resolver);
         resolver.* = try AccountTrieResolver.init(self, txn);
@@ -330,14 +333,25 @@ pub const Eth = struct {
         txn: kv.Transaction,
         addr_hash: [32]u8,
         root: [32]u8,
-    ) !?StorageTrie {
-        // trie is not-empty, but we dont have a root node for it yet (ie still syncing)
-        if (!std.meta.eql(types.empty_root_hash, root) and
-            !try self.hasStorageTrie(txn, addr_hash)) return null;
-
-        var resolver = try allocator.create(StorageTrieResolver);
+    ) !StorageTrie {
+        const resolver = try allocator.create(StorageTrieResolver);
         errdefer allocator.destroy(resolver);
-        resolver.* = try StorageTrieResolver.init(self, txn, addr_hash);
+        resolver.* = try self.openStorageTrieResolver(txn);
+        return self.openStorageTrieWithResolver(allocator, resolver, addr_hash, root);
+    }
+
+    pub fn openStorageTrieResolver(self: *Self, txn: kv.Transaction) !StorageTrieResolver {
+        return StorageTrieResolver.init(self, txn);
+    }
+
+    pub fn openStorageTrieWithResolver(
+        _: *Self,
+        allocator: std.mem.Allocator,
+        resolver: *StorageTrieResolver,
+        addr_hash: [32]u8,
+        root: [32]u8,
+    ) StorageTrie {
+        resolver.account_hash = addr_hash;
         return StorageTrie.initFromTrie(trie.Trie.init(allocator)
             .withRoot(root)
             .withResolver(resolver.resolver()));

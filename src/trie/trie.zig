@@ -501,7 +501,7 @@ pub const Trie = struct {
     // Reports a branch or extension that no longer exists at `path` as an empty blob.
     fn collectRemoved(self: *Self, path: Path) !void {
         if (self.node_collector) |collector|
-            try collector.collect(try self.allocator.dupe(u8, path.slice()), &.{});
+            try collector.collect(try collector.allocator.dupe(u8, path.slice()), &.{});
     }
 
     // Wrapper for child node values in RLP encoding. Hashed children (32 bytes)
@@ -528,7 +528,11 @@ pub const Trie = struct {
             else => Node.no_frame,
         };
         const is_leaf = node.* == .leaf;
-        var list = std.array_list.Managed(u8).init(self.allocator);
+        var list_allocator = self.allocator;
+        if (self.node_collector) |collector| if (!is_leaf) {
+            list_allocator = collector.allocator;
+        };
+        var list = std.array_list.Managed(u8).init(list_allocator);
         var collected = false;
         defer if (!collected) list.deinit();
 
@@ -591,7 +595,7 @@ pub const Trie = struct {
             const h = keccak256(list.items);
             node.* = Node.Hashed.init(&h);
             if (self.node_collector) |collector| if (!is_leaf) {
-                try collector.collect(try self.allocator.dupe(u8, path.slice()), list.items);
+                try collector.collect(try collector.allocator.dupe(u8, path.slice()), list.items);
                 collected = true;
             };
         }
@@ -697,11 +701,12 @@ pub const NodeCollector = struct {
     const Self = @This();
     pub const Node = struct { path: []const u8, blob: []const u8 };
 
+    allocator: std.mem.Allocator,
     nodes: []Self.Node,
     index: usize = 0,
 
     pub fn init(allocator: std.mem.Allocator, max_nodes: usize) !Self {
-        return .{ .nodes = try allocator.alloc(Self.Node, max_nodes) };
+        return .{ .allocator = allocator, .nodes = try allocator.alloc(Self.Node, max_nodes) };
     }
 
     pub fn collect(self: *Self, path: []const u8, blob: []const u8) !void {

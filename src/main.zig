@@ -168,7 +168,12 @@ fn runNode(init: std.process.Init, opts: Options) !void {
 
     var fs = try FileStorage.init(init.io, slabs.allocator(), static_path);
     defer fs.deinit(init.io, slabs.allocator()) catch |e| std.log.err("closing file storage failed: {}", .{e});
-    var bc = try Blockchain.init(init.io, slabs.allocator(), opts.config, &fs);
+
+    var store = try kv.Store.init(slabs.allocator(), mdbx_path);
+    defer store.deinit() catch |e| std.log.err("closing mdbx failed: {}", .{e});
+    var eth_db = EthDb.init(&store);
+
+    var bc = try Blockchain.init(init.io, slabs.allocator(), opts.config, &fs, &eth_db);
 
     var id_filter = forks.IdFilter.init(bc.genesisHash(), &bc.cfg.fork_schedule);
     const genesis_head_header = try bc.headHeader();
@@ -211,10 +216,6 @@ fn runNode(init: std.process.Init, opts: Options) !void {
     );
     var discv_thread = try init.io.concurrent(discv5.Server.run, .{&server});
     defer discv_thread.cancel(init.io) catch {};
-
-    var store = try kv.Store.init(slabs.allocator(), mdbx_path);
-    defer store.deinit() catch |e| std.log.err("closing mdbx failed: {}", .{e});
-    var eth_db = EthDb.init(&store);
 
     var downloader = try Downloader.init(
         init.io,

@@ -11,9 +11,9 @@ pub const StorageTrieResolver = struct {
     txn: kv.Transaction,
     nodes: kv.Cursor,
     storage: kv.Cursor,
-    account_hash: [32]u8,
+    account_hash: [32]u8 = undefined,
 
-    pub fn init(eth: *EthDb, txn: kv.Transaction, account_hash: [32]u8) !StorageTrieResolver {
+    pub fn init(eth: *EthDb, txn: kv.Transaction) !StorageTrieResolver {
         const nodes = try eth.kv_store.table(txn, .storage_tries).cursor();
         errdefer nodes.deinit();
         return .{
@@ -21,7 +21,6 @@ pub const StorageTrieResolver = struct {
             .txn = txn,
             .nodes = nodes,
             .storage = try eth.kv_store.table(txn, .storage).cursor(),
-            .account_hash = account_hash,
         };
     }
 
@@ -54,18 +53,23 @@ pub const StorageTrieResolver = struct {
 pub const AccountTrieResolver = struct {
     eth: *EthDb,
     txn: kv.Transaction,
+    nodes: kv.Cursor,
     accounts: kv.Cursor,
 
     pub fn init(eth: *EthDb, txn: kv.Transaction) !AccountTrieResolver {
+        const nodes = try eth.kv_store.table(txn, .account_trie).cursor();
+        errdefer nodes.deinit();
         return .{
             .eth = eth,
             .txn = txn,
+            .nodes = nodes,
             .accounts = try eth.kv_store.table(txn, .accounts).cursor(),
         };
     }
 
     pub fn deinit(self: *AccountTrieResolver) void {
         self.accounts.deinit();
+        self.nodes.deinit();
     }
 
     pub fn resolver(self: *AccountTrieResolver) trie.Trie.NodeResolver {
@@ -75,19 +79,19 @@ pub const AccountTrieResolver = struct {
     fn resolve(ptr: *anyopaque, allocator: std.mem.Allocator, path: []const u8, _: [32]u8) anyerror!?trie.Trie.NodeResolver.Resolved {
         const self: *AccountTrieResolver = @ptrCast(@alignCast(ptr));
 
-        if (try self.eth.readAccountTrie(self.txn, path)) |encoded| {
+        if (try self.eth.readAccountTrie(self.nodes, path)) |encoded| {
             return .{ .rlp = encoded };
         } else return try self.resolveLeaf(allocator, path);
     }
 
     fn resolveLeaf(self: AccountTrieResolver, allocator: std.mem.Allocator, path: []const u8) !?trie.Trie.NodeResolver.Resolved {
-        const account_hash, const account = try self.eth.seekAccount(self.accounts, try pathStart(path)) orelse return null;
+        const entry = try self.eth.seekAccount(self.accounts, try pathStart(path)) orelse return null;
         var nibbles_buf: [64]u8 = undefined;
-        const nibbles = trie.writeHexKey(&account_hash, &nibbles_buf);
+        const nibbles = trie.writeHexKey(&entry.hash, &nibbles_buf);
         if (!std.mem.startsWith(u8, nibbles, path)) return null;
 
         var list = std.array_list.Managed(u8).init(allocator);
-        try rlp.serialize(types.Account, allocator, account, &list);
+        try rlp.serialize(types.Account, allocator, entry.account, &list);
         return .{ .node = trie.Node.Leaf.init(nibbles[path.len..], list.items) };
     }
 };

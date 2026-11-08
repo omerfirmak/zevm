@@ -5,6 +5,7 @@ const std = @import("std");
 const types = @import("../types.zig");
 const forks = @import("../forks.zig");
 const rlp = @import("rlp");
+const EthDb = @import("../db/eth.zig").Eth;
 const FileStorage = @import("../db/file.zig").Storage;
 
 pub const Config = struct {
@@ -20,16 +21,18 @@ pub const Blockchain = struct {
 
     io: std.Io,
     allocator: std.mem.Allocator,
+    eth_db: *EthDb,
     file_storage: *FileStorage,
 
-    pub fn init(io: std.Io, allocator: std.mem.Allocator, cfg: Config, file_storage: *FileStorage) !Self {
+    pub fn init(io: std.Io, allocator: std.mem.Allocator, cfg: Config, file_storage: *FileStorage, eth_db: *EthDb) !Self {
         var bc = Self{
             .file_storage = file_storage,
+            .eth_db = eth_db,
             .cfg = cfg,
             .io = io,
             .allocator = allocator,
         };
-        if (file_storage.ranges[@intFromEnum(FileStorage.Table.headers)] == null) {
+        if (file_storage.ranges[@backingInt(FileStorage.Table.headers)] == null) {
             try bc.appendHeader(&cfg.genesis_header);
         }
         return bc;
@@ -49,7 +52,7 @@ pub const Blockchain = struct {
     }
 
     pub fn headHeader(self: *Self) !types.BlockHeader {
-        const range = self.file_storage.ranges[@intFromEnum(FileStorage.Table.headers)];
+        const range = self.file_storage.ranges[@backingInt(FileStorage.Table.headers)];
         return (try self.readHeader(range.?.head)).?;
     }
 

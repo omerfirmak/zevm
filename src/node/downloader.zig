@@ -1223,6 +1223,7 @@ pub const Downloader = struct {
     ) !struct { ?[32]u8, [32]u8, []trie.NodeCollector.Node } {
         const txn = try self.eth_db.kv_store.transaction_ro();
         defer txn.abort() catch unreachable;
+        if (!try self.isStorageTrieAvailable(txn, account_hash, root)) return error.MissingTrieRoot;
 
         const keys = try allocator.alloc([32]u8, hash_window_size);
         const values = try allocator.alloc(u256, hash_window_size);
@@ -1230,7 +1231,7 @@ pub const Downloader = struct {
 
         const collector = try allocator.create(trie.NodeCollector);
         collector.* = try .init(allocator, hash_window_nodes);
-        var storage_trie = (try self.eth_db.openStorageTrie(allocator, txn, account_hash, root) orelse return error.MissingTrieRoot)
+        var storage_trie = (try self.eth_db.openStorageTrie(allocator, txn, account_hash, root))
             .withCollector(collector);
         defer self.eth_db.closeStorageTrie(&storage_trie);
         if (count > 0) try storage_trie.updateNoDeletions(keys[0..count], values[0..count]);
@@ -1246,6 +1247,7 @@ pub const Downloader = struct {
     ) !struct { ?[32]u8, [32]u8, []trie.NodeCollector.Node } {
         const txn = try self.eth_db.kv_store.transaction_ro();
         defer txn.abort() catch unreachable;
+        if (!try self.isAccountTrieAvailable(txn, root)) return error.MissingTrieRoot;
 
         const keys = try allocator.alloc([32]u8, hash_window_size);
         const accounts = try allocator.alloc(types.Account, hash_window_size);
@@ -1254,7 +1256,7 @@ pub const Downloader = struct {
 
         const collector = try allocator.create(trie.NodeCollector);
         collector.* = try .init(allocator, hash_window_nodes);
-        var account_trie = (try self.eth_db.openAccountTrie(allocator, txn, root) orelse return error.MissingTrieRoot)
+        var account_trie = (try self.eth_db.openAccountTrie(allocator, txn, root))
             .withCollector(collector);
         defer self.eth_db.closeAccountTrie(&account_trie);
         if (count > 0) try account_trie.updateNoDeletions(keys[0..count], accounts[0..count]);
@@ -1735,8 +1737,8 @@ pub const Downloader = struct {
 
         const parent = try self.bc.readHeader(self.state_heal.?.next_pivot.number - 1) orelse unreachable;
         var account_collector = try trie.NodeCollector.init(allocator, bal.len * 66);
-        var account_trie = if (try self.eth_db.openAccountTrie(allocator, txn, parent.state_root)) |at|
-            at.withCollector(&account_collector)
+        var account_trie = if (try self.isAccountTrieAvailable(txn, parent.state_root))
+            (try self.eth_db.openAccountTrie(allocator, txn, parent.state_root)).withCollector(&account_collector)
         else
             null;
         defer if (account_trie) |*at| self.eth_db.closeAccountTrie(at);
@@ -1829,7 +1831,8 @@ pub const Downloader = struct {
         slots: []const [32]u8,
         values: []const u256,
     ) !?[32]u8 {
-        const st = try self.eth_db.openStorageTrie(allocator, txn, addr_hash, root) orelse return null;
+        if (!try self.isStorageTrieAvailable(txn, addr_hash, root)) return null;
+        const st = try self.eth_db.openStorageTrie(allocator, txn, addr_hash, root);
         // per key: up to 64 inner nodes on its path plus removals from collapses
         var collector = try trie.NodeCollector.init(allocator, slots.len * 66);
         var storage_trie = st.withCollector(&collector);
@@ -1838,6 +1841,14 @@ pub const Downloader = struct {
         const new_root = try storage_trie.rootHash();
         try self.eth_db.commitStorageTrieNodes(txn, addr_hash, &collector);
         return new_root;
+    }
+
+    fn isAccountTrieAvailable(self: *Self, txn: kv.Transaction, root: [32]u8) !bool {
+        return std.meta.eql(types.empty_root_hash, root) or try self.eth_db.hasAccountTrie(txn);
+    }
+
+    fn isStorageTrieAvailable(self: *Self, txn: kv.Transaction, addr_hash: [32]u8, root: [32]u8) !bool {
+        return std.meta.eql(types.empty_root_hash, root) or try self.eth_db.hasStorageTrie(txn, addr_hash);
     }
 
     fn isStorageFetched(self: *Self, account_hash: [32]u8, slot_hash: ?[32]u8) bool {
