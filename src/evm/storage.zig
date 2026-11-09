@@ -75,6 +75,8 @@ pub fn JournaledStorage(comptime Key: type, comptime Value: type, comptime Map: 
         committed: Committed,
 
         dirties: Map = .empty,
+        // tombstones left in `dirties` by removals since the last full reset
+        removed: u32 = 0,
         journal: std.ArrayListUnmanaged(struct { key: Key, old_value: Value }) = .empty,
 
         pub fn init(gpa: std.mem.Allocator, dirties: u32, journal: u32, committed: Committed) !Self {
@@ -153,7 +155,7 @@ pub fn JournaledStorage(comptime Key: type, comptime Value: type, comptime Map: 
             for (0..self.journal.items.len - snapshot_id) |_| {
                 const entry = self.journal.pop().?;
                 if (Committed == void and std.meta.eql(entry.old_value, zero_value)) {
-                    _ = self.dirties.remove(entry.key);
+                    if (self.dirties.remove(entry.key)) self.removed +|= 1;
                 } else {
                     self.dirties.putAssumeCapacity(entry.key, entry.old_value);
                 }
@@ -190,12 +192,16 @@ pub fn JournaledStorage(comptime Key: type, comptime Value: type, comptime Map: 
             if (Committed != void) @compileError("clearViaJournal not supported with committed state");
             for (self.journal.items) |entry| {
                 if (std.meta.eql(entry.old_value, zero_value)) {
-                    _ = self.dirties.remove(entry.key);
+                    if (self.dirties.remove(entry.key)) self.removed +|= 1;
                 }
                 if (self.dirties.size == 0) break;
             }
             self.journal.items.len = 0;
             std.debug.assert(self.dirties.size == 0);
+            if (self.removed > self.dirties.capacity() / 8) {
+                self.dirties.clearRetainingCapacity();
+                self.removed = 0;
+            }
         }
     };
 }
