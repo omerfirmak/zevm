@@ -7,11 +7,32 @@ const Bytecode = @import("bytecode.zig").Bytecode;
 const CommittedState = @import("committed_state.zig").CommittedState;
 
 pub fn SlotKeyedMap(comptime T: type) type {
-    return std.AutoHashMapUnmanaged(types.StorageLookup, T);
+    return std.HashMapUnmanaged(types.StorageLookup, T, struct {
+        pub fn eql(_: @This(), a: types.StorageLookup, b: types.StorageLookup) bool {
+            return std.meta.eql(a, b);
+        }
+
+        pub fn hash(_: @This(), lookup: types.StorageLookup) u64 {
+            const addr_limbs: [3]u64 = @bitCast(@as(u192, @intCast(lookup.address)));
+            const slot_limbs: [4]u64 = @bitCast(lookup.slot);
+
+            return (addr_limbs[0] ^ addr_limbs[1] ^ addr_limbs[2]) +%
+                slot_limbs[0] +% slot_limbs[1] +% slot_limbs[2] +% slot_limbs[3];
+        }
+    }, 80);
 }
 
 pub fn AddressKeyedMap(comptime T: type) type {
-    return std.AutoHashMapUnmanaged(u160, T);
+    return std.HashMapUnmanaged(u160, T, struct {
+        pub fn eql(_: @This(), a: u160, b: u160) bool {
+            return a == b;
+        }
+
+        pub fn hash(_: @This(), address: u160) u64 {
+            const addr_limbs: [3]u64 = @bitCast(@as(u192, @intCast(address)));
+            return (addr_limbs[0] ^ addr_limbs[1] ^ addr_limbs[2]);
+        }
+    }, 80);
 }
 
 pub const CommittedAccount = struct {
@@ -54,8 +75,6 @@ pub fn JournaledStorage(comptime Key: type, comptime Value: type, comptime Map: 
         committed: Committed,
 
         dirties: Map = .empty,
-        // tombstones left in `dirties` by removals since the last full reset
-        removed: u32 = 0,
         journal: std.ArrayListUnmanaged(struct { key: Key, old_value: Value }) = .empty,
 
         pub fn init(gpa: std.mem.Allocator, dirties: u32, journal: u32, committed: Committed) !Self {
@@ -134,7 +153,7 @@ pub fn JournaledStorage(comptime Key: type, comptime Value: type, comptime Map: 
             for (0..self.journal.items.len - snapshot_id) |_| {
                 const entry = self.journal.pop().?;
                 if (Committed == void and std.meta.eql(entry.old_value, zero_value)) {
-                    if (self.dirties.remove(entry.key)) self.removed +|= 1;
+                    _ = self.dirties.remove(entry.key);
                 } else {
                     self.dirties.putAssumeCapacity(entry.key, entry.old_value);
                 }
@@ -171,16 +190,12 @@ pub fn JournaledStorage(comptime Key: type, comptime Value: type, comptime Map: 
             if (Committed != void) @compileError("clearViaJournal not supported with committed state");
             for (self.journal.items) |entry| {
                 if (std.meta.eql(entry.old_value, zero_value)) {
-                    if (self.dirties.remove(entry.key)) self.removed +|= 1;
+                    _ = self.dirties.remove(entry.key);
                 }
                 if (self.dirties.size == 0) break;
             }
             self.journal.items.len = 0;
             std.debug.assert(self.dirties.size == 0);
-            if (self.removed > self.dirties.capacity() / 8) {
-                self.dirties.clearRetainingCapacity();
-                self.removed = 0;
-            }
         }
     };
 }
