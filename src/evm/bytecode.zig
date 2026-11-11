@@ -24,32 +24,23 @@ pub fn init(gpa: std.mem.Allocator, bytes: []const u8, comptime cfg: Config) !By
     const jump_table = comptime ops.Ops(cfg).table();
     var threaded_code = try gpa.alloc(?ops.Fn, bytes.len + 33);
     var pc: usize = 0;
-    while (pc < bytes.len) : (pc += 1) {
+    while (pc < bytes.len) {
         const opcode = bytes[pc];
+        const imm_len = immediateLength(cfg, bytes, pc);
         threaded_code[pc] = jump_table[opcode];
-        // Skip push data, leave the function pointer null
+        // Immediate bytes aren't instructions, leave their function pointers null
+        @memset(threaded_code[pc + 1 ..][0..imm_len], null);
 
         switch (opcode) {
-            Opcode.PUSH1.byte()...Opcode.PUSH32.byte() => {
-                threaded_code[pc + 1 ..][0..32].* = @splat(null);
-                // land on the last data byte; loop increment moves to next opcode
-                pc += opcode - Opcode.PUSH1.byte() + 1;
-            },
-            inline Opcode.DUPN.byte(), Opcode.SWAPN.byte(), Opcode.EXCHANGE.byte() => |op| if (cfg.fork.isEnabled(.Amsterdam)) {
-                const inv_imm_low = if (op == Opcode.EXCHANGE.byte()) 0x52 else 0x5b;
-                const inv_imm_high = 0x7F;
-                if (pc + 1 < bytes.len) {
-                    const imm = bytes[pc + 1];
-                    if (inv_imm_low <= imm and imm <= inv_imm_high) {
-                        threaded_code[pc] = jump_table[Opcode.INVALID.byte()];
-                    } else {
-                        threaded_code[pc + 1] = null;
-                        pc += 1;
-                    }
-                }
+            // An immediate in the invalid range isn't skipped and the instruction is invalid
+            Opcode.DUPN.byte(), Opcode.SWAPN.byte(), Opcode.EXCHANGE.byte() => if (cfg.fork.isEnabled(.Amsterdam) and
+                imm_len == 0 and pc + 1 < bytes.len)
+            {
+                threaded_code[pc] = jump_table[Opcode.INVALID.byte()];
             },
             else => {},
         }
+        pc += 1 + imm_len;
     }
     @memset(threaded_code[pc..], jump_table[Opcode.STOP.byte()]);
 
@@ -102,4 +93,18 @@ pub fn safeSlice(self: *const Bytecode, index: u256, size: u64) []const u8 {
 
 pub fn programCounter(self: *const Bytecode, ip: InstructionPointer) u64 {
     return ip - self.threaded_code.ptr;
+}
+
+pub fn immediateLength(comptime cfg: Config, bytecode: []const u8, pc: usize) usize {
+    return switch (bytecode[pc]) {
+        Opcode.PUSH0.byte()...Opcode.PUSH32.byte() => |b| b - Opcode.PUSH0.byte(),
+        Opcode.DUPN.byte(), Opcode.SWAPN.byte(), Opcode.EXCHANGE.byte() => |b| {
+            if (!cfg.fork.isEnabled(.Amsterdam) or pc + 1 >= bytecode.len) return 0;
+            // An immediate in the invalid range isn't skipped: the opcode becomes INVALID.
+            const invalid_low: u8 = if (b == Opcode.EXCHANGE.byte()) 0x52 else 0x5b;
+            const imm = bytecode[pc + 1];
+            return @intFromBool(!(invalid_low <= imm and imm <= 0x7f));
+        },
+        else => 0,
+    };
 }

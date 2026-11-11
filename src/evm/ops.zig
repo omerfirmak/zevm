@@ -64,27 +64,43 @@ pub fn Ops(comptime cfg: Config) type {
             return next(next_ip, gas, fork.constantGas(.POP), new_stack_head, frame);
         }
 
+        pub inline fn coreAdd(a: u256, b: u256) u256 {
+            return a +% b;
+        }
+
         pub fn add(next_ip: InstructionPointer, gas: u64, stack_head: StackPtr, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 2, 1);
-            args[0] = args[1] +% args[0];
+            args[0] = coreAdd(args[1], args[0]);
             return next(next_ip, gas, fork.constantGas(.ADD), new_stack_head, frame);
+        }
+
+        pub inline fn coreMul(a: u256, b: u256) u256 {
+            return a *% b;
         }
 
         pub fn mul(next_ip: InstructionPointer, gas: u64, stack_head: StackPtr, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 2, 1);
-            args[0] = args[1] *% args[0];
+            args[0] = coreMul(args[1], args[0]);
             return next(next_ip, gas, fork.constantGas(.MUL), new_stack_head, frame);
+        }
+
+        pub inline fn coreSub(a: u256, b: u256) u256 {
+            return a -% b;
         }
 
         pub fn sub(next_ip: InstructionPointer, gas: u64, stack_head: StackPtr, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 2, 1);
-            args[0] = args[1] -% args[0];
+            args[0] = coreSub(args[1], args[0]);
             return next(next_ip, gas, fork.constantGas(.SUB), new_stack_head, frame);
+        }
+
+        pub inline fn coreDiv(a: u256, b: u256) u256 {
+            return uint256.div(a, b);
         }
 
         pub fn div(next_ip: InstructionPointer, gas: u64, stack_head: StackPtr, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 2, 1);
-            args[0] = uint256.div(args[1], args[0]);
+            args[0] = coreDiv(args[1], args[0]);
             return next(next_ip, gas, fork.constantGas(.DIV), new_stack_head, frame);
         }
 
@@ -105,9 +121,13 @@ pub fn Ops(comptime cfg: Config) type {
             return next(next_ip, gas, fork.constantGas(.SDIV), new_stack_head, frame);
         }
 
+        pub inline fn coreMod(a: u256, b: u256) u256 {
+            return uint256.rem(a, b);
+        }
+
         pub fn mod(next_ip: InstructionPointer, gas: u64, stack_head: StackPtr, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 2, 1);
-            args[0] = uint256.rem(args[1], args[0]);
+            args[0] = coreMod(args[1], args[0]);
             return next(next_ip, gas, fork.constantGas(.MOD), new_stack_head, frame);
         }
 
@@ -177,114 +197,162 @@ pub fn Ops(comptime cfg: Config) type {
             return next(next_ip, gas, fork.constantGas(.SIGNEXTEND), new_stack_head, frame);
         }
 
+        pub inline fn coreLt(a: u256, b: u256) u256 {
+            return @intFromBool(a < b);
+        }
+
         pub fn lt(next_ip: InstructionPointer, gas: u64, stack_head: StackPtr, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 2, 1);
-            args[0] = @intFromBool(args[1] < args[0]);
+            args[0] = coreLt(args[1], args[0]);
             return next(next_ip, gas, fork.constantGas(.LT), new_stack_head, frame);
+        }
+
+        pub inline fn coreGt(a: u256, b: u256) u256 {
+            return @intFromBool(a > b);
         }
 
         pub fn gt(next_ip: InstructionPointer, gas: u64, stack_head: StackPtr, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 2, 1);
-            args[0] = @intFromBool(args[1] > args[0]);
+            args[0] = coreGt(args[1], args[0]);
             return next(next_ip, gas, fork.constantGas(.GT), new_stack_head, frame);
+        }
+
+        pub inline fn coreSlt(a: u256, b: u256) u256 {
+            return @intFromBool(@as(i256, @bitCast(a)) < @as(i256, @bitCast(b)));
         }
 
         pub fn slt(next_ip: InstructionPointer, gas: u64, stack_head: StackPtr, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 2, 1);
-            args[0] = @intFromBool(@as(i256, @bitCast(args[1])) < @as(i256, @bitCast(args[0])));
+            args[0] = coreSlt(args[1], args[0]);
             return next(next_ip, gas, fork.constantGas(.SLT), new_stack_head, frame);
+        }
+
+        pub inline fn coreSgt(a: u256, b: u256) u256 {
+            return @intFromBool(@as(i256, @bitCast(a)) > @as(i256, @bitCast(b)));
         }
 
         pub fn sgt(next_ip: InstructionPointer, gas: u64, stack_head: StackPtr, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 2, 1);
-            args[0] = @intFromBool(@as(i256, @bitCast(args[1])) > @as(i256, @bitCast(args[0])));
+            args[0] = coreSgt(args[1], args[0]);
             return next(next_ip, gas, fork.constantGas(.SGT), new_stack_head, frame);
+        }
+
+        pub inline fn coreEq(a: u256, b: u256) u256 {
+            return @intFromBool(a == b);
         }
 
         pub fn eq(next_ip: InstructionPointer, gas: u64, stack_head: StackPtr, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 2, 1);
-            args[0] = @intFromBool(args[1] == args[0]);
+            args[0] = coreEq(args[1], args[0]);
             return next(next_ip, gas, fork.constantGas(.EQ), new_stack_head, frame);
+        }
+
+        pub inline fn coreIszero(a: u256) u256 {
+            return @intFromBool(a == 0);
         }
 
         pub fn iszero(next_ip: InstructionPointer, gas: u64, stack_head: StackPtr, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 1, 1);
-            args[0] = @intFromBool(args[0] == 0);
+            args[0] = coreIszero(args[0]);
             return next(next_ip, gas, fork.constantGas(.ISZERO), new_stack_head, frame);
+        }
+
+        pub inline fn coreAnd(a: u256, b: u256) u256 {
+            return a & b;
         }
 
         pub fn @"and"(next_ip: InstructionPointer, gas: u64, stack_head: StackPtr, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 2, 1);
-            args[0] = args[1] & args[0];
+            args[0] = coreAnd(args[1], args[0]);
             return next(next_ip, gas, fork.constantGas(.AND), new_stack_head, frame);
+        }
+
+        pub inline fn coreOr(a: u256, b: u256) u256 {
+            return a | b;
         }
 
         pub fn @"or"(next_ip: InstructionPointer, gas: u64, stack_head: StackPtr, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 2, 1);
-            args[0] = args[1] | args[0];
+            args[0] = coreOr(args[1], args[0]);
             return next(next_ip, gas, fork.constantGas(.OR), new_stack_head, frame);
+        }
+
+        pub inline fn coreXor(a: u256, b: u256) u256 {
+            return a ^ b;
         }
 
         pub fn xor(next_ip: InstructionPointer, gas: u64, stack_head: StackPtr, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 2, 1);
-            args[0] = args[1] ^ args[0];
+            args[0] = coreXor(args[1], args[0]);
             return next(next_ip, gas, fork.constantGas(.XOR), new_stack_head, frame);
+        }
+
+        pub inline fn coreNot(a: u256) u256 {
+            return ~a;
         }
 
         pub fn not(next_ip: InstructionPointer, gas: u64, stack_head: StackPtr, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 1, 1);
-            args[0] = ~args[0];
+            args[0] = coreNot(args[0]);
             return next(next_ip, gas, fork.constantGas(.NOT), new_stack_head, frame);
+        }
+
+        pub inline fn coreByte(index: u256, value: u256) u256 {
+            if (index > 31) {
+                @branchHint(.unlikely);
+                return 0;
+            }
+            // EVM is big-endian: byte 0 is the most significant byte (bits 255–248)
+            const shift = 31 - @as(u8, @intCast(index));
+            return @as(u8, @truncate(value >> (shift * 8)));
         }
 
         pub fn byte(next_ip: InstructionPointer, gas: u64, stack_head: StackPtr, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 2, 1);
-            if (args[1] > 31) {
-                @branchHint(.unlikely);
-                args[0] = 0;
-            } else {
-                @branchHint(.likely);
-                // EVM is big-endian: byte 0 is the most significant byte (bits 255–248)
-                const index = 31 - @as(u8, @intCast(args[1]));
-                args[0] = @as(u8, @truncate(args[0] >> (index * 8)));
-            }
+            args[0] = coreByte(args[1], args[0]);
             return next(next_ip, gas, fork.constantGas(.BYTE), new_stack_head, frame);
+        }
+
+        pub inline fn coreShl(shift: u256, value: u256) u256 {
+            if (shift >= 256) {
+                @branchHint(.unlikely);
+                return 0;
+            }
+            return value << @intCast(shift);
         }
 
         pub fn shl(next_ip: InstructionPointer, gas: u64, stack_head: StackPtr, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 2, 1);
-            if (args[1] >= 256) {
-                @branchHint(.unlikely);
-                args[0] = 0;
-            } else {
-                @branchHint(.likely);
-                args[0] = args[0] << @intCast(args[1]);
-            }
+            args[0] = coreShl(args[1], args[0]);
             return next(next_ip, gas, fork.constantGas(.SHL), new_stack_head, frame);
+        }
+
+        pub inline fn coreShr(shift: u256, value: u256) u256 {
+            if (shift >= 256) {
+                @branchHint(.unlikely);
+                return 0;
+            }
+            return value >> @intCast(shift);
         }
 
         pub fn shr(next_ip: InstructionPointer, gas: u64, stack_head: StackPtr, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 2, 1);
-            if (args[1] >= 256) {
-                @branchHint(.unlikely);
-                args[0] = 0;
-            } else {
-                @branchHint(.likely);
-                args[0] = args[0] >> @intCast(args[1]);
-            }
+            args[0] = coreShr(args[1], args[0]);
             return next(next_ip, gas, fork.constantGas(.SHR), new_stack_head, frame);
+        }
+
+        pub inline fn coreSar(shift: u256, value: u256) u256 {
+            const signed = @as(i256, @bitCast(value));
+            if (shift >= 256) {
+                @branchHint(.unlikely);
+                return if (signed >= 0) 0 else std.math.maxInt(u256);
+            }
+            return @bitCast(signed >> @intCast(shift));
         }
 
         pub fn sar(next_ip: InstructionPointer, gas: u64, stack_head: StackPtr, frame: *evm.Frame) evm.Errors!void {
             const new_stack_head, const args = try frame.stackPop(stack_head, 2, 1);
-            const value = @as(i256, @bitCast(args[0]));
-            if (args[1] >= 256) {
-                @branchHint(.unlikely);
-                args[0] = if (value >= 0) 0 else std.math.maxInt(u256);
-            } else {
-                @branchHint(.likely);
-                args[0] = @bitCast(value >> @intCast(args[1]));
-            }
+            args[0] = coreSar(args[1], args[0]);
             return next(next_ip, gas, fork.constantGas(.SAR), new_stack_head, frame);
         }
 
