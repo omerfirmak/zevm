@@ -77,8 +77,8 @@
             .hash = "cache-0.0.0-winRwI3VAACl4n1O_tjPtxGWxyfdWUJnOcGqkyFoO6De",
         },
         .lmdbx = .{
-            .url = "git+https://github.com/omerfirmak/lmdbx-zig#5148082b77ce9681581b3937f3898ccae18dd8a7",
-            .hash = "lmdbx-0.4.0-WlIvzqQVBACDuAjwbXxSXMbavYqXS4WdJmJpfaoovRWp",
+            .url = "git+https://github.com/omerfirmak/lmdbx-zig#2a26a3e7614f6923d49ad5738c6af579674d98e5",
+            .hash = "lmdbx-0.4.0-WlIvzhMZBACfP4Jc8WAKe2yKI_TZ0uovfhsamBmMpYo8",
         },
         .metrics = .{
             .url = "git+https://github.com/karlseguin/metrics.zig#ac167295b6a8fd84ca7af852c1032e6b246101f0",
