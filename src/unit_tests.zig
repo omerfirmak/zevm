@@ -11,6 +11,7 @@ comptime {
     _ = @import("trie/trie.zig");
     _ = @import("trie/range_proof.zig");
     _ = @import("evm/crypto/ripemd160.zig");
+    _ = @import("evm/crypto/kzg_point.zig");
     _ = @import("devp2p/allocator.zig");
     _ = @import("devp2p/enode.zig");
     _ = @import("devp2p/enr.zig");
