@@ -45,6 +45,7 @@ pub const Store = struct {
                 .growth_step = 16 << 30,
                 .shrink_threshold = 0,
             },
+            .no_sticky_threads = true,
         });
         errdefer env.deinit() catch {};
 

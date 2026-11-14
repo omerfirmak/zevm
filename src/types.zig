@@ -710,6 +710,14 @@ pub const HashedBlockAccessLists = struct {
             .changes = changes,
         };
     }
+
+    pub fn slice(self: *const HashedBlockAccessLists, from: usize, to: usize) HashedBlockAccessLists {
+        return .{
+            .account_hashes = self.account_hashes[from..to],
+            .slot_hashes = self.slot_hashes[from..to],
+            .changes = self.changes[from..to],
+        };
+    }
 };
 
 pub fn sortPairsByHash(comptime V: type, keys: [][32]u8, values: []V) void {
