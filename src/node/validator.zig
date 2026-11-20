@@ -6,6 +6,7 @@ const types = @import("../types.zig");
 const processor = @import("../processor/processor.zig");
 const kv = @import("../db/kv.zig");
 const trie = @import("../trie/trie.zig");
+const task = @import("task.zig");
 const Blockchain = @import("blockchain.zig").Blockchain;
 
 pub const ValidatedBlock = struct {
@@ -74,7 +75,7 @@ pub const Validator = struct {
 
             if (current_work >= work_per_worker or index == hashed_bal.changes.len - 1) {
                 const bal_shard = hashed_bal.slice(start, index + 1);
-                work_group.async(io, Validator.updateAccountsShardTask, .{
+                task.spawnCancelOnErr(&work_group, io, Validator.updateAccountsShard, .{
                     self,                                   txn,
                     bal_shard,                              arena,
                     account_keys[start .. index + 1],       accounts[start .. index + 1],
@@ -101,27 +102,6 @@ pub const Validator = struct {
             .storage_collectors = storage_collectors,
             .account_collector = account_collector,
         };
-    }
-
-    fn updateAccountsShardTask(
-        self: *const Self,
-        parent_txn: kv.Transaction,
-        bal_shard: types.HashedBlockAccessLists,
-        arena: std.mem.Allocator,
-
-        // outputs
-        account_keys: [][32]u8,
-        accounts: []?types.Account,
-        storage_collectors: []?trie.NodeCollector,
-    ) !void {
-        self.updateAccountsShard(
-            parent_txn,
-            bal_shard,
-            arena,
-            account_keys,
-            accounts,
-            storage_collectors,
-        ) catch return std.Io.Cancelable.Canceled;
     }
 
     fn updateAccountsShard(
