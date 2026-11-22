@@ -189,31 +189,33 @@ pub const Trie = struct {
         std.debug.assert(keys.len == values.len);
         std.debug.assert(self.stack == null); // stack tries only take updateNoDeletions
 
-        self.skipped_deletions = false;
-        defer self.skip = .none;
-        self.skip = .deletions;
-        try self.updatePass(keys, values);
-        if (!self.skipped_deletions) return;
-        self.skip = .writes;
-        try self.updatePass(keys, values);
+        var path_buf: [64]u8 = undefined;
+        try self.updateAt(&self.root, .{ .buf = &path_buf, .len = 0 }, keys, values);
     }
 
     pub fn updateNoDeletions(self: *Self, keys: []const [32]u8, values: [][]const u8) !void {
         std.debug.assert(keys.len != 0);
         std.debug.assert(keys.len == values.len);
-        return self.updatePass(keys, values);
+        var path_buf: [64]u8 = undefined;
+        return self.updatePass(&self.root, .{ .buf = &path_buf, .len = 0 }, keys, values);
     }
 
-    fn updatePass(self: *Self, keys: []const [32]u8, values: [][]const u8) !void {
+    fn updateAt(self: *Self, node: *Node, path: Path, keys: []const [32]u8, values: [][]const u8) !void {
+        self.skipped_deletions = false;
+        defer self.skip = .none;
+        self.skip = .deletions;
+        try self.updatePass(node, path, keys, values);
+        if (!self.skipped_deletions) return;
+        self.skip = .writes;
+        try self.updatePass(node, path, keys, values);
+    }
+
+    fn updatePass(self: *Self, node: *Node, path: Path, keys: []const [32]u8, values: [][]const u8) !void {
         var key_buf: [64]u8 = undefined;
         const key_nibbles = writeHexKey(&keys[0], &key_buf);
-        var path_buf: [64]u8 = undefined;
         var remaining_keys: []const [32]u8 = keys[1..];
         var remaining_values = values[1..];
-        try self.insert(&self.root, key_nibbles, .{
-            .buf = &path_buf,
-            .len = 0,
-        }, values[0], &key_buf, &remaining_keys, &remaining_values);
+        try self.insert(node, key_nibbles[path.len..], path, values[0], &key_buf, &remaining_keys, &remaining_values);
     }
 
     pub fn put(self: *Self, key_bytes: []const u8, value: []const u8) !void {
@@ -682,6 +684,52 @@ pub const Trie = struct {
         const child = try self.createNode();
         child.* = Node.Hashed.init(payload);
         return child;
+    }
+
+    // Parallel hasher helpers
+    pub fn rootBranch(self: *Self) !?*Node.Branch {
+        if (self.root == .hashed) {
+            var path_buf: [64]u8 = undefined;
+            try self.resolveHashed(&self.root, .{ .buf = &path_buf, .len = 0 });
+        }
+        return if (self.root == .branch) &self.root.branch else null;
+    }
+
+    pub fn updateRootChild(self: *Self, branch: *Node.Branch, nibble: u4, keys: []const [32]u8, values: [][]const u8) !void {
+        std.debug.assert(keys.len != 0);
+        std.debug.assert(keys.len == values.len);
+        std.debug.assert(self.stack == null);
+        for (keys) |k| std.debug.assert(k[0] >> 4 == nibble);
+
+        const child = branch.children[nibble];
+        if (child == null) {
+            child = try self.createNode();
+            child.?.* = .empty;
+            branch.children[nibble] = child;
+        }
+
+        var path_buf: [64]u8 = undefined;
+        path_buf[0] = nibble;
+        try self.updateAt(child.?, .{ .buf = &path_buf, .len = 1 }, keys, values);
+    }
+
+    pub fn finishRootChildren(self: *Self) !void {
+        const branch = &self.root.branch;
+        for (&branch.children) |*child| {
+            if (child.*) |c| if (c.* == .empty) {
+                child.* = null;
+            };
+        }
+        branch.hash = null;
+        var path_buf: [64]u8 = undefined;
+        try self.collapseBranch(&self.root, branch, .{ .buf = &path_buf, .len = 0 });
+    }
+
+    pub fn hashRootChild(self: *Self, branch: *Node.Branch, nibble: u4) !void {
+        const child = branch.children[nibble] orelse return;
+        var path_buf: [64]u8 = undefined;
+        path_buf[0] = nibble;
+        try self.hash(child, .{ .buf = &path_buf, .len = 1 });
     }
 };
 
