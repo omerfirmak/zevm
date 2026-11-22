@@ -11,6 +11,7 @@ const trie = @import("../trie/trie.zig");
 const kv = @import("../db/kv.zig");
 const lmdbx = @import("lmdbx");
 const prom = @import("metrics");
+const trie_db = @import("../db/trie.zig");
 
 const RangeProofVerifier = @import("../trie/range_proof.zig").Verifier;
 const EthDb = @import("../db/eth.zig").Eth;
@@ -1231,9 +1232,11 @@ pub const Downloader = struct {
 
         const collector = try allocator.create(trie.NodeCollector);
         collector.* = try .init(allocator, hash_window_nodes);
-        var storage_trie = (try self.eth_db.openStorageTrie(allocator, txn, account_hash, root))
+
+        var resolver = try trie_db.StorageTrieResolver.init(self.eth_db, txn);
+        defer resolver.deinit();
+        var storage_trie = resolver.openTrie(allocator, account_hash, root)
             .withCollector(collector);
-        defer self.eth_db.closeStorageTrie(&storage_trie);
         if (count > 0) try storage_trie.updateNoDeletions(keys[0..count], values[0..count]);
         return .{ if (count < keys.len) null else nextKey(keys[count - 1]), try storage_trie.rootHash(), collector.collected() };
     }
@@ -1256,9 +1259,10 @@ pub const Downloader = struct {
 
         const collector = try allocator.create(trie.NodeCollector);
         collector.* = try .init(allocator, hash_window_nodes);
-        var account_trie = (try self.eth_db.openAccountTrie(allocator, txn, root))
+        var resolver = try trie_db.AccountTrieResolver.init(self.eth_db, txn);
+        defer resolver.deinit();
+        var account_trie = resolver.openTrie(allocator, root)
             .withCollector(collector);
-        defer self.eth_db.closeAccountTrie(&account_trie);
         if (count > 0) try account_trie.updateNoDeletions(keys[0..count], accounts[0..count]);
         return .{ if (count < keys.len) null else nextKey(keys[count - 1]), try account_trie.rootHash(), collector.collected() };
     }
@@ -1737,11 +1741,12 @@ pub const Downloader = struct {
 
         const parent = try self.bc.readHeader(self.state_heal.?.next_pivot.number - 1) orelse unreachable;
         var account_collector = try trie.NodeCollector.init(allocator, bal.len * 66);
+        var resolver = try trie_db.AccountTrieResolver.init(self.eth_db, txn);
+        defer resolver.deinit();
         var account_trie = if (try self.isAccountTrieAvailable(txn, parent.state_root))
-            (try self.eth_db.openAccountTrie(allocator, txn, parent.state_root)).withCollector(&account_collector)
+            resolver.openTrie(allocator, parent.state_root).withCollector(&account_collector)
         else
             null;
-        defer if (account_trie) |*at| self.eth_db.closeAccountTrie(at);
 
         const hashed = try types.HashedBlockAccessLists.init(allocator, bal);
         for (hashed.changes, hashed.account_hashes, hashed.slot_hashes) |changes, addr_hash, slot_hashes| {
@@ -1832,11 +1837,11 @@ pub const Downloader = struct {
         values: []const u256,
     ) !?[32]u8 {
         if (!try self.isStorageTrieAvailable(txn, addr_hash, root)) return null;
-        const st = try self.eth_db.openStorageTrie(allocator, txn, addr_hash, root);
+        var resolver = try trie_db.StorageTrieResolver.init(self.eth_db, txn);
+        defer resolver.deinit();
         // per key: up to 64 inner nodes on its path plus removals from collapses
         var collector = try trie.NodeCollector.init(allocator, slots.len * 66);
-        var storage_trie = st.withCollector(&collector);
-        defer self.eth_db.closeStorageTrie(&storage_trie);
+        var storage_trie = resolver.openTrie(allocator, addr_hash, root).withCollector(&collector);
         try storage_trie.update(slots, values);
         const new_root = try storage_trie.rootHash();
         try self.eth_db.commitStorageTrieNodes(txn, addr_hash, &collector);

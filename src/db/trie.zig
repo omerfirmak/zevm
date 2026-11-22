@@ -4,6 +4,8 @@ const trie = @import("../trie/trie.zig");
 const kv = @import("kv.zig");
 const types = @import("../types.zig");
 
+const StorageTrie = @import("../trie/storage_trie.zig").StorageTrie;
+const AccountTrie = @import("../trie/account_trie.zig").AccountTrie;
 const EthDb = @import("eth.zig").Eth;
 
 pub const StorageTrieResolver = struct {
@@ -27,6 +29,13 @@ pub const StorageTrieResolver = struct {
     pub fn deinit(self: *StorageTrieResolver) void {
         self.storage.deinit();
         self.nodes.deinit();
+    }
+
+    pub fn openTrie(self: *StorageTrieResolver, allocator: std.mem.Allocator, account_hash: [32]u8, root: [32]u8) StorageTrie {
+        self.account_hash = account_hash;
+        return StorageTrie.initFromTrie(trie.Trie.init(allocator)
+            .withRoot(root)
+            .withResolver(self.resolver()));
     }
 
     pub fn resolver(self: *StorageTrieResolver) trie.Trie.NodeResolver {
@@ -70,6 +79,12 @@ pub const AccountTrieResolver = struct {
     pub fn deinit(self: *AccountTrieResolver) void {
         self.accounts.deinit();
         self.nodes.deinit();
+    }
+
+    pub fn openTrie(self: *AccountTrieResolver, allocator: std.mem.Allocator, root: [32]u8) AccountTrie {
+        return AccountTrie.initFromTrie(trie.Trie.init(allocator)
+            .withRoot(root)
+            .withResolver(self.resolver()));
     }
 
     pub fn resolver(self: *AccountTrieResolver) trie.Trie.NodeResolver {

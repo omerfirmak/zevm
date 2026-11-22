@@ -6,6 +6,7 @@ const types = @import("../types.zig");
 const processor = @import("../processor/processor.zig");
 const kv = @import("../db/kv.zig");
 const trie = @import("../trie/trie.zig");
+const trie_db = @import("../db/trie.zig");
 const task = @import("task.zig");
 const Blockchain = @import("blockchain.zig").Blockchain;
 
@@ -90,9 +91,9 @@ pub const Validator = struct {
 
         var account_collector = try trie.NodeCollector.init(arena, filtered_bal.len * 66);
         if (filtered_bal.len > 0) {
-            const at = try self.chain.eth_db.openAccountTrie(scratch, txn, parent_root);
-            defer self.chain.eth_db.closeAccountTrie(&at);
-            var account_trie = at.withCollector(&account_collector);
+            var account_resolver = try trie_db.AccountTrieResolver.init(self.chain.eth_db, txn);
+            defer account_resolver.deinit();
+            var account_trie = account_resolver.openTrie(scratch, parent_root).withCollector(&account_collector);
             try account_trie.update(account_keys, accounts);
             if (!std.meta.eql(try account_trie.rootHash(), expected_root)) return error.StateRootMismatch;
         } else if (!std.meta.eql(parent_root, expected_root)) return error.StateRootMismatch;
@@ -124,7 +125,7 @@ pub const Validator = struct {
 
         const accounts_cursor = try self.chain.eth_db.kv_store.table(txn, .accounts).cursor();
         defer accounts_cursor.deinit();
-        var storage_resolver = try self.chain.eth_db.openStorageTrieResolver(txn);
+        var storage_resolver = try trie_db.StorageTrieResolver.init(self.chain.eth_db, txn);
         defer storage_resolver.deinit();
 
         for (bal_shard.changes, bal_shard.account_hashes, bal_shard.slot_hashes, account_keys, accounts, storage_collectors) |
@@ -151,9 +152,8 @@ pub const Validator = struct {
                 for (changes.storage_changes, values) |slot, *value| value.* = slot.lastValue();
 
                 collector.* = try trie.NodeCollector.init(arena, slot_hashes.len * 66);
-                var storage_trie = self.chain.eth_db.openStorageTrieWithResolver(
+                var storage_trie = storage_resolver.openTrie(
                     scratch,
-                    &storage_resolver,
                     account_hash,
                     account.storage_hash,
                 ).withCollector(&collector.*.?);

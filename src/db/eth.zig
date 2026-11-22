@@ -8,10 +8,6 @@ const rlp = @import("rlp");
 const lmdbx = @import("lmdbx");
 const trie = @import("../trie/trie.zig");
 
-const StorageTrie = @import("../trie/storage_trie.zig").StorageTrie;
-const AccountTrie = @import("../trie/account_trie.zig").AccountTrie;
-const StorageTrieResolver = @import("trie.zig").StorageTrieResolver;
-const AccountTrieResolver = @import("trie.zig").AccountTrieResolver;
 
 pub const Eth = struct {
     const Self = @This();
@@ -311,55 +307,6 @@ pub const Eth = struct {
         defer cursor.deinit();
         const res = try cursor.seekLowerBound(&addr_hash) orelse return false;
         return std.mem.eql(u8, res.entry.key, &addr_hash) and try cursor.count() == 1; // a single slot trie
-    }
-
-    pub fn openAccountTrie(self: *Self, allocator: std.mem.Allocator, txn: kv.Transaction, root: [32]u8) !AccountTrie {
-        var resolver = try allocator.create(AccountTrieResolver);
-        errdefer allocator.destroy(resolver);
-        resolver.* = try AccountTrieResolver.init(self, txn);
-        return AccountTrie.initFromTrie(trie.Trie.init(allocator)
-            .withRoot(root)
-            .withResolver(resolver.resolver()));
-    }
-
-    pub fn closeAccountTrie(_: *Self, account_trie: *const AccountTrie) void {
-        const resolver: *AccountTrieResolver = @ptrCast(@alignCast(account_trie.inner.resolver.?.ptr));
-        resolver.deinit();
-    }
-
-    pub fn openStorageTrie(
-        self: *Self,
-        allocator: std.mem.Allocator,
-        txn: kv.Transaction,
-        addr_hash: [32]u8,
-        root: [32]u8,
-    ) !StorageTrie {
-        const resolver = try allocator.create(StorageTrieResolver);
-        errdefer allocator.destroy(resolver);
-        resolver.* = try self.openStorageTrieResolver(txn);
-        return self.openStorageTrieWithResolver(allocator, resolver, addr_hash, root);
-    }
-
-    pub fn openStorageTrieResolver(self: *Self, txn: kv.Transaction) !StorageTrieResolver {
-        return StorageTrieResolver.init(self, txn);
-    }
-
-    pub fn openStorageTrieWithResolver(
-        _: *Self,
-        allocator: std.mem.Allocator,
-        resolver: *StorageTrieResolver,
-        addr_hash: [32]u8,
-        root: [32]u8,
-    ) StorageTrie {
-        resolver.account_hash = addr_hash;
-        return StorageTrie.initFromTrie(trie.Trie.init(allocator)
-            .withRoot(root)
-            .withResolver(resolver.resolver()));
-    }
-
-    pub fn closeStorageTrie(_: *Self, storage_trie: *const StorageTrie) void {
-        const resolver: *StorageTrieResolver = @ptrCast(@alignCast(storage_trie.inner.resolver.?.ptr));
-        resolver.deinit();
     }
 
     pub fn applyBal(
