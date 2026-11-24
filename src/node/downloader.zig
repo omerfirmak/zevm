@@ -16,7 +16,6 @@ const trie_db = @import("../db/trie.zig");
 const RangeProofVerifier = @import("../trie/range_proof.zig").Verifier;
 const EthDb = @import("../db/eth.zig").Eth;
 const List = @import("../free_list.zig").List;
-const Blockchain = @import("blockchain.zig").Blockchain;
 const max_inflight_requests = 100;
 const max_inflight_requests_per_peer = 2;
 const header_persist_chunk = 1024;
@@ -37,7 +36,6 @@ pub const Downloader = struct {
 
     io: std.Io,
     allocator: std.mem.Allocator,
-    bc: *Blockchain,
     eth_db: *EthDb,
 
     peer_ranges: []?PeerRange,
@@ -109,7 +107,6 @@ pub const Downloader = struct {
     pub fn init(
         io: std.Io,
         allocator: std.mem.Allocator,
-        bc: *Blockchain,
         eth_db: *EthDb,
         eth_provider: *eth.Provider,
         snap_provider: *snap.Provider,
@@ -120,12 +117,11 @@ pub const Downloader = struct {
         var stashed_snap_requests = try allocator.alloc(Request(snap.Message), max_inflight_requests);
         stashed_snap_requests.len = 0;
 
-        const head = try bc.head();
+        const head = try eth_db.head();
 
         return .{
             .io = io,
             .allocator = allocator,
-            .bc = bc,
             .eth_db = eth_db,
             .eth_arena = .init(allocator),
             .eth_provider = eth_provider,
@@ -599,7 +595,7 @@ pub const Downloader = struct {
     }
 
     fn updateTarget(self: *Self, number: u64, hash: [32]u8) !void {
-        const head = try self.bc.head();
+        const head = try self.eth_db.head();
         if (head.number >= number) return;
 
         {
@@ -624,9 +620,9 @@ pub const Downloader = struct {
         };
         if (self.state == null) {
             if (head.number == 0) {
-                self.state = .{ .pivot = try self.bc.readHeader(0) orelse unreachable };
+                self.state = .{ .pivot = try self.eth_db.readHeader(0) orelse unreachable };
                 try self.state.?.code_hashes.ensureTotalCapacity(std.heap.page_allocator, expected_code_count);
-            } else self.state = .{ .pivot = try self.bc.headHeader(), .phase = .catchup };
+            } else self.state = .{ .pivot = try self.eth_db.headHeader(), .phase = .catchup };
         }
 
         try self.updatePivot();
@@ -954,7 +950,7 @@ pub const Downloader = struct {
         if (!self.pending_eth_requests.empty()) return;
         if (hasHeaderRequest(&self.inflight_eth_requests) or hasHeaderRequest(&self.validating_eth_requests)) return;
 
-        const head = try self.bc.head();
+        const head = try self.eth_db.head();
         log.debug("persisting headers start {} end {}", .{
             head.number + 1,
             target.number,
@@ -967,7 +963,7 @@ pub const Downloader = struct {
             const count = @min(header_persist_chunk, total - persisted);
             const headers = try self.readDownladedHeaders(self.allocator, first + persisted, count);
             defer self.allocator.free(headers);
-            try self.bc.appendHeaders(headers);
+            try self.eth_db.appendHeaders(headers);
             persisted += count;
         }
 
@@ -991,7 +987,7 @@ pub const Downloader = struct {
         const bytes: [*]u8 = @ptrCast(headers.ptr);
         const size = @sizeOf(types.BlockHeader) * headers.len;
 
-        const file = try self.bc.file_storage.openFile(self.io, "downloaded_headers.dat");
+        const file = try self.eth_db.file_storage.openFile(self.io, "downloaded_headers.dat");
         defer file.release();
         try file.value.file.writePositionalAll(self.io, bytes[0..size], offset);
 
@@ -1014,7 +1010,7 @@ pub const Downloader = struct {
     }
 
     fn readDownladedHeader(self: *Self, number: u64) !?types.BlockHeader {
-        const file = try self.bc.file_storage.openFile(self.io, "downloaded_headers.dat");
+        const file = try self.eth_db.file_storage.openFile(self.io, "downloaded_headers.dat");
         defer file.release();
 
         const offset = number * @sizeOf(types.BlockHeader);
@@ -1030,7 +1026,7 @@ pub const Downloader = struct {
     }
 
     fn readDownladedHeaders(self: *Self, allocator: std.mem.Allocator, start: u64, count: u64) ![]types.BlockHeader {
-        const file = try self.bc.file_storage.openFile(self.io, "downloaded_headers.dat");
+        const file = try self.eth_db.file_storage.openFile(self.io, "downloaded_headers.dat");
         defer file.release();
 
         const headers = try allocator.alloc(types.BlockHeader, count);
@@ -1053,19 +1049,19 @@ pub const Downloader = struct {
         var header: types.BlockHeader = std.mem.zeroes(types.BlockHeader);
         const bytes: [*]u8 = @ptrCast(&header);
 
-        const file = try self.bc.file_storage.openFile(self.io, "downloaded_headers.dat");
+        const file = try self.eth_db.file_storage.openFile(self.io, "downloaded_headers.dat");
         defer file.release();
         try file.value.file.writePositionalAll(self.io, bytes[0..@sizeOf(types.BlockHeader)], offset);
     }
 
     fn clearDownloadedHeaders(self: *Self) !void {
-        const file = try self.bc.file_storage.openFile(self.io, "downloaded_headers.dat");
+        const file = try self.eth_db.file_storage.openFile(self.io, "downloaded_headers.dat");
         defer file.release();
         try file.value.file.setLength(self.io, 0);
     }
 
     fn readHeader(self: *Self, number: u64) !?types.BlockHeader {
-        return try self.readDownladedHeader(number) orelse self.bc.readHeader(number);
+        return try self.readDownladedHeader(number) orelse self.eth_db.readHeader(number);
     }
 
     fn updatePivot(self: *Self) !void {
@@ -1098,13 +1094,13 @@ pub const Downloader = struct {
 
     // false while headers up to the target are still missing
     fn startStateHeal(self: *Self, cur_pivot: types.BlockHeader, target_pivot: types.BlockHeader) !bool {
-        if (try self.bc.readHeader(target_pivot.number) == null) return false;
+        if (try self.eth_db.readHeader(target_pivot.number) == null) return false;
 
         if (self.state_heal) |*state_heal| {
             state_heal.target_pivot = target_pivot;
             log.info("state heal: target moved to {}", .{target_pivot.number});
         } else {
-            const next_pivot = try self.bc.readHeader(cur_pivot.number + 1) orelse unreachable;
+            const next_pivot = try self.eth_db.readHeader(cur_pivot.number + 1) orelse unreachable;
             if (!std.mem.eql(u8, &next_pivot.parent_hash, &cur_pivot.hash())) return error.Reorg;
             self.state_heal = .{
                 .target_pivot = target_pivot,
@@ -1139,7 +1135,7 @@ pub const Downloader = struct {
             .catchup => {
                 const target = self.syncTarget();
                 if (state.pivot.number < target.number) {
-                    const new_pivot = try self.bc.readHeader(target.number) orelse return;
+                    const new_pivot = try self.eth_db.readHeader(target.number) orelse return;
                     if (!try self.startStateHeal(state.pivot, new_pivot)) return;
                     state.pivot = new_pivot;
                     return;
@@ -1685,7 +1681,7 @@ pub const Downloader = struct {
     // the next block must build on the one just applied, otherwise the header chain reorged under us
     fn advanceNextPivot(self: *Self) !void {
         const state_heal = &self.state_heal.?;
-        const next = try self.bc.readHeader(state_heal.next_pivot.number + 1) orelse unreachable;
+        const next = try self.eth_db.readHeader(state_heal.next_pivot.number + 1) orelse unreachable;
         if (!std.mem.eql(u8, &next.parent_hash, &state_heal.next_pivot.hash())) return error.Reorg;
         state_heal.next_pivot = next;
     }
@@ -1698,7 +1694,7 @@ pub const Downloader = struct {
             state_heal.bal_hashes[count] = header.hash();
             count += 1;
             if (header.number >= state_heal.target_pivot.number) break;
-            header = try self.bc.readHeader(header.number + 1) orelse unreachable;
+            header = try self.eth_db.readHeader(header.number + 1) orelse unreachable;
         }
         self.requestBals(req, state_heal.bal_hashes[0..count]);
     }
@@ -1739,7 +1735,7 @@ pub const Downloader = struct {
         defer scratch.deinit();
         const allocator = scratch.allocator();
 
-        const parent = try self.bc.readHeader(self.state_heal.?.next_pivot.number - 1) orelse unreachable;
+        const parent = try self.eth_db.readHeader(self.state_heal.?.next_pivot.number - 1) orelse unreachable;
         var account_collector = try trie.NodeCollector.init(allocator, bal.len * 66);
         var resolver = try trie_db.AccountTrieResolver.init(self.eth_db, txn);
         defer resolver.deinit();
@@ -1923,7 +1919,7 @@ pub const Downloader = struct {
         for (request_counts) |c| m.requests.set(.{ .proto = c[0], .state = c[1] }, c[2]) catch {};
 
         m.sync_target.set(self.syncTarget().number);
-        if (self.bc.head()) |head| m.chain_head.set(head.number) else |_| {}
+        if (self.eth_db.head()) |head| m.chain_head.set(head.number) else |_| {}
         m.headers_downloaded.set(self.progress.headers);
         if (self.state) |state| m.pivot.set(state.pivot.number);
         m.state_progress.set(.{ .kind = "accounts" }, keyspacePercent(self.progress.account_keyspace)) catch {};

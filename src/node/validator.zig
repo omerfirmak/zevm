@@ -8,7 +8,7 @@ const kv = @import("../db/kv.zig");
 const trie = @import("../trie/trie.zig");
 const trie_db = @import("../db/trie.zig");
 const task = @import("task.zig");
-const Blockchain = @import("blockchain.zig").Blockchain;
+const EthDb = @import("../db/eth.zig").Eth;
 
 pub const ValidatedBlock = struct {
     hashed_bal: types.HashedBlockAccessLists,
@@ -20,10 +20,10 @@ pub const Validator = struct {
     const Self = @This();
 
     gpa: std.mem.Allocator,
-    chain: *const Blockchain,
+    eth_db: *EthDb,
 
-    pub fn init(gpa: std.mem.Allocator, chain: *const Blockchain) Self {
-        return .{ .gpa = gpa, .chain = chain };
+    pub fn init(gpa: std.mem.Allocator, eth_db: *EthDb) Self {
+        return .{ .gpa = gpa, .eth_db = eth_db };
     }
 
     // pub fn validate(
@@ -40,7 +40,7 @@ pub const Validator = struct {
         expected_root: [32]u8,
         bal: types.BlockAccessLists,
     ) !ValidatedBlock {
-        const txn = try self.chain.eth_db.kv_store.transaction_ro();
+        const txn = try self.eth_db.kv_store.transaction_ro();
         defer txn.abort() catch unreachable;
 
         var scratch_arena = std.heap.ArenaAllocator.init(self.gpa);
@@ -91,7 +91,7 @@ pub const Validator = struct {
 
         var account_collector = try trie.NodeCollector.init(arena, filtered_bal.len * 66);
         if (filtered_bal.len > 0) {
-            var account_resolver = try trie_db.AccountTrieResolver.init(self.chain.eth_db, txn);
+            var account_resolver = try trie_db.AccountTrieResolver.init(self.eth_db, txn);
             defer account_resolver.deinit();
             var account_trie = account_resolver.openTrie(scratch, parent_root).withCollector(&account_collector);
             try account_trie.update(account_keys, accounts);
@@ -123,9 +123,9 @@ pub const Validator = struct {
         const txn = try parent_txn.clone(null);
         defer txn.abort() catch unreachable;
 
-        const accounts_cursor = try self.chain.eth_db.kv_store.table(txn, .accounts).cursor();
+        const accounts_cursor = try self.eth_db.kv_store.table(txn, .accounts).cursor();
         defer accounts_cursor.deinit();
-        var storage_resolver = try trie_db.StorageTrieResolver.init(self.chain.eth_db, txn);
+        var storage_resolver = try trie_db.StorageTrieResolver.init(self.eth_db, txn);
         defer storage_resolver.deinit();
 
         for (bal_shard.changes, bal_shard.account_hashes, bal_shard.slot_hashes, account_keys, accounts, storage_collectors) |
@@ -139,7 +139,7 @@ pub const Validator = struct {
             const account_diff = try changes.accountDiff();
 
             var account = types.EmptyAccount;
-            if (try self.chain.eth_db.seekAccount(accounts_cursor, account_hash)) |entry| {
+            if (try self.eth_db.seekAccount(accounts_cursor, account_hash)) |entry| {
                 if (std.mem.eql(u8, &entry.hash, &account_hash)) account = entry.account;
             }
 

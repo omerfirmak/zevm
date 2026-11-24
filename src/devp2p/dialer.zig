@@ -5,19 +5,19 @@ const std = @import("std");
 const rlpx = @import("rlpx.zig");
 const enr = @import("enr.zig");
 const IdFilter = @import("../forks.zig").IdFilter;
-const Blockchain = @import("../node/blockchain.zig").Blockchain;
+const EthDb = @import("../db/eth.zig").Eth;
 
 pub const Dialer = struct {
     server: *rlpx.Server,
     filter: *const IdFilter,
-    bc: *Blockchain,
+    eth_db: *EthDb,
     dials: std.Io.Group = .init,
 
-    pub fn init(server: *rlpx.Server, filter: *const IdFilter, bc: *Blockchain) Dialer {
+    pub fn init(server: *rlpx.Server, filter: *const IdFilter, eth_db: *EthDb) Dialer {
         return .{
             .server = server,
             .filter = filter,
-            .bc = bc,
+            .eth_db = eth_db,
         };
     }
 
@@ -26,7 +26,7 @@ pub const Dialer = struct {
     }
 
     pub fn dial(self: *Dialer, io: std.Io, record: enr.Record) void {
-        const head = self.bc.headHeader() catch return;
+        const head = self.eth_db.headHeader() catch return;
         const remote = record.eth orelse return;
         if (record.tcpAddr() != null and
             self.filter.check(remote, head.number, head.timestamp) and

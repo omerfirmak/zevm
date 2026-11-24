@@ -3,7 +3,7 @@
 
 const std = @import("std");
 const RpcServer = @import("jsonrpc.zig").Server;
-const Blockchain = @import("../node/blockchain.zig").Blockchain;
+const EthDb = @import("../db/eth.zig").Eth;
 const Downloader = @import("../node/downloader.zig").Downloader;
 const backend = @import("../node/engine.zig");
 const types = @import("../types.zig");
@@ -12,11 +12,11 @@ pub const hex = @import("hex.zig");
 pub const Engine = struct {
     const Self = @This();
 
-    bc: *Blockchain,
+    eth_db: *EthDb,
     downloader: *Downloader,
 
-    pub fn init(bc: *Blockchain, downloader: *Downloader) Self {
-        return .{ .bc = bc, .downloader = downloader };
+    pub fn init(eth_db: *EthDb, downloader: *Downloader) Self {
+        return .{ .eth_db = eth_db, .downloader = downloader };
     }
 
     pub fn register(self: *Self, allocator: std.mem.Allocator, server: *RpcServer) !void {

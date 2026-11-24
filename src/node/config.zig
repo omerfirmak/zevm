@@ -4,91 +4,11 @@
 const std = @import("std");
 const types = @import("../types.zig");
 const forks = @import("../forks.zig");
-const rlp = @import("rlp");
-const EthDb = @import("../db/eth.zig").Eth;
-const FileStorage = @import("../db/file.zig").Storage;
 
 pub const Config = struct {
     chain_id: u64,
     genesis_header: types.BlockHeader,
     fork_schedule: forks.Schedule,
-};
-
-pub const Blockchain = struct {
-    const Self = @This();
-
-    cfg: Config,
-
-    io: std.Io,
-    allocator: std.mem.Allocator,
-    eth_db: *EthDb,
-    file_storage: *FileStorage,
-
-    pub fn init(io: std.Io, allocator: std.mem.Allocator, cfg: Config, file_storage: *FileStorage, eth_db: *EthDb) !Self {
-        var bc = Self{
-            .file_storage = file_storage,
-            .eth_db = eth_db,
-            .cfg = cfg,
-            .io = io,
-            .allocator = allocator,
-        };
-        if (file_storage.ranges[@backingInt(FileStorage.Table.headers)] == null) {
-            try bc.appendHeader(&cfg.genesis_header);
-        }
-        return bc;
-    }
-
-    pub fn chainId(self: *Self) u64 {
-        return self.cfg.chain_id;
-    }
-
-    pub fn genesisHash(self: *Self) [32]u8 {
-        return self.cfg.genesis_header.hash();
-    }
-
-    pub fn head(self: *Self) !struct { number: u64, hash: [32]u8 } {
-        const header = try self.headHeader();
-        return .{ .number = header.number, .hash = header.hash() };
-    }
-
-    pub fn headHeader(self: *Self) !types.BlockHeader {
-        const range = self.file_storage.ranges[@backingInt(FileStorage.Table.headers)];
-        return (try self.readHeader(range.?.head)).?;
-    }
-
-    pub fn readHeader(self: *Self, number: u64) !?types.BlockHeader {
-        if (try self.file_storage.get(self.io, self.allocator, .headers, number)) |header_rlp| {
-            defer self.allocator.free(header_rlp);
-            var header: types.BlockHeader = undefined;
-            _ = try rlp.deserialize(types.BlockHeader, self.allocator, header_rlp, &header);
-            return header;
-        }
-        return null;
-    }
-
-    pub fn appendHeader(self: *Self, header: *const types.BlockHeader) !void {
-        try self.appendHeaders(&[_]types.BlockHeader{header.*});
-    }
-
-    pub fn appendHeaders(self: *Self, headers: []const types.BlockHeader) !void {
-        const lists = try self.allocator.alloc(std.array_list.Managed(u8), headers.len);
-        defer self.allocator.free(lists);
-
-        var initialized: usize = 0;
-        defer for (lists[0..initialized]) |*list| list.deinit();
-
-        const data_list = try self.allocator.alloc([]const u8, headers.len);
-        defer self.allocator.free(data_list);
-
-        for (headers, 0..) |header, i| {
-            lists[i] = std.array_list.Managed(u8).init(self.allocator);
-            initialized = i + 1;
-            _ = try rlp.serialize(types.BlockHeader, self.allocator, header, &lists[i]);
-            data_list[i] = lists[i].items;
-        }
-
-        try self.file_storage.putMany(self.io, self.allocator, .headers, headers[0].number, data_list);
-    }
 };
 
 pub const glamsterdam_devnet8_config: Config = .{

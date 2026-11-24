@@ -16,8 +16,7 @@ const Dialer = @import("devp2p/dialer.zig").Dialer;
 const SlabAllocator = @import("devp2p/allocator.zig").SlabAllocator;
 const Record = @import("devp2p/enr.zig").Record;
 const forks = @import("forks.zig");
-const blockchain = @import("node/blockchain.zig");
-const Blockchain = blockchain.Blockchain;
+const config = @import("node/config.zig");
 const Downloader = @import("node/downloader.zig").Downloader;
 const FileStorage = @import("db/file.zig").Storage;
 const EthApi = @import("rpc/eth.zig").Eth;
@@ -59,7 +58,7 @@ const parsers = .{
 };
 
 const Options = struct {
-    config: blockchain.Config,
+    config: config.Config,
     bootnodes: []const []const u8,
     datadir: []const u8,
     port: u16,
@@ -93,9 +92,9 @@ const Options = struct {
         const metrics_port = res.args.@"metrics-port" orelse 6060;
         return .{
             .config = switch (network) {
-                .glamsterdam_devnet8 => blockchain.glamsterdam_devnet8_config,
-                .mainnet => blockchain.mainnet_config,
-                .sepolia => blockchain.sepolia_config,
+                .glamsterdam_devnet8 => config.glamsterdam_devnet8_config,
+                .mainnet => config.mainnet_config,
+                .sepolia => config.sepolia_config,
             },
             .bootnodes = if (res.args.bootnode.len > 0) res.args.bootnode else switch (network) {
                 .glamsterdam_devnet8 => &bootnodes.glamsterdam_devnet8,
@@ -171,23 +170,25 @@ fn runNode(init: std.process.Init, opts: Options) !void {
 
     var store = try kv.Store.init(slabs.allocator(), mdbx_path);
     defer store.deinit() catch |e| std.log.err("closing mdbx failed: {}", .{e});
-    var eth_db = EthDb.init(&store);
+    var eth_db = EthDb.init(init.io, slabs.allocator(), &store, &fs);
+    if (fs.ranges[@backingInt(FileStorage.Table.headers)] == null) {
+        try eth_db.appendHeader(&opts.config.genesis_header);
+    }
 
-    var bc = try Blockchain.init(init.io, slabs.allocator(), opts.config, &fs, &eth_db);
-
-    var id_filter = forks.IdFilter.init(bc.genesisHash(), &bc.cfg.fork_schedule);
-    const genesis_head_header = try bc.headHeader();
+    const genesis_hash = opts.config.genesis_header.hash();
+    var id_filter = forks.IdFilter.init(genesis_hash, &opts.config.fork_schedule);
+    const genesis_head_header = try eth_db.headHeader();
 
     var ethproto = try eth.Provider.init(slabs.allocator());
     ethproto.hello = .{
         .status = .{
             .protocol_version = 71,
-            .network_id = bc.chainId(),
-            .genesis = bc.genesisHash(),
+            .network_id = opts.config.chain_id,
+            .genesis = genesis_hash,
             .fork_id = id_filter.currentId(genesis_head_header.number, genesis_head_header.timestamp),
             .earliest_block = 0,
-            .latest_block = (try bc.head()).number,
-            .latest_block_hash = (try bc.head()).hash,
+            .latest_block = (try eth_db.head()).number,
+            .latest_block_hash = (try eth_db.head()).hash,
         },
     };
     var snapproto = try snap.Provider.init(slabs.allocator());
@@ -203,7 +204,7 @@ fn runNode(init: std.process.Init, opts: Options) !void {
     var rlpx_thread = try init.io.concurrent(rlpx.Server.run, .{&rlpx_server});
     defer rlpx_thread.cancel(init.io) catch {};
 
-    var dialer = Dialer.init(&rlpx_server, &id_filter, &bc);
+    var dialer = Dialer.init(&rlpx_server, &id_filter, &eth_db);
     defer dialer.deinit(init.io);
 
     var server = try discv5.Server.init(
@@ -220,7 +221,6 @@ fn runNode(init: std.process.Init, opts: Options) !void {
     var downloader = try Downloader.init(
         init.io,
         slabs.allocator(),
-        &bc,
         &eth_db,
         &ethproto,
         &snapproto,
@@ -234,7 +234,7 @@ fn runNode(init: std.process.Init, opts: Options) !void {
     var metrics_thread = try init.io.concurrent(metrics.HttpServer.run, .{&metrics_http});
     defer metrics_thread.cancel(init.io) catch {};
 
-    var eth_api: EthApi = .init(&bc, &downloader);
+    var eth_api: EthApi = .init(&opts.config, &eth_db, &downloader);
     var jsonrpc_server: RpcServer = .{};
     try eth_api.register(init.arena.allocator(), &jsonrpc_server);
 
@@ -245,7 +245,7 @@ fn runNode(init: std.process.Init, opts: Options) !void {
     const jwt_secret = try jwt.loadOrCreateSecret(init.io, datadir, opts.authrpc_jwtsecret);
     var authrpc_server: RpcServer = .{};
     try eth_api.register(init.arena.allocator(), &authrpc_server);
-    var engine_api: EngineApi = .init(&bc, &downloader);
+    var engine_api: EngineApi = .init(&eth_db, &downloader);
     try engine_api.register(init.arena.allocator(), &authrpc_server);
 
     var authrpc_http = (try RpcHttpServer.init(init.io, slabs.allocator(), &authrpc_server, opts.authrpc_addr))

@@ -7,7 +7,6 @@ const types = @import("../types.zig");
 const kv = @import("kv.zig");
 
 const EthDb = @import("eth.zig").Eth;
-const Blockchain = @import("../node/blockchain.zig").Blockchain;
 
 pub const CommittedState = struct {
     const Self = @This();
@@ -16,14 +15,11 @@ pub const CommittedState = struct {
     txn: kv.Transaction,
     storage_cursor: kv.Cursor,
 
-    blockchain: *Blockchain,
-
-    pub fn init(eth: *EthDb, txn: kv.Transaction, blockchain: *Blockchain) !Self {
+    pub fn init(eth: *EthDb, txn: kv.Transaction) !Self {
         return .{
             .eth = eth,
             .txn = txn,
             .storage_cursor = try eth.kv_store.table(txn, .storage).cursor(),
-            .blockchain = blockchain,
         };
     }
 
@@ -57,7 +53,7 @@ pub const CommittedState = struct {
     }
 
     pub fn blockHash(self: *const Self, number: u64) !u256 {
-        const header = try self.blockchain.readHeader(number) orelse return error.MissingAncestorHash;
+        const header = try self.eth.readHeader(number) orelse return error.MissingAncestorHash;
         return std.mem.readInt(u256, &header.hash(), .big);
     }
 };
