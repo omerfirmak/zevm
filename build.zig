@@ -13,6 +13,9 @@ const Deps = struct {
     mcl_mod: *std.Build.Module,
     zkvm_mod: *std.Build.Module,
     rlp_mod: *std.Build.Module,
+    cache_mod: *std.Build.Module,
+    snappy_mod: *std.Build.Module,
+    lmdbx_mod: *std.Build.Module,
 };
 
 fn linkDeps(mod: *std.Build.Module, d: Deps, platform: Platform) void {
@@ -26,6 +29,9 @@ fn linkDeps(mod: *std.Build.Module, d: Deps, platform: Platform) void {
             mod.addImport("blst", d.blst_mod);
             mod.addImport("ckzg", d.ckzg4844_mod);
             mod.addImport("trusted_setup", d.trusted_setup_mod);
+            mod.addImport("cache", d.cache_mod);
+            mod.addImport("snappy", d.snappy_mod);
+            mod.addImport("lmdbx", d.lmdbx_mod);
         },
         .zkvm => {
             mod.addImport("zkvm", d.zkvm_mod);
@@ -196,6 +202,9 @@ pub fn build(b: *std.Build) void {
         .mcl_mod = mcl.createModule(),
         .zkvm_mod = zkvm.createModule(),
         .rlp_mod = rlp_dep.module("zig-rlp"),
+        .cache_mod = cache_dep.module("cache"),
+        .snappy_mod = snappy_dep.module("snappy"),
+        .lmdbx_mod = mdbx_dep.module("lmdbx"),
     };
 
     // Public surface
@@ -235,9 +244,6 @@ pub fn build(b: *std.Build) void {
     native_opts.addOption(Platform, "platform", .native);
     unit_tests.root_module.addOptions("build_options", native_opts);
     linkDeps(unit_tests.root_module, deps, .native);
-    unit_tests.root_module.addImport("cache", cache_dep.module("cache"));
-    unit_tests.root_module.addImport("snappy", snappy_dep.module("snappy"));
-    unit_tests.root_module.addImport("lmdbx", mdbx_dep.module("lmdbx"));
     unit_tests.root_module.addImport("metrics", metrics_dep.module("metrics"));
     test_step.dependOn(&b.addRunArtifact(unit_tests).step);
 
@@ -532,9 +538,6 @@ pub fn build(b: *std.Build) void {
         .use_llvm = true,
     });
     linkDeps(main_exe.root_module, deps, .native);
-    main_exe.root_module.addImport("snappy", snappy_dep.module("snappy"));
-    main_exe.root_module.addImport("cache", cache_dep.module("cache"));
-    main_exe.root_module.addImport("lmdbx", mdbx_dep.module("lmdbx"));
     main_exe.root_module.addImport("clap", clap_dep.module("clap"));
     main_exe.root_module.addImport("metrics", metrics_dep.module("metrics"));
     main_exe.root_module.addOptions("build_options", native_opts);

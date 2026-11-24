@@ -7,7 +7,56 @@ const rlp = @import("rlp");
 const processor = @import("../processor/processor.zig");
 const crypto = @import("../evm/crypto/hash.zig");
 
-const CommittedState = @import("../evm/committed_state.zig").CommittedState;
+const EthDb = @import("../db/eth.zig").Eth;
+const List = @import("../free_list.zig").List;
+
+pub const Engine = struct {
+    const Self = @This();
+    const Epoch = struct {
+        arena: std.heap.ArenaAllocator,
+        blocks: std.AutoHashMapUnmanaged([32]u8, types.BlockHeader),
+
+        pub fn init(allocator: std.mem.Allocator) Epoch {
+            return .{ .arena = .init(allocator), .blocks = .empty };
+        }
+    };
+
+    allocator: std.mem.Allocator,
+    progress: List(Epoch),
+    eth_db: *EthDb,
+
+    pub fn init(allocator: std.mem.Allocator, eth_db: *EthDb) !Self {
+        return .{
+            .allocator = allocator,
+            .progress = try .initDefault(allocator, 4, .init(allocator)),
+            .eth_db = eth_db,
+        };
+    }
+
+    pub fn newPayload(
+        self: *Self,
+        payload: *const ExecutionPayload,
+        versioned_hashes: []const [32]u8,
+        parent_beacon_block_root: [32]u8,
+        execution_requests: []const []const u8,
+    ) !PayloadStatus {
+        _ = self;
+        _ = payload;
+        _ = versioned_hashes;
+        _ = parent_beacon_block_root;
+        _ = execution_requests;
+        return error.NotImplemented;
+    }
+
+    pub fn forkchoiceUpdated(
+        self: *Self,
+        state: ForkchoiceState,
+    ) !PayloadStatus {
+        _ = self;
+        _ = state;
+        return error.NotImplemented;
+    }
+};
 
 pub const PayloadStatus = struct {
     pub const Status = enum { valid, invalid, syncing, accepted };
@@ -21,38 +70,6 @@ pub const ForkchoiceState = struct {
     head_block_hash: [32]u8,
     safe_block_hash: [32]u8,
     finalized_block_hash: [32]u8,
-};
-
-pub const Engine = struct {
-    const Self = @This();
-
-    pub fn newPayload(
-        self: *Self,
-        allocator: std.mem.Allocator,
-        payload: *const ExecutionPayload,
-        versioned_hashes: []const [32]u8,
-        parent_beacon_block_root: [32]u8,
-        execution_requests: []const []const u8,
-    ) !PayloadStatus {
-        _ = self;
-        _ = allocator;
-        _ = payload;
-        _ = versioned_hashes;
-        _ = parent_beacon_block_root;
-        _ = execution_requests;
-        return error.NotImplemented;
-    }
-
-    pub fn forkchoiceUpdated(
-        self: *Self,
-        allocator: std.mem.Allocator,
-        state: ForkchoiceState,
-    ) !PayloadStatus {
-        _ = self;
-        _ = allocator;
-        _ = state;
-        return error.NotImplemented;
-    }
 };
 
 pub const ExecutionPayload = struct {

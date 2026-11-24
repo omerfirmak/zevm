@@ -126,7 +126,6 @@ fn newPayload(
     for (params.execution_requests, requests) |src, *dst| dst.* = src.bytes;
 
     return eng.newPayload(
-        arena,
         &payload,
         versioned_hashes,
         params.parent_beacon_block_root.bytes,
@@ -145,8 +144,8 @@ fn rpcErrorCode(err: anyerror) i32 {
     };
 }
 
-fn expectForkchoiceValid(eng: *engine.Engine, allocator: std.mem.Allocator, head: [32]u8) !void {
-    const resp = try eng.forkchoiceUpdated(allocator, .{
+fn expectForkchoiceValid(eng: *engine.Engine, head: [32]u8) !void {
+    const resp = try eng.forkchoiceUpdated(.{
         .head_block_hash = head,
         .safe_block_hash = @splat(0),
         .finalized_block_hash = @splat(0),
@@ -155,7 +154,7 @@ fn expectForkchoiceValid(eng: *engine.Engine, allocator: std.mem.Allocator, head
 }
 
 // Follows the hive EEST engine simulator (consume/simulators/simulator_logic/test_via_engine.py).
-fn runEngineTest(gpa: std.mem.Allocator, test_case: *const EngineTest) !void {
+fn runEngineTest(io: std.Io, gpa: std.mem.Allocator, test_case: *const EngineTest) !void {
     var committed = try utils.buildCommittedState(gpa, test_case.pre);
     defer committed.deinit();
 
@@ -164,13 +163,26 @@ fn runEngineTest(gpa: std.mem.Allocator, test_case: *const EngineTest) !void {
         return error.GenesisHashMismatch;
     }
 
-    var eng: engine.Engine = .{};
-
     var arena = std.heap.ArenaAllocator.init(gpa);
     defer arena.deinit();
 
+    var tmpdir = std.testing.tmpDir(.{});
+    defer tmpdir.cleanup();
+
+    const static_path = try openDataSubdir(io, arena.allocator(), tmpdir.dir, "static");
+    const mdbx_path = try openDataSubdir(io, arena.allocator(), tmpdir.dir, "mdbx");
+
+    var fs = try zevm.db.File.init(io, arena.allocator(), static_path);
+    defer fs.deinit(io, arena.allocator()) catch |e| std.log.err("closing file storage failed: {}", .{e});
+
+    var store = try zevm.db.kv.Store.init(arena.allocator(), mdbx_path);
+    defer store.deinit() catch |e| std.log.err("closing mdbx failed: {}", .{e});
+    var eth_db = zevm.db.Eth.init(io, arena.allocator(), &store, &fs);
+
+    var eng: engine.Engine = try .init(arena.allocator(), &eth_db);
+
     // Initial forkchoice update to genesis to establish the chain head.
-    try expectForkchoiceValid(&eng, arena.allocator(), test_case.genesisBlockHeader.hash.bytes);
+    try expectForkchoiceValid(&eng, test_case.genesisBlockHeader.hash.bytes);
 
     for (test_case.engineNewPayloads) |*entry| {
         _ = arena.reset(.retain_capacity);
@@ -190,7 +202,7 @@ fn runEngineTest(gpa: std.mem.Allocator, test_case: *const EngineTest) !void {
         }
 
         // For valid payloads, advance the chain head.
-        if (valid) try expectForkchoiceValid(&eng, arena.allocator(), entry.params.payload.blockHash.bytes);
+        if (valid) try expectForkchoiceValid(&eng, entry.params.payload.blockHash.bytes);
     }
 }
 
@@ -223,7 +235,7 @@ fn runEngineTestFile(io: std.Io, allocator: std.mem.Allocator, dir: std.Io.Dir, 
             continue;
         }
 
-        runEngineTest(allocator, &test_case) catch |err| {
+        runEngineTest(io, allocator, &test_case) catch |err| {
             std.debug.print("{s}: FAIL: {}\n", .{ name, err });
             any_failed = true;
         };
@@ -277,4 +289,12 @@ test "blockchain engine tests" {
     try pool.await(io);
 
     if (any_failed.load(.acquire)) return error.EngineTestFailed;
+}
+
+fn openDataSubdir(io: std.Io, allocator: std.mem.Allocator, datadir: std.Io.Dir, sub_path: []const u8) ![]const u8 {
+    var dir = try datadir.createDirPathOpen(io, sub_path, .{});
+    defer dir.close(io);
+    var path: [std.fs.max_path_bytes]u8 = undefined;
+    const len = try dir.realPath(io, &path);
+    return allocator.dupe(u8, path[0..len]);
 }

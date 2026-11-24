@@ -26,4 +26,10 @@ pub const crypto = struct {
     pub const hash = @import("evm/crypto/hash.zig");
 };
 
+pub const db = struct {
+    pub const Eth = @import("db/eth.zig").Eth;
+    pub const File = @import("db/file.zig").Storage;
+    pub const kv = @import("db/kv.zig");
+};
+
 pub const CommittedState = @import("evm/committed_state.zig").CommittedState;

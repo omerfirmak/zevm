@@ -24,6 +24,13 @@ pub fn List(comptime T: type) type {
             };
         }
 
+        pub fn initDefault(allocator: std.mem.Allocator, n: usize, default: T) !List(T) {
+            const list: List(T) = try .init(allocator, n);
+            for (list.storage) |*node|
+                node.elem = default;
+            return list;
+        }
+
         pub fn deinit(self: *List(T), allocator: std.mem.Allocator) void {
             allocator.free(self.storage);
         }
@@ -61,6 +68,16 @@ pub fn List(comptime T: type) type {
 
         pub fn empty(self: *List(T)) bool {
             return self.inner.first == null;
+        }
+
+        pub fn head(self: *List(T)) *T {
+            const node: *Node = @alignCast(@fieldParentPtr("node", self.inner.first.?));
+            return &node.elem;
+        }
+
+        pub fn tail(self: *List(T)) *T {
+            const node: *Node = @alignCast(@fieldParentPtr("node", self.inner.last.?));
+            return &node.elem;
         }
     };
 }
