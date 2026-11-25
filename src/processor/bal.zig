@@ -10,14 +10,21 @@ fn atIndex(slice: anytype, index: u32) bool {
     return slice.len > 0 and slice[0].index == index;
 }
 
-const AccountEntry = struct {
+pub const AccountEntry = struct {
     changes: types.AccountChanges,
     last_seen_index: u32 = 0,
+    pre_block: types.Account = undefined,
 };
 
-const SlotEntry = struct {
+pub const SlotEntry = struct {
     slot_changes: types.SlotChanges,
     last_seen_index: u32 = 0,
+    pre_block: u256 = undefined,
+};
+
+pub const DiffMaps = struct {
+    accounts: storage.AddressKeyedMap(AccountEntry),
+    slots: storage.SlotKeyedMap(SlotEntry),
 };
 
 pub const Prepared = struct {
@@ -66,6 +73,16 @@ pub const Prepared = struct {
         return self;
     }
 
+    pub fn toDiffMaps(self: *Prepared) DiffMaps {
+        for (self.original.*) |account| {
+            self.map.getPtr(account.addr).?.changes = account;
+            for (account.storage_changes) |sc| {
+                self.slot_map.getPtr(.{ .address = account.addr, .slot = sc.key }).?.slot_changes = sc;
+            }
+        }
+        return .{ .accounts = self.map, .slots = self.slot_map };
+    }
+
     pub fn validateWrites(self: *Prepared, index: u32, state: *State) void {
         if (!self.valid) return;
 
@@ -79,6 +96,7 @@ pub const Prepared = struct {
                 continue;
             };
             if (entry.value_ptr.last_seen_index > index) continue;
+            if (entry.value_ptr.last_seen_index == 0) entry.value_ptr.pre_block = old.*;
             entry.value_ptr.last_seen_index = index + 1;
 
             const exp = &entry.value_ptr.changes;
@@ -121,6 +139,7 @@ pub const Prepared = struct {
                 continue;
             };
             if (map_entry.value_ptr.last_seen_index > index) continue;
+            if (map_entry.value_ptr.last_seen_index == 0) map_entry.value_ptr.pre_block = pre_tx;
             map_entry.value_ptr.last_seen_index = index + 1;
 
             if (pre_tx == new_value) continue;
