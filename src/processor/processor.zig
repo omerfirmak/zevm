@@ -5,6 +5,8 @@ const std = @import("std");
 const types = @import("../types.zig");
 const evm = @import("../evm/evm.zig");
 const rlp = @import("rlp");
+const bal = @import("bal.zig");
+
 const EVM = evm.EVM;
 const storage = @import("../evm/storage.zig");
 const EvmSpec = @import("../evm/spec.zig").Spec;
@@ -16,7 +18,6 @@ const blobBaseFee = @import("../blob_fee.zig").blobBaseFee;
 const ecrecover = @import("../evm/crypto/curve.zig").ecrecover;
 const Trie = @import("../trie/trie.zig").Trie;
 const empty_root_hash = @import("../trie/trie.zig").empty_root_hash;
-const bal = @import("bal.zig");
 
 pub const Errors = error{
     GasLimitTooHigh,
@@ -62,7 +63,7 @@ const DEPOSIT_EVENT_TOPIC: u256 = 0x649bbc62d0e31342afea4e5cd82d4049e7e1ee912fc0
 pub const PreprocessedBlock = struct {
     block: types.Block,
     rlp_size: usize,
-    bal: ?types.BlockAccessLists, // assumed to be pre-validated against the header
+    bal: ?bal.Prepared, // assumed to be pre-validated against the header
     senders: []u160,
     chain_id: u64,
 };
@@ -78,9 +79,7 @@ pub fn processBlock(
 
     const evm_spec = comptime spec.evmSpec();
 
-    var prepared_bal: bal.Prepared = undefined;
-    if (evm_spec.isEnabled(.Amsterdam))
-        prepared_bal = try bal.Prepared.init(gpa, &p_block.bal.?, p_block.block.header.gas_limit, evm_spec.bal_item_cost) orelse return Errors.InvalidBal;
+    const prepared_bal: *bal.Prepared = if (evm_spec.isEnabled(.Amsterdam)) &p_block.bal.? else undefined;
 
     const num_logs_per_tx = try gpa.alloc(usize, p_block.block.transactions.len);
     defer gpa.free(num_logs_per_tx);

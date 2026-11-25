@@ -79,6 +79,7 @@ const BlockchainTest = struct {
 const BlockchainTestFile = std.json.ArrayHashMap(BlockchainTest);
 
 fn prepareBlock(
+    comptime spec: zevm.processor.Spec,
     arena: std.mem.Allocator,
     block_entry: BlockEntry,
 ) !zevm.processor.PreprocessedBlock {
@@ -132,10 +133,16 @@ fn prepareBlock(
     const chain_id = 1;
     for (block.transactions, 0..) |tx, i| senders[i] = try zevm.processor.recoverTxSender(arena, &tx, chain_id);
 
+    const evm_spec = comptime spec.evmSpec();
+    const prepared_bal: ?zevm.bal.Prepared = if (comptime evm_spec.isEnabled(.Amsterdam))
+        (if (bal) |b| try zevm.bal.Prepared.init(arena, b, block.header.gas_limit, evm_spec.bal_item_cost) orelse return error.InvalidBal else null)
+    else
+        null;
+
     return .{
         .block = block,
         .rlp_size = block_entry.rlp.value.len,
-        .bal = bal,
+        .bal = prepared_bal,
         .senders = senders,
         .chain_id = chain_id,
     };
@@ -157,7 +164,7 @@ fn runBlockchainTest(gpa: std.mem.Allocator, test_case: *const BlockchainTest, c
     defer prep_arena.deinit();
     const blocks_parsed = try prep_arena.allocator().alloc(anyerror!zevm.processor.PreprocessedBlock, test_case.blocks.len);
     for (test_case.blocks, blocks_parsed) |block_entry, *slot| {
-        slot.* = prepareBlock(prep_arena.allocator(), block_entry);
+        slot.* = prepareBlock(spec, prep_arena.allocator(), block_entry);
     }
     var state = try state_mod.State.init(prep_arena.allocator(), &committed, .{});
 
@@ -169,7 +176,7 @@ fn runBlockchainTest(gpa: std.mem.Allocator, test_case: *const BlockchainTest, c
             var p = parse_result catch |e| break :blk .{ e, null };
 
             if (p.bal) |bal| {
-                const computed = try utils.computeBalHash(arena.allocator(), bal);
+                const computed = try utils.computeBalHash(arena.allocator(), bal.original);
                 if (p.block.header.block_access_list_hash) |expected| {
                     if (!std.mem.eql(u8, &computed, &expected)) {
                         break :blk .{ error.MismatchedBalHash, p };

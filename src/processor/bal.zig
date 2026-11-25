@@ -28,16 +28,16 @@ pub const DiffMaps = struct {
 };
 
 pub const Prepared = struct {
-    original: *const types.BlockAccessLists,
+    original: types.BlockAccessLists,
     map: storage.AddressKeyedMap(AccountEntry),
     slot_map: storage.SlotKeyedMap(SlotEntry),
     valid: bool,
 
-    pub fn init(gpa: std.mem.Allocator, bal: *const types.BlockAccessLists, block_gas_limit: u64, comptime item_cost: u32) !?Prepared {
+    pub fn init(gpa: std.mem.Allocator, bal: types.BlockAccessLists, block_gas_limit: u64, comptime item_cost: u32) !?Prepared {
         var self: Prepared = .{ .map = .empty, .slot_map = .empty, .valid = true, .original = bal };
 
         var total_keys: u64 = 0;
-        for (bal.*) |*account| {
+        for (bal) |*account| {
             total_keys += account.storage_changes.len + account.storage_reads.len;
         }
         if (total_keys + bal.len > block_gas_limit / item_cost) return null;
@@ -46,7 +46,7 @@ pub const Prepared = struct {
         try self.slot_map.ensureTotalCapacity(gpa, @intCast(total_keys));
 
         var prev_addr: ?u160 = null;
-        for (bal.*) |account| {
+        for (bal) |account| {
             if (prev_addr) |prev| if (account.addr <= prev) return null;
             prev_addr = account.addr;
             self.map.putAssumeCapacity(account.addr, .{ .changes = account });
@@ -74,7 +74,7 @@ pub const Prepared = struct {
     }
 
     pub fn toDiffMaps(self: *Prepared) DiffMaps {
-        for (self.original.*) |account| {
+        for (self.original) |account| {
             self.map.getPtr(account.addr).?.changes = account;
             for (account.storage_changes) |sc| {
                 self.slot_map.getPtr(.{ .address = account.addr, .slot = sc.key }).?.slot_changes = sc;
@@ -171,7 +171,7 @@ pub const Prepared = struct {
             if (entry.slot_changes.changes.len != 0) return false;
         }
 
-        for (self.original.*) |*account| {
+        for (self.original) |*account| {
             if (!state.accounts.dirties.contains(account.addr)) {
                 return false;
             }

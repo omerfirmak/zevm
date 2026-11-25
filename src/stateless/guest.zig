@@ -67,11 +67,11 @@ pub fn verify(allocator: std.mem.Allocator, input: types.StatelessInput) !void {
     const parent = &headers[headers.len - 1];
     var block = try makeBlock(allocator, &input.new_payload_request, input.chain_id);
 
-    var committed = try CommittedState.init(allocator, parent.state_root, input.witness.state, input.witness.codes, &block.bal.?, header_hashes, parent.number);
+    var committed = try CommittedState.init(allocator, parent.state_root, input.witness.state, input.witness.codes, &block.bal.?.original, header_hashes, parent.number);
     var state = try zevm.state.State.init(
         allocator,
         &committed,
-        stateCapacities(spec.evmSpec(), block.bal.?, input.witness.codes, block.block.transactions, block.block.withdrawals.len, block.block.header.gas_used),
+        stateCapacities(spec.evmSpec(), block.bal.?.original, input.witness.codes, block.block.transactions, block.block.withdrawals.len, block.block.header.gas_used),
     );
 
     try zevm.processor.processBlock(
@@ -87,7 +87,7 @@ pub fn verify(allocator: std.mem.Allocator, input: types.StatelessInput) !void {
         &committed.state_trie,
         &committed.account_tries,
         &state,
-        &block.bal.?,
+        &block.bal.?.original,
     );
     if (!std.mem.eql(u8, &computed_state_root, &block.block.header.state_root)) {
         return error.MismatchedStateRoot;
@@ -143,6 +143,7 @@ fn makeBlock(
     };
 
     return payload.toBlock(
+        comptime zevm.processor.Spec.fromFork(.Amsterdam),
         allocator,
         request.versioned_hashes.constSlice(),
         request.parent_beacon_block_root,

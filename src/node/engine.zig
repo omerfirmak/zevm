@@ -5,6 +5,7 @@ const std = @import("std");
 const types = @import("../types.zig");
 const rlp = @import("rlp");
 const processor = @import("../processor/processor.zig");
+const bal = @import("../processor/bal.zig");
 const crypto = @import("../evm/crypto/hash.zig");
 
 const EthDb = @import("../db/eth.zig").Eth;
@@ -95,6 +96,7 @@ pub const ExecutionPayload = struct {
 
     pub fn toBlock(
         payload: *const ExecutionPayload,
+        comptime spec: processor.Spec,
         allocator: std.mem.Allocator,
         versioned_hashes: []const [32]u8,
         parent_beacon_block_root: [32]u8,
@@ -132,8 +134,8 @@ pub const ExecutionPayload = struct {
 
         const withdrawals = try allocator.dupe(types.Withdrawal, payload.withdrawals);
 
-        var bal: types.BlockAccessLists = undefined;
-        _ = try rlp.deserialize(types.BlockAccessLists, allocator, payload.block_access_list, &bal);
+        var raw_bal: types.BlockAccessLists = undefined;
+        _ = try rlp.deserialize(types.BlockAccessLists, allocator, payload.block_access_list, &raw_bal);
         const bal_hash = crypto.keccak256(payload.block_access_list);
         var extra_data: types.ExtraData = undefined;
         @memcpy(extra_data.buf[0..payload.extra_data.len], payload.extra_data);
@@ -167,6 +169,12 @@ pub const ExecutionPayload = struct {
 
         if (!std.mem.eql(u8, &header.hash(), &payload.block_hash)) return error.InvalidBlockHash;
 
+        const evm_spec = comptime spec.evmSpec();
+        const prepared_bal: ?bal.Prepared = if (evm_spec.isEnabled(.Amsterdam))
+            try bal.Prepared.init(allocator, raw_bal, payload.gas_limit, evm_spec.bal_item_cost) orelse return error.InvalidBal
+        else
+            null;
+
         var encoded = std.array_list.Managed(u8).init(allocator);
         defer encoded.deinit();
         try rlp.serialize(struct {
@@ -189,7 +197,7 @@ pub const ExecutionPayload = struct {
                 .withdrawals = withdrawals,
             },
             .rlp_size = encoded.items.len,
-            .bal = bal,
+            .bal = prepared_bal,
             .senders = senders,
             .chain_id = chain_id,
         };
