@@ -148,7 +148,6 @@ pub const Spec = struct {
         created: u32 = 0,
         created_journal: u32 = 0,
         return_buf: usize = 0,
-        logs_buf: usize = 0,
     };
 
     /// Derive tight State pre-allocation sizes from a transaction gas limit.
@@ -236,7 +235,6 @@ pub const Spec = struct {
             .created = ca,
             .created_journal = cj,
             .return_buf = ret,
-            .logs_buf = 16 * 1024 * 1024,
         };
     }
 

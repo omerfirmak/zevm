@@ -221,7 +221,7 @@ pub const EVM = struct {
     context: *const Context,
 
     // LOG handling
-    logs_allocator: std.heap.BufferFirstAllocator,
+    logs_allocator: std.mem.Allocator,
     logs: std.DoublyLinkedList,
     num_logs: usize,
 
@@ -247,6 +247,7 @@ pub const EVM = struct {
     pub fn init(
         self: *Self,
         gpa: std.mem.Allocator,
+        logs_allocator: std.mem.Allocator,
         context: *const Context,
         caps: Spec.EvmCapacities,
     ) !void {
@@ -254,7 +255,6 @@ pub const EVM = struct {
         const allocator = self.rounded_allocator.allocator();
         var pre_state: storage.SlotKeyedMap(u256) = .empty;
         try pre_state.ensureTotalCapacity(allocator, caps.pre_state);
-        const logs_buffer = try allocator.alloc(u8, caps.logs_buf);
         const return_buffer = try allocator.alloc(u8, caps.return_buf);
         const warm_accounts = try storage.AccountsAccessList.init(allocator, caps.warm_accounts, caps.warm_accounts, {});
         const warm_slots = try storage.SlotsAccessList.init(allocator, caps.warm_slots, caps.warm_slots, {});
@@ -271,7 +271,7 @@ pub const EVM = struct {
             .gas_refund = 0,
             .effective_gas_price = undefined,
             .created_accounts = created_accounts,
-            .logs_allocator = .init(logs_buffer, allocator),
+            .logs_allocator = logs_allocator,
             .logs = .{},
             .num_logs = 0,
             .state_gas_reservoir = 0,
@@ -867,25 +867,23 @@ pub const EVM = struct {
     pub const LogNode = struct { log: Log, node: std.DoublyLinkedList.Node };
 
     pub fn pushLog(self: *Self, address: u160, topics: []const u256, data: []const u8) !void {
-        const allocator = self.logs_allocator.allocator();
-        const ln = try allocator.create(LogNode);
+        const ln = try self.logs_allocator.create(LogNode);
         ln.* = LogNode{ .log = .{
             .address = address,
-            .topics = try allocator.dupe(u256, topics),
-            .data = try allocator.dupe(u8, data),
+            .topics = try self.logs_allocator.dupe(u256, topics),
+            .data = try self.logs_allocator.dupe(u8, data),
         }, .node = .{} };
         self.logs.append(&ln.node);
         self.num_logs += 1;
     }
 
     pub fn popLog(self: *Self) void {
-        const allocator = self.logs_allocator.allocator();
         if (self.logs.pop()) |node| {
             const ln: *LogNode = @alignCast(@fieldParentPtr("node", node));
             // make sure to free in the reverse of the order they were allocated
-            allocator.free(ln.log.data);
-            allocator.free(ln.log.topics);
-            allocator.destroy(ln);
+            self.logs_allocator.free(ln.log.data);
+            self.logs_allocator.free(ln.log.topics);
+            self.logs_allocator.destroy(ln);
             self.num_logs -= 1;
         }
     }
@@ -1212,7 +1210,7 @@ test "nested CALL and CREATE propagate missing host code instead of an EVM failu
         var context = std.mem.zeroes(Context);
         context.gas_limit = 1_000_000;
         var vm: EVM = undefined;
-        try vm.init(a, &context, cfg.fork.evmCapacities());
+        try vm.init(a, a, &context, cfg.fork.evmCapacities());
         // The account exists but its nonempty bytecode is unavailable to the host.
         var missing_code = types.EmptyAccount;
         missing_code.code_hash = @splat(0xaa);
@@ -1238,7 +1236,7 @@ test "transaction status distinguishes valid reverts and resets for subsequent t
     var context = std.mem.zeroes(Context);
     context.gas_limit = 1_000_000;
     var vm: EVM = undefined;
-    try vm.init(a, &context, cfg.fork.evmCapacities());
+    try vm.init(a, a, &context, cfg.fork.evmCapacities());
     const code = [_]u8{ 0x5f, 0x5f, 0xfd };
     const hash = keccak256(&code);
     try state.deploy_code(hash, &code, cfg);
