@@ -7,6 +7,7 @@ const rlp = @import("rlp");
 const processor = @import("../processor/processor.zig");
 const bal = @import("../processor/bal.zig");
 const crypto = @import("../evm/crypto/hash.zig");
+const validator = @import("validator.zig");
 
 const EthDb = @import("../db/eth.zig").Eth;
 const List = @import("../free_list.zig").List;
@@ -15,11 +16,15 @@ pub const Engine = struct {
     const Self = @This();
     const Epoch = struct {
         arena: std.heap.ArenaAllocator,
-        blocks: std.AutoHashMapUnmanaged([32]u8, types.BlockHeader),
+        heads: std.AutoHashMapUnmanaged([32]u8, *Head),
 
         pub fn init(allocator: std.mem.Allocator) Epoch {
-            return .{ .arena = .init(allocator), .blocks = .empty };
+            return .{ .arena = .init(allocator), .heads = .empty };
         }
+    };
+    pub const Head = struct {
+        block: validator.ValidatedBlock,
+        parent: ?*const Head,
     };
 
     allocator: std.mem.Allocator,

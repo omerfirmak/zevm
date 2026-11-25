@@ -8,9 +8,13 @@ const kv = @import("../db/kv.zig");
 const trie = @import("../trie/trie.zig");
 const trie_db = @import("../db/trie.zig");
 const task = @import("task.zig");
+
 const EthDb = @import("../db/eth.zig").Eth;
+const DiffMaps = @import("../processor/bal.zig").DiffMaps;
 
 pub const ValidatedBlock = struct {
+    header: types.BlockHeader,
+    state_diff: DiffMaps,
     hashed_bal: types.HashedBlockAccessLists,
     storage_collectors: []?trie.NodeCollector,
     account_collector: trie.NodeCollector,
