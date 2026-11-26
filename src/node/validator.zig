@@ -11,6 +11,8 @@ const task = @import("task.zig");
 
 const EthDb = @import("../db/eth.zig").Eth;
 const DiffMaps = @import("../processor/bal.zig").DiffMaps;
+const State = @import("../evm/state.zig").State;
+const CommittedState = @import("../evm/state.zig").CommittedState;
 
 pub const ValidatedBlock = struct {
     header: types.BlockHeader,
@@ -30,16 +32,36 @@ pub const Validator = struct {
         return .{ .gpa = gpa, .eth_db = eth_db };
     }
 
-    // pub fn validate(
-    //     self: *const Self,
-    //     arena: std.mem.Allocator,
-    //     block: processor.PreprocessedBlock,
-    // ) !ValidatedBlock {}
+    pub fn validate(
+        self: *const Self,
+        output_arena: std.mem.Allocator,
+        block: processor.PreprocessedBlock,
+        parent: *const types.BlockHeader,
+        committed: *const CommittedState,
+    ) !ValidatedBlock {
+        _ = output_arena; // todo: collectors
+
+        var scratch_arena = std.heap.ArenaAllocator.init(self.gpa);
+        defer scratch_arena.deinit();
+        const scratch = scratch_arena.allocator();
+
+        var state = try State.init(scratch, committed, .{});
+        var p_block = block;
+        try processor.processBlock(scratch, comptime processor.Spec.fromFork(.Amsterdam), &p_block, parent, &state);
+
+        return .{
+            .header = block.block.header,
+            .state_diff = p_block.bal.?.toDiffMaps(),
+            .hashed_bal = undefined,
+            .storage_collectors = undefined,
+            .account_collector = undefined,
+        };
+    }
 
     pub fn validateStateRoot(
         self: *const Self,
         io: std.Io,
-        arena: std.mem.Allocator,
+        output_arena: std.mem.Allocator,
         parent_root: [32]u8,
         expected_root: [32]u8,
         bal: types.BlockAccessLists,
@@ -52,7 +74,7 @@ pub const Validator = struct {
         const scratch = scratch_arena.allocator();
 
         var total_work: usize = 0;
-        var filtered_bal = try arena.alloc(types.AccountChanges, bal.len);
+        var filtered_bal = try output_arena.alloc(types.AccountChanges, bal.len);
         filtered_bal.len = 0;
         for (bal) |changes| {
             if (changes.readOnly()) continue;
@@ -61,9 +83,9 @@ pub const Validator = struct {
             total_work += 1 + changes.storage_changes.len;
         }
 
-        const hashed_bal = try types.HashedBlockAccessLists.init(arena, filtered_bal);
+        const hashed_bal = try types.HashedBlockAccessLists.init(output_arena, filtered_bal);
 
-        const storage_collectors = try arena.alloc(?trie.NodeCollector, filtered_bal.len);
+        const storage_collectors = try output_arena.alloc(?trie.NodeCollector, filtered_bal.len);
         @memset(storage_collectors, null);
         const account_keys = try scratch.alloc([32]u8, filtered_bal.len);
         const accounts = try scratch.alloc(?types.Account, filtered_bal.len);
@@ -82,7 +104,7 @@ pub const Validator = struct {
                 const bal_shard = hashed_bal.slice(start, index + 1);
                 task.spawnCancelOnErr(&work_group, io, Validator.updateAccountsShard, .{
                     self,                                   txn,
-                    bal_shard,                              arena,
+                    bal_shard,                              output_arena,
                     account_keys[start .. index + 1],       accounts[start .. index + 1],
                     storage_collectors[start .. index + 1],
                 });
@@ -93,7 +115,7 @@ pub const Validator = struct {
 
         try work_group.await(io);
 
-        var account_collector = try trie.NodeCollector.init(arena, filtered_bal.len * 66);
+        var account_collector = try trie.NodeCollector.init(output_arena, filtered_bal.len * 66);
         if (filtered_bal.len > 0) {
             var account_resolver = try trie_db.AccountTrieResolver.init(self.eth_db, txn);
             defer account_resolver.deinit();

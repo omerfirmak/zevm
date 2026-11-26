@@ -5,8 +5,16 @@ const std = @import("std");
 const rlp = @import("rlp");
 const types = @import("../types.zig");
 const kv = @import("kv.zig");
+const lmdbx = @import("lmdbx");
 
 const EthDb = @import("eth.zig").Eth;
+
+pub const Errors = lmdbx.Error || rlp.DeserializationError || error{
+    NotFound,
+    MissingAncestorHash,
+    HeaderReadFailed,
+    MalformedStorageEntry,
+};
 
 pub const CommittedState = struct {
     const Self = @This();
@@ -27,7 +35,7 @@ pub const CommittedState = struct {
         self.storage_cursor.deinit();
     }
 
-    pub fn account(self: *const Self, addr: u160) !types.Account {
+    pub fn account(self: *const Self, addr: u160) Errors!types.Account {
         return try self.eth.readAccount(self.txn, types.keccakOfU160(addr)) orelse .{
             .nonce = 0,
             .balance = 0,
@@ -36,7 +44,7 @@ pub const CommittedState = struct {
         };
     }
 
-    pub fn storage(self: *const Self, key: types.StorageLookup) !u256 {
+    pub fn storage(self: *const Self, key: types.StorageLookup) Errors!u256 {
         const value_rlp = try self.eth.readStorage(
             self.storage_cursor,
             types.keccakOfU160(key.address),
@@ -48,12 +56,12 @@ pub const CommittedState = struct {
         return value;
     }
 
-    pub fn code(self: *const Self, hash: [32]u8) ![]const u8 {
-        return try self.eth.kv_store.table(self.txn, .codes).get(&hash) orelse error.NotFound;
+    pub fn code(self: *const Self, hash: [32]u8) Errors![]const u8 {
+        return try self.eth.kv_store.table(self.txn, .codes).get(&hash) orelse Errors.NotFound;
     }
 
-    pub fn blockHash(self: *const Self, number: u64) !u256 {
-        const header = try self.eth.readHeader(number) orelse return error.MissingAncestorHash;
+    pub fn blockHash(self: *const Self, number: u64) Errors!u256 {
+        const header = (self.eth.readHeader(number) catch return Errors.HeaderReadFailed) orelse return Errors.MissingAncestorHash;
         return std.mem.readInt(u256, &header.hash(), .big);
     }
 };

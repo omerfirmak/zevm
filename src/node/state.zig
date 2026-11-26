@@ -8,6 +8,8 @@ const crypto = @import("../evm/crypto/hash.zig");
 const DbState = @import("../db/state.zig").CommittedState;
 const Head = @import("engine.zig").Engine.Head;
 
+pub const Errors = @import("../db/state.zig").Errors;
+
 pub const CommittedState = struct {
     const Self = @This();
 
@@ -22,7 +24,7 @@ pub const CommittedState = struct {
         self.db.deinit();
     }
 
-    pub fn account(self: *const Self, addr: u160) !types.Account {
+    pub fn account(self: *const Self, addr: u160) Errors!types.Account {
         var it = self.head;
         while (it) |head| : (it = head.parent) {
             const entry = head.block.state_diff.accounts.getPtr(addr) orelse continue;
@@ -39,7 +41,7 @@ pub const CommittedState = struct {
         return self.db.account(addr);
     }
 
-    pub fn storage(self: *const Self, key: types.StorageLookup) !u256 {
+    pub fn storage(self: *const Self, key: types.StorageLookup) Errors!u256 {
         var it = self.head;
         while (it) |head| : (it = head.parent) {
             const entry = head.block.state_diff.slots.getPtr(key) orelse continue;
@@ -48,7 +50,7 @@ pub const CommittedState = struct {
         return self.db.storage(key);
     }
 
-    pub fn code(self: *const Self, hash: [32]u8) ![]const u8 {
+    pub fn code(self: *const Self, hash: [32]u8) Errors![]const u8 {
         var it = self.head;
         while (it) |head| : (it = head.parent) {
             var accounts = head.block.state_diff.accounts.valueIterator();
@@ -61,7 +63,7 @@ pub const CommittedState = struct {
         return self.db.code(hash);
     }
 
-    pub fn blockHash(self: *const Self, number: u64) !u256 {
+    pub fn blockHash(self: *const Self, number: u64) Errors!u256 {
         var it = self.head;
         while (it) |head| : (it = head.parent) {
             if (head.block.header.number == number) return std.mem.readInt(u256, &head.block.header.hash(), .big);
