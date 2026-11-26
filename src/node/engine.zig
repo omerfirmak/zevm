@@ -11,31 +11,21 @@ const validator = @import("validator.zig");
 
 const EthDb = @import("../db/eth.zig").Eth;
 const List = @import("../free_list.zig").List;
+const State = @import("state.zig").CommittedState;
+const DbState = @import("../db/state.zig").CommittedState;
 
 pub const Engine = struct {
     const Self = @This();
-    const Epoch = struct {
-        arena: std.heap.ArenaAllocator,
-        heads: std.AutoHashMapUnmanaged([32]u8, *Head),
-
-        pub fn init(allocator: std.mem.Allocator) Epoch {
-            return .{ .arena = .init(allocator), .heads = .empty };
-        }
-    };
-    pub const Head = struct {
-        block: validator.ValidatedBlock,
-        parent: ?*const Head,
-    };
 
     allocator: std.mem.Allocator,
-    progress: List(Epoch),
     eth_db: *EthDb,
+    forkchoice: Forkchoice,
 
     pub fn init(allocator: std.mem.Allocator, eth_db: *EthDb) !Self {
         return .{
             .allocator = allocator,
-            .progress = try .initDefault(allocator, 4, .init(allocator)),
             .eth_db = eth_db,
+            .forkchoice = try .init(allocator),
         };
     }
 
@@ -61,6 +51,80 @@ pub const Engine = struct {
         _ = self;
         _ = state;
         return error.NotImplemented;
+    }
+};
+
+pub const Forkchoice = struct {
+    const Self = @This();
+    const Epoch = struct {
+        arena: std.heap.ArenaAllocator,
+        heads: std.AutoHashMapUnmanaged([32]u8, *Head),
+
+        pub fn init(allocator: std.mem.Allocator) Epoch {
+            return .{ .arena = .init(allocator), .heads = .empty };
+        }
+    };
+    pub const Head = struct {
+        block: validator.ValidatedBlock,
+        parent: ?*const Head,
+    };
+
+    pub const View = struct {
+        forkchoice: *Forkchoice,
+        generation: u64,
+        persisted: u64,
+
+        pub fn enter(self: *const View) !void {
+            _ = self.forkchoice.readers[self.generation % 3].fetchAdd(1, .seq_cst);
+            errdefer self.exit();
+            if (self.forkchoice.generation.load(.seq_cst) > self.generation + 1) return error.StaleState;
+        }
+
+        pub fn exit(self: *const View) void {
+            _ = self.forkchoice.readers[self.generation % 3].fetchSub(1, .release);
+        }
+    };
+
+    lock: std.Io.Mutex,
+    generation: std.atomic.Value(u64),
+    readers: []std.atomic.Value(u64),
+    progress: List(Epoch),
+
+    pub fn init(allocator: std.mem.Allocator) !Self {
+        const num_epochs = 4;
+        const readers = try allocator.alloc(std.atomic.Value(u64), num_epochs - 1);
+        @memset(readers, .init(0));
+        return .{
+            .lock = .init,
+            .generation = .init(0),
+            .readers = readers,
+            .progress = try .initDefault(allocator, num_epochs, .init(allocator)),
+        };
+    }
+
+    pub fn openState(self: *Self, io: std.Io, eth_db: *EthDb, hash: [32]u8) !State {
+        self.lock.lockUncancelable(io);
+        const head: ?*const Head = for (self.progress.storage) |*node| {
+            if (node.elem.heads.get(hash)) |head| break head;
+        } else null;
+        const generation = self.generation.load(.monotonic);
+        self.lock.unlock(io);
+
+        const txn = try eth_db.kv_store.transaction_ro();
+        errdefer txn.abort() catch {};
+        const state_head = try eth_db.readStateHead(txn) orelse return error.MissingStateHead;
+        const view: View = .{ .forkchoice = self, .generation = generation, .persisted = state_head.number };
+
+        try view.enter();
+        var it = head;
+        const connected = while (it) |h| : (it = h.parent) {
+            if (h.block.header.number == state_head.number + 1) break std.mem.eql(u8, &h.block.header.parent_hash, &state_head.hash);
+            if (h.block.header.number <= state_head.number) break std.mem.eql(u8, &hash, &state_head.hash);
+        } else std.mem.eql(u8, &hash, &state_head.hash);
+        view.exit();
+        if (!connected) return error.UnknownBlock;
+
+        return State.init(try DbState.init(eth_db, txn), head, view);
     }
 };
 
