@@ -1141,6 +1141,14 @@ pub const Downloader = struct {
                     return;
                 }
 
+                const txn = try self.eth_db.kv_store.transaction_rw();
+                errdefer txn.abort() catch unreachable;
+                try self.eth_db.writeStateHead(txn, .{
+                    .number = state.pivot.number,
+                    .hash = state.pivot.hash(),
+                });
+                try txn.commit();
+
                 self.state = null;
                 log.info("state download done", .{});
                 return;

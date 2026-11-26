@@ -66,6 +66,21 @@ pub const Eth = struct {
         try self.file_storage.putMany(self.io, self.allocator, .headers, headers[0].number, data_list);
     }
 
+    pub const StateHead = struct { number: u64, hash: [32]u8 };
+
+    pub fn readStateHead(self: *Self, txn: kv.Transaction) !?StateHead {
+        const bytes = try self.kv_store.table(txn, null).get("state_head") orelse return null;
+        if (bytes.len != 40) return error.MalformedStateHead;
+        return .{ .number = std.mem.readInt(u64, bytes[0..8], .big), .hash = bytes[8..40].* };
+    }
+
+    pub fn writeStateHead(self: *Self, txn: kv.Transaction, state_head: StateHead) !void {
+        var buf: [40]u8 = undefined;
+        std.mem.writeInt(u64, buf[0..8], state_head.number, .big);
+        buf[8..40].* = state_head.hash;
+        try self.kv_store.table(txn, null).set("state_head", &buf, .Upsert);
+    }
+
     pub fn readAccount(self: *Self, txn: kv.Transaction, hash: [32]u8) !?types.Account {
         const table = self.kv_store.table(txn, .accounts);
         const bytes = try table.get(&hash) orelse return null;

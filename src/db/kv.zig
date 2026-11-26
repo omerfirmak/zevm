@@ -26,7 +26,7 @@ const table_count = std.enums.values(Table).len;
 
 pub const Store = struct {
     env: lmdbx.Environment,
-    dbis: [table_count]lmdbx.Database.DBI,
+    dbis: [table_count + 1]lmdbx.Database.DBI, // last one is the main database
 
     pub fn init(allocator: std.mem.Allocator, path: []const u8) !Store {
         const init_path = try allocator.dupeSentinel(u8, path, 0);
@@ -52,7 +52,7 @@ pub const Store = struct {
         if (lmdbx.c.mdbx_env_set_option(env.ptr, @bitCast(lmdbx.c.MDBX_opt_rp_augment_limit), 256 * 1024) != lmdbx.c.MDBX_SUCCESS)
             return error.SetOptionFailed;
 
-        var dbis: [table_count]lmdbx.Database.DBI = undefined;
+        var dbis: [table_count + 1]lmdbx.Database.DBI = undefined;
 
         const txn = try env.transaction(.{ .mode = .ReadWrite });
         errdefer txn.abort() catch {};
@@ -63,6 +63,7 @@ pub const Store = struct {
             const db = try txn.database(@tagName(t), opts);
             dbis[@backingInt(t)] = db.dbi;
         }
+        dbis[table_count] = (try txn.database(null, .{})).dbi;
 
         try txn.commit();
 
@@ -81,7 +82,7 @@ pub const Store = struct {
         return try self.env.transaction(.{ .mode = .ReadWrite });
     }
 
-    pub fn table(self: *const Store, txn: Transaction, t: Table) lmdbx.Database {
-        return .{ .txn = txn, .dbi = self.dbis[@backingInt(t)] };
+    pub fn table(self: *const Store, txn: Transaction, t: ?Table) lmdbx.Database {
+        return .{ .txn = txn, .dbi = self.dbis[if (t) |tt| @backingInt(tt) else table_count] };
     }
 };
