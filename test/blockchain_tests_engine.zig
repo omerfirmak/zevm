@@ -155,9 +155,6 @@ fn expectForkchoiceValid(eng: *engine.Engine, head: [32]u8) !void {
 
 // Follows the hive EEST engine simulator (consume/simulators/simulator_logic/test_via_engine.py).
 fn runEngineTest(io: std.Io, gpa: std.mem.Allocator, test_case: *const EngineTest) !void {
-    var committed = try utils.buildCommittedState(gpa, test_case.pre);
-    defer committed.deinit();
-
     const genesis = try test_case.genesisBlockHeader.toHeader();
     if (!std.mem.eql(u8, &genesis.hash(), &test_case.genesisBlockHeader.hash.bytes)) {
         return error.GenesisHashMismatch;
@@ -179,16 +176,22 @@ fn runEngineTest(io: std.Io, gpa: std.mem.Allocator, test_case: *const EngineTes
     defer store.deinit() catch |e| std.log.err("closing mdbx failed: {}", .{e});
     var eth_db = zevm.db.Eth.init(io, arena.allocator(), &store, &fs);
 
-    var eng: engine.Engine = try .init(arena.allocator(), &eth_db);
+    try seedPreState(&eth_db, arena.allocator(), test_case.pre, &genesis);
+
+    var eng: engine.Engine = try .init(gpa, &eth_db, test_case.config.chainid.value);
+    defer eng.deinit();
 
     // Initial forkchoice update to genesis to establish the chain head.
     try expectForkchoiceValid(&eng, test_case.genesisBlockHeader.hash.bytes);
 
+    var payload_arena = std.heap.ArenaAllocator.init(gpa);
+    defer payload_arena.deinit();
+
     for (test_case.engineNewPayloads) |*entry| {
-        _ = arena.reset(.retain_capacity);
+        _ = payload_arena.reset(.retain_capacity);
         const valid = entry.validationError == null;
 
-        if (newPayload(&eng, arena.allocator(), &entry.params)) |resp| {
+        if (newPayload(&eng, payload_arena.allocator(), &entry.params)) |resp| {
             const expected_status: engine.PayloadStatus.Status = if (valid) .valid else .invalid;
             if (resp.status != expected_status) return error.UnexpectedPayloadStatus;
             if (entry.errorCode != null) return error.ExpectedErrorCode;
@@ -204,6 +207,42 @@ fn runEngineTest(io: std.Io, gpa: std.mem.Allocator, test_case: *const EngineTes
         // For valid payloads, advance the chain head.
         if (valid) try expectForkchoiceValid(&eng, entry.params.payload.blockHash.bytes);
     }
+}
+
+// Writes the pre-state into the flat account, storage and code tables, and
+// the genesis header so the node state can read them. Trie tables are left empty.
+fn seedPreState(
+    eth_db: *zevm.db.Eth,
+    arena: std.mem.Allocator,
+    pre: std.json.ArrayHashMap(utils.AccountState),
+    genesis: *const types.BlockHeader,
+) !void {
+    const txn = try eth_db.kv_store.transaction_rw();
+    errdefer txn.abort() catch {};
+
+    for (pre.map.keys(), pre.map.values()) |addr_str, account| {
+        const addr_hash = types.keccakOfU160(try utils.parseHex(u160, addr_str));
+
+        var has_storage = false;
+        for (account.storage.map.keys(), account.storage.map.values()) |slot_str, value| {
+            if (value.value == 0) continue;
+            const slot_hash = types.keccakOfU256(try utils.parseHex(u256, slot_str));
+            try eth_db.writeStorage(txn, addr_hash, slot_hash, value.value);
+            has_storage = true;
+        }
+
+        const code_hash = if (account.code.value.len > 0) try eth_db.writeCode(txn, account.code.value) else types.empty_code_hash;
+        try eth_db.writeAccount(arena, txn, addr_hash, .{
+            .nonce = account.nonce.value,
+            .balance = account.balance.value,
+            .code_hash = code_hash,
+            // No storage trie is built; any non-empty root marks storage as present.
+            .storage_hash = if (has_storage) @splat(1) else types.empty_root_hash,
+        });
+    }
+    try txn.commit();
+
+    try eth_db.appendHeader(genesis);
 }
 
 fn fileWorker(io: std.Io, allocator: std.mem.Allocator, dir: std.Io.Dir, path: []const u8, fork: []const u8, any_failed: *std.atomic.Value(bool)) void {
