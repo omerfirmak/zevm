@@ -178,8 +178,7 @@ fn runEngineTest(io: std.Io, gpa: std.mem.Allocator, test_case: *const EngineTes
 
     try seedPreState(&eth_db, arena.allocator(), test_case.pre, &genesis);
 
-    var eng: engine.Engine = try .init(gpa, &eth_db, test_case.config.chainid.value);
-    defer eng.deinit();
+    var eng: engine.Engine = try .init(gpa, &eth_db);
 
     // Initial forkchoice update to genesis to establish the chain head.
     try expectForkchoiceValid(&eng, test_case.genesisBlockHeader.hash.bytes);
