@@ -27,7 +27,14 @@ pub const CommittedState = struct {
         while (it) |head| : (it = head.parent) {
             const entry = head.block.state_diff.accounts.getPtr(addr) orelse continue;
             if (entry.changes.readOnly()) continue;
-            return error.TODO;
+            const diff = try entry.changes.accountDiff();
+
+            var acc = entry.pre_block;
+            if (diff.nonce) |nonce| acc.nonce = nonce;
+            if (diff.balance) |balance| acc.balance = balance;
+            if (diff.code) |c| acc.code_hash = crypto.keccak256(c); // todo: avoid
+            // todo: storage root
+            return acc;
         }
         return self.db.account(addr);
     }
@@ -42,7 +49,16 @@ pub const CommittedState = struct {
     }
 
     pub fn code(self: *const Self, hash: [32]u8) ![]const u8 {
-        return self.db.code(hash) catch return error.TODO;
+        var it = self.head;
+        while (it) |head| : (it = head.parent) {
+            var accounts = head.block.state_diff.accounts.valueIterator();
+            while (accounts.next()) |entry| {
+                for (entry.changes.code_changes) |c| {
+                    if (std.mem.eql(u8, &crypto.keccak256(c.code), &hash)) return c.code; // todo avoid
+                }
+            }
+        }
+        return self.db.code(hash);
     }
 
     pub fn blockHash(self: *const Self, number: u64) !u256 {
