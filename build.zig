@@ -369,7 +369,14 @@ pub fn build(b: *std.Build) void {
         .use_llvm = true,
     });
     engine_tests.root_module.link_libcpp = true;
-    engine_tests.root_module.addImport("zevm", test_zevm_mod);
+    engine_tests.root_module.addImport("zevm", createZevmModule(
+        b,
+        target,
+        optimize,
+        b.createModule(.{ .root_source_file = b.path("test/node_committed_state.zig"), .target = target, .optimize = optimize }),
+        .native,
+        deps,
+    ));
     engine_tests.stack_size = 64 * 1024 * 1024;
     b.installArtifact(engine_tests);
     const run_engine_tests = b.addRunArtifact(engine_tests);
