@@ -9,6 +9,7 @@ const bal = @import("../processor/bal.zig");
 const crypto = @import("../evm/crypto/hash.zig");
 const validator = @import("validator.zig");
 
+const Config = @import("config.zig").Config;
 const EthDb = @import("../db/eth.zig").Eth;
 const List = @import("../free_list.zig").List;
 const State = @import("state.zig").CommittedState;
@@ -17,15 +18,17 @@ const DbState = @import("../db/state.zig").CommittedState;
 pub const Engine = struct {
     const Self = @This();
 
+    cfg: *const Config,
     allocator: std.mem.Allocator,
     eth_db: *EthDb,
     forkchoice: Forkchoice,
 
-    pub fn init(allocator: std.mem.Allocator, eth_db: *EthDb) !Self {
+    pub fn init(allocator: std.mem.Allocator, cfg: *const Config, eth_db: *EthDb) !Self {
         return .{
             .allocator = allocator,
             .eth_db = eth_db,
             .forkchoice = try .init(allocator),
+            .cfg = cfg,
         };
     }
 
@@ -36,21 +39,69 @@ pub const Engine = struct {
         parent_beacon_block_root: [32]u8,
         execution_requests: []const []const u8,
     ) !PayloadStatus {
-        _ = self;
-        _ = payload;
-        _ = versioned_hashes;
-        _ = parent_beacon_block_root;
-        _ = execution_requests;
-        return error.NotImplemented;
+        self.forkchoice.lock.lockUncancelable(self.eth_db.io);
+        const known = for (self.forkchoice.progress.storage) |*node| {
+            if (node.elem.heads.contains(payload.block_hash)) break true;
+        } else false;
+        self.forkchoice.lock.unlock(self.eth_db.io);
+        if (known) return .valid(payload.block_hash);
+
+        var state = self.forkchoice.openState(
+            self.eth_db.io,
+            self.eth_db,
+            payload.parent_hash,
+        ) catch |err| return if (err == error.UnknownBlock) PayloadStatus.syncing else err;
+        defer state.deinit();
+
+        const parent_header = if (state.head) |h|
+            h.block.header
+        else
+            try self.eth_db.readHeader(state.view.persisted) orelse return error.MissingHeader;
+
+        const epoch_arena = self.forkchoice.progress.head().arena.allocator(); // todo: pick the proper epoch
+        const block = payload.toBlock(
+            comptime processor.Spec.fromFork(.Amsterdam),
+            epoch_arena,
+            versioned_hashes,
+            parent_beacon_block_root,
+            execution_requests,
+            self.cfg.chain_id,
+        ) catch |err| return if (err == error.OutOfMemory) err else .invalid(err);
+
+        const head = try epoch_arena.create(Forkchoice.Head);
+        head.* = .{
+            .block = validator.Validator.init(self.allocator, self.eth_db).validate(
+                epoch_arena,
+                block,
+                &parent_header,
+                &state,
+            ) catch |err| return if (err == error.OutOfMemory) err else .invalid(err),
+            .parent = state.head,
+        };
+
+        self.forkchoice.lock.lockUncancelable(self.eth_db.io);
+        defer self.forkchoice.lock.unlock(self.eth_db.io);
+        try self.forkchoice.progress.head().heads.put(epoch_arena, payload.block_hash, head);
+
+        return .valid(payload.block_hash);
     }
 
     pub fn forkchoiceUpdated(
         self: *Self,
         state: ForkchoiceState,
     ) !PayloadStatus {
-        _ = self;
-        _ = state;
-        return error.NotImplemented;
+        self.forkchoice.lock.lockUncancelable(self.eth_db.io);
+        const known = for (self.forkchoice.progress.storage) |*node| {
+            if (node.elem.heads.contains(state.head_block_hash)) break true;
+        } else false;
+        self.forkchoice.lock.unlock(self.eth_db.io);
+        if (known) return .valid(state.head_block_hash);
+
+        const txn = try self.eth_db.kv_store.transaction_ro();
+        defer txn.abort() catch {};
+        const state_head = try self.eth_db.readStateHead(txn) orelse return error.MissingStateHead;
+        if (!std.mem.eql(u8, &state_head.hash, &state.head_block_hash)) return .syncing;
+        return .valid(state.head_block_hash);
     }
 };
 
@@ -134,6 +185,16 @@ pub const PayloadStatus = struct {
     status: Status,
     latest_valid_hash: ?[32]u8 = null,
     validation_error: ?anyerror = null,
+
+    pub const syncing: PayloadStatus = .{ .status = .syncing };
+
+    pub fn valid(latest_valid_hash: [32]u8) PayloadStatus {
+        return .{ .status = .valid, .latest_valid_hash = latest_valid_hash };
+    }
+
+    pub fn invalid(validation_error: anyerror) PayloadStatus {
+        return .{ .status = .invalid, .validation_error = validation_error };
+    }
 };
 
 pub const ForkchoiceState = struct {

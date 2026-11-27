@@ -15,6 +15,8 @@ pub const range_proof = @import("trie/range_proof.zig");
 pub const processor = @import("processor/processor.zig");
 pub const bal = @import("processor/bal.zig");
 pub const engine = @import("node/engine.zig");
+pub const node_state = @import("node/state.zig");
+pub const node_config = @import("node/config.zig");
 pub const engine_rpc = @import("rpc/engine.zig");
 
 pub const types = @import("types.zig");

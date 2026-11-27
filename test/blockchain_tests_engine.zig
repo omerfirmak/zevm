@@ -178,7 +178,15 @@ fn runEngineTest(io: std.Io, gpa: std.mem.Allocator, test_case: *const EngineTes
 
     try seedPreState(&eth_db, arena.allocator(), test_case.pre, &genesis);
 
-    var eng: engine.Engine = try .init(gpa, &eth_db);
+    var cfg: zevm.node_config.Config = .{
+        .chain_id = test_case.config.chainid.value,
+        .genesis_header = genesis,
+        .fork_schedule = .{ .inner = @splat(null) },
+    };
+    const fork = std.meta.stringToEnum(zevm.Fork, test_case.network) orelse return error.UnknownNetwork;
+    cfg.fork_schedule.inner[@backingInt(fork)] = 0;
+
+    var eng: engine.Engine = try .init(arena.allocator(), &cfg, &eth_db);
 
     // Initial forkchoice update to genesis to establish the chain head.
     try expectForkchoiceValid(&eng, test_case.genesisBlockHeader.hash.bytes);
@@ -239,6 +247,7 @@ fn seedPreState(
             .storage_hash = if (has_storage) @splat(1) else types.empty_root_hash,
         });
     }
+    try eth_db.writeStateHead(txn, .{ .number = genesis.number, .hash = genesis.hash() });
     try txn.commit();
 
     try eth_db.appendHeader(genesis);
