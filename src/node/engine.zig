@@ -66,7 +66,11 @@ pub const Engine = struct {
             parent_beacon_block_root,
             execution_requests,
             self.cfg.chain_id,
-        ) catch |err| return if (err == error.OutOfMemory) err else .invalid(err);
+        ) catch |err| return switch (err) {
+            error.OutOfMemory => err,
+            error.InvalidExecutionRequests => error.InvalidParams,
+            else => .invalid(err),
+        };
 
         const head = try epoch_arena.create(Forkchoice.Head);
         head.* = .{
