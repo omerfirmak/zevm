@@ -115,7 +115,7 @@ pub const Validator = struct {
 
         try work_group.await(io);
 
-        var account_collector = try trie.NodeCollector.init(output_arena, filtered_bal.len * 66);
+        var account_collector = try trie.NodeCollector.initWithHashMap(output_arena, filtered_bal.len * 66);
         if (filtered_bal.len > 0) {
             var account_resolver = try trie_db.AccountTrieResolver.init(self.eth_db, txn);
             defer account_resolver.deinit();
@@ -177,7 +177,7 @@ pub const Validator = struct {
                 const values = try scratch.alloc(u256, slot_hashes.len);
                 for (changes.storage_changes, values) |slot, *value| value.* = slot.lastValue();
 
-                collector.* = try trie.NodeCollector.init(arena, slot_hashes.len * 66);
+                collector.* = try trie.NodeCollector.initWithHashMap(arena, slot_hashes.len * 66);
                 var storage_trie = storage_resolver.openTrie(
                     scratch,
                     account_hash,
