@@ -503,7 +503,7 @@ pub const Trie = struct {
     // Reports a branch or extension that no longer exists at `path` as an empty blob.
     fn collectRemoved(self: *Self, path: Path) !void {
         if (self.node_collector) |collector|
-            try collector.collect(try collector.allocator.dupe(u8, path.slice()), &.{});
+            try collector.collect(empty_root_hash, try collector.allocator.dupe(u8, path.slice()), &.{});
     }
 
     // Wrapper for child node values in RLP encoding. Hashed children (32 bytes)
@@ -597,7 +597,11 @@ pub const Trie = struct {
             const h = keccak256(list.items);
             node.* = Node.Hashed.init(&h);
             if (self.node_collector) |collector| if (!is_leaf) {
-                try collector.collect(try collector.allocator.dupe(u8, path.slice()), list.items);
+                try collector.collect(
+                    h,
+                    try collector.allocator.dupe(u8, path.slice()),
+                    list.items,
+                );
                 collected = true;
             };
         }
@@ -745,22 +749,33 @@ fn stackTrieRoot(buffer: *[Trie.stack_size]u8, keys: []const [32]u8, values: [][
     if (start < keys.len) try trie.updateNoDeletions(keys[start..], values[start..]);
     return trie.rootHash();
 }
+
 pub const NodeCollector = struct {
     const Self = @This();
     pub const Node = struct { path: []const u8, blob: []const u8 };
 
     allocator: std.mem.Allocator,
     nodes: []Self.Node,
+    hash_map: ?NodesHashMap = null,
     index: usize = 0,
 
     pub fn init(allocator: std.mem.Allocator, max_nodes: usize) !Self {
         return .{ .allocator = allocator, .nodes = try allocator.alloc(Self.Node, max_nodes) };
     }
 
-    pub fn collect(self: *Self, path: []const u8, blob: []const u8) !void {
+    pub fn initWithHashMap(allocator: std.mem.Allocator, max_nodes: usize) !Self {
+        var c: Self = try .init(allocator, max_nodes);
+        c.hash_map = .empty;
+        try c.hash_map.?.ensureTotalCapacity(allocator, @intCast(max_nodes));
+        return c;
+    }
+
+    pub fn collect(self: *Self, hash: [32]u8, path: []const u8, blob: []const u8) !void {
         if (self.index >= self.nodes.len) return error.OutOfMemory;
         self.nodes[self.index] = .{ .blob = blob, .path = path };
         self.index += 1;
+        if (self.hash_map) |*hm| if (blob.len > 0)
+            hm.putAssumeCapacity(hash, blob);
     }
 
     pub fn collected(self: *Self) []Self.Node {
