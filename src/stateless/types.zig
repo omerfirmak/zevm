@@ -12,6 +12,7 @@ const MAX_WITNESS_HEADERS = 256;
 const MAX_BYTES_PER_WITNESS_NODE = 1 << 10;
 const MAX_BYTES_PER_CODE = 1 << 16;
 const MAX_BYTES_PER_HEADER = 1 << 10;
+const MAX_BLOB_COMMITMENTS_PER_BLOCK = 4096;
 
 pub const Withdrawal = struct {
     index: u64,
@@ -87,8 +88,10 @@ pub const ExecutionRequests = struct {
 };
 
 pub const NewPayloadRequest = struct {
+    pub const ssz_progressive_container = true;
+
     execution_payload: ExecutionPayload,
-    versioned_hashes: ProgressiveList([32]u8),
+    versioned_hashes: List([32]u8, MAX_BLOB_COMMITMENTS_PER_BLOCK),
     parent_beacon_block_root: [32]u8,
     execution_requests: ExecutionRequests,
 };
@@ -106,6 +109,8 @@ pub const StatelessInput = struct {
 };
 
 pub const StatelessValidationResult = struct {
+    pub const ssz_progressive_container = true;
+
     new_payload_request_root: [32]u8,
     successful_validation: bool,
     chain_id: u64,
