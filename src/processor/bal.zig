@@ -18,6 +18,7 @@ pub const AccountEntry = struct {
 
 pub const SlotEntry = struct {
     slot_changes: types.SlotChanges,
+    account: *AccountEntry,
     last_seen_index: u32 = 0,
     pre_block: u256 = undefined,
 };
@@ -49,7 +50,8 @@ pub const Prepared = struct {
         for (bal) |account| {
             if (prev_addr) |prev| if (account.addr <= prev) return null;
             prev_addr = account.addr;
-            self.map.putAssumeCapacity(account.addr, .{ .changes = account });
+            const acc_entry = self.map.getOrPutAssumeCapacity(account.addr).value_ptr;
+            acc_entry.* = .{ .changes = account };
 
             var prev_key: ?u256 = null;
             for (account.storage_changes) |sc| {
@@ -57,7 +59,7 @@ pub const Prepared = struct {
                 if (prev_key) |prev| if (sc.key <= prev) return null;
                 prev_key = sc.key;
                 const lookup: types.StorageLookup = .{ .address = account.addr, .slot = sc.key };
-                self.slot_map.putAssumeCapacity(lookup, .{ .slot_changes = sc });
+                self.slot_map.putAssumeCapacity(lookup, .{ .slot_changes = sc, .account = acc_entry });
             }
 
             var prev_read: ?u256 = null;
@@ -67,7 +69,7 @@ pub const Prepared = struct {
                 // track reads too, so validateWrites can do dedup on net-zero writes using last_seen_index
                 const entry = self.slot_map.getOrPutAssumeCapacity(.{ .address = account.addr, .slot = key });
                 if (entry.found_existing) return null;
-                entry.value_ptr.* = .{ .slot_changes = .{ .key = key, .changes = &.{} } };
+                entry.value_ptr.* = .{ .slot_changes = .{ .key = key, .changes = &.{} }, .account = acc_entry };
             }
         }
         return self;
@@ -141,6 +143,11 @@ pub const Prepared = struct {
             if (map_entry.value_ptr.last_seen_index > index) continue;
             if (map_entry.value_ptr.last_seen_index == 0) map_entry.value_ptr.pre_block = pre_tx;
             map_entry.value_ptr.last_seen_index = index + 1;
+
+            // storage-only accounts never show up in account dirties, so capture their pre_block here
+            const acc_entry = map_entry.value_ptr.account;
+            if (acc_entry.last_seen_index == 0) acc_entry.pre_block = state.accounts.dirties.get(lookup.address).?;
+            acc_entry.last_seen_index = index + 1;
 
             if (pre_tx == new_value) continue;
 
